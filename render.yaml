@@ -3,7 +3,4 @@ services:
     name: bist-backend
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn backend:app
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
+    startCommand: python backend.py
