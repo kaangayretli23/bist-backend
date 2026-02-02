@@ -8,6 +8,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+import os
 
 app = Flask(__name__)
 CORS(app)
@@ -568,4 +569,4 @@ if __name__ == '__main__':
     print("   - Email bildirimleri")
     print("   - Favori yönetimi")
     print("\n")
-    app.run(debug=True, port=5000)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
