@@ -58,6 +58,7 @@ def handle_exception(e):
 CACHE_TTL = 300  # 5 dakika cache
 MAX_BATCH_SIZE = 20  # Paralel istek limiti
 YF_TIMEOUT = 10  # yfinance timeout (sn)
+YF_TIMEOUT = 15
 
 # =============================================================================
 # SAFE JSON SERIALIZATION HELPERS
@@ -219,7 +220,10 @@ def fetch_stock_hist(symbol, period='1y'):
 
     ticker_symbol = f"{symbol.upper()}.IS"
     stock = yf.Ticker(ticker_symbol)
-    hist = stock.history(period=period)
+    hist = stock.history(period=period, timeout=YF_TIMEOUT)
+if hist.empty:
+    time.sleep(0.4)
+    hist = stock.history(period=period, timeout=YF_TIMEOUT)
 
     if not hist.empty:
         cache_set(ck, hist)
@@ -267,7 +271,91 @@ def fetch_quick_many(symbols):
 
     try:
         ticker = yf.Ticker(f"{symbol.upper()}.IS")
-        hist = ticker.history(period="5d", timeout=YF_TIMEOUT, progress=False)
+        hist = ticker.history(period="5d", timeout=YF_TIMEOUT)
+if hist.empty:
+    time.sleep(0.4)
+    hist = ticker.history(period="5d", timeout=YF_TIMEOUT)
+def fetch_quick_batch(symbols, period="5d"):
+    """
+    Çoklu hisseyi tek seferde yf.download ile çekip dashboard/list için özet üretir.
+    100 hisseyi tek tek çağırmak yerine 1-2 çağrı ile işi bitirir → Render'da en kritik fark.
+    """
+    symbols = [s.upper() for s in symbols]
+    ck = cache_key('quick_batch', period, ','.join(sorted(symbols)))
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+
+    tickers = [f"{s}.IS" for s in symbols]
+    df = yf.download(
+        " ".join(tickers),
+        period=period,
+        group_by="ticker",
+        threads=True,
+        progress=False
+    )
+
+    if df is None or df.empty:
+        return []
+
+    results = []
+    multi = isinstance(df.columns, pd.MultiIndex)
+    lvl0 = set(df.columns.get_level_values(0)) if multi else set()
+    lvl1 = set(df.columns.get_level_values(1)) if multi else set()
+
+    for s in symbols:
+        t = f"{s}.IS"
+        try:
+            if multi:
+                if t in lvl0:
+                    h = df[t].dropna(how="all")
+                elif t in lvl1:
+                    h = df.xs(t, axis=1, level=1, drop_level=True).dropna(how="all")
+                else:
+                    continue
+            else:
+                # tek ticker gelmişse
+                if len(symbols) == 1:
+                    h = df.dropna(how="all")
+                else:
+                    continue
+
+            if h.empty or len(h) < 2 or "Close" not in h.columns:
+                continue
+
+            current = sf(h["Close"].iloc[-1])
+            prev = sf(h["Close"].iloc[-2])
+            change = sf(current - prev)
+            change_pct = sf((change / prev) * 100 if prev else 0)
+
+            volume = si(h["Volume"].iloc[-1]) if "Volume" in h.columns else 0
+            day_open = sf(h["Open"].iloc[-1]) if "Open" in h.columns else 0
+            day_high = sf(h["High"].iloc[-1]) if "High" in h.columns else 0
+            day_low  = sf(h["Low"].iloc[-1]) if "Low" in h.columns else 0
+
+            gap = sf(day_open - prev)
+            gap_pct = sf((gap / prev) * 100 if prev else 0)
+
+            results.append({
+                "code": s,
+                "name": BIST100_STOCKS.get(s, s),
+                "price": current,
+                "prevClose": prev,
+                "change": change,
+                "changePct": change_pct,
+                "volume": volume,
+                "open": day_open,
+                "high": day_high,
+                "low": day_low,
+                "gap": gap,
+                "gapPct": gap_pct,
+            })
+        except Exception:
+            continue
+
+    cache_set(ck, results)
+    return results
+
 
 
         if hist.empty or len(hist) < 2:
@@ -1004,7 +1092,7 @@ def get_dashboard():
         if cached is not None:
             return jsonify(cached)
 
-        all_stocks = fetch_quick_many(BIST100_STOCKS.keys())
+all_stocks = fetch_quick_batch(BIST100_STOCKS.keys(), period="5d")
 
         if not all_stocks:
             payload = {
@@ -1215,7 +1303,7 @@ def get_bist100_list():
         if sector_filter and sector_filter in SECTOR_MAP:
             stocks_to_fetch = [s for s in SECTOR_MAP[sector_filter] if s in BIST100_STOCKS]
 
-        stocks = fetch_quick_many(stocks_to_fetch)
+stocks = fetch_quick_batch(BIST30_STOCKS, period="5d")
 
         reverse = (order == 'desc')
         if sort_by == 'change':
