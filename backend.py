@@ -26,12 +26,13 @@ import json
 import time
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
 CORS(app)
-app.config['TRAP_HTTP_EXCEPTIONS'] = True
+app.config['TRAP_HTTP_EXCEPTIONS'] = False
 app.config['PROPAGATE_EXCEPTIONS'] = False
 
 
@@ -46,8 +47,9 @@ def server_error(e):
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    print(f"⚠️ Unhandled: {traceback.format_exc()}")
-    return jsonify({'error': str(e)}), 500
+    app.logger.exception("Unhandled exception")
+    return jsonify({'error': 'Unhandled error', 'details': str(e)}), 500
+
 
 # =============================================================================
 # CONFIGURATION
@@ -55,6 +57,7 @@ def handle_exception(e):
 
 CACHE_TTL = 300  # 5 dakika cache
 MAX_BATCH_SIZE = 20  # Paralel istek limiti
+YF_TIMEOUT = 10  # yfinance timeout (sn)
 
 # =============================================================================
 # SAFE JSON SERIALIZATION HELPERS
@@ -244,10 +247,28 @@ def fetch_stock_quick(symbol):
     cached = cache_get(ck)
     if cached is not None:
         return cached
+def fetch_quick_many(symbols):
+    """Birden çok hisseyi sınırlı paralellik ile hızlı çek."""
+    symbols = list(symbols)
+    if not symbols:
+        return []
+    max_workers = min(MAX_BATCH_SIZE, len(symbols))
+    out = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(fetch_stock_quick, s): s for s in symbols}
+        for fut in as_completed(futs):
+            try:
+                d = fut.result()
+                if d:
+                    out.append(d)
+            except Exception as err:
+                app.logger.warning("quick fetch failed for %s: %s", futs[fut], err)
+    return out
 
     try:
         ticker = yf.Ticker(f"{symbol.upper()}.IS")
-        hist = ticker.history(period="5d")
+        hist = ticker.history(period="5d", timeout=YF_TIMEOUT, progress=False)
+
 
         if hist.empty or len(hist) < 2:
             return None
@@ -978,46 +999,36 @@ watchlist_store = {}   # {user_id: [symbols]}
 def get_dashboard():
     """Ana sayfa dashboard - endeksler, movers, piyasa genişliği"""
     try:
-        # Tüm BIST100 verilerini topla
-        all_stocks = []
-        for code in BIST100_STOCKS:
-            try:
-                data = fetch_stock_quick(code)
-                if data:
-                    all_stocks.append(data)
-            except Exception as e:
-                print(f"Skip {code}: {e}")
-                continue
+        ck = cache_key('dashboard_v1')
+        cached = cache_get(ck)
+        if cached is not None:
+            return jsonify(cached)
+
+        all_stocks = fetch_quick_many(BIST100_STOCKS.keys())
 
         if not all_stocks:
-            return jsonify({
+            payload = {
                 'success': True,
                 'stockCount': 0,
                 'movers': {'topGainers': [], 'topLosers': [], 'volumeLeaders': [], 'gapStocks': []},
                 'marketBreadth': {'advancing': 0, 'declining': 0, 'unchanged': 0, 'advDecRatio': 0},
                 'allStocks': [],
                 'message': 'Piyasa verisi henüz alınamadı. Lütfen birkaç saniye bekleyip sayfayı yenileyin.'
-            })
+            }
+            cache_set(ck, payload)
+            return jsonify(payload)
 
-        # Sırala
         sorted_by_change = sorted(all_stocks, key=lambda x: x['changePct'], reverse=True)
-
-        # En çok artan/azalan
         top_gainers = sorted_by_change[:5]
         top_losers = sorted_by_change[-5:][::-1]
-
-        # Hacim liderleri
         volume_leaders = sorted(all_stocks, key=lambda x: x['volume'], reverse=True)[:5]
-
-        # Gap açanlar
         gap_stocks = sorted(all_stocks, key=lambda x: abs(x['gapPct']), reverse=True)[:5]
 
-        # Piyasa genişliği
         advancing = sum(1 for s in all_stocks if s['changePct'] > 0)
         declining = sum(1 for s in all_stocks if s['changePct'] < 0)
         unchanged = len(all_stocks) - advancing - declining
 
-        return jsonify(safe_dict({
+        payload = safe_dict({
             'success': True,
             'timestamp': datetime.now().isoformat(),
             'stockCount': len(all_stocks),
@@ -1034,11 +1045,13 @@ def get_dashboard():
                 'advDecRatio': sf(advancing / declining if declining > 0 else advancing),
             },
             'allStocks': sorted_by_change,
-        }))
-    except Exception as e:
-        print(f"Dashboard error: {traceback.format_exc()}")
-        return jsonify({'error': str(e)}), 500
+        })
+        cache_set(ck, payload)
+        return jsonify(payload)
 
+    except Exception as e:
+        app.logger.exception("Dashboard error")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/indices', methods=['GET'])
 def get_indices():
@@ -1190,24 +1203,21 @@ def get_bist100_list():
     """BIST100 hisse listesi"""
     try:
         sector_filter = request.args.get('sector', None)
-        sort_by = request.args.get('sort', 'code')  # code, change, volume
+        sort_by = request.args.get('sort', 'code')
         order = request.args.get('order', 'asc')
+
+        ck = cache_key('bist100_v1', sector_filter or '', sort_by, order)
+        cached = cache_get(ck)
+        if cached is not None:
+            return jsonify(cached)
 
         stocks_to_fetch = BIST100_STOCKS.keys()
         if sector_filter and sector_filter in SECTOR_MAP:
             stocks_to_fetch = [s for s in SECTOR_MAP[sector_filter] if s in BIST100_STOCKS]
 
-        stocks = []
-        for code in stocks_to_fetch:
-            try:
-                data = fetch_stock_quick(code)
-                if data:
-                    stocks.append(data)
-            except Exception:
-                continue
+        stocks = fetch_quick_many(stocks_to_fetch)
 
-        # Sıralama
-        reverse = order == 'desc'
+        reverse = (order == 'desc')
         if sort_by == 'change':
             stocks.sort(key=lambda x: x.get('changePct', 0), reverse=reverse)
         elif sort_by == 'volume':
@@ -1217,30 +1227,18 @@ def get_bist100_list():
         else:
             stocks.sort(key=lambda x: x.get('code', ''), reverse=reverse)
 
-        return jsonify(safe_dict({
+        payload = safe_dict({
             'success': True,
             'stocks': stocks,
             'count': len(stocks),
             'sectors': list(SECTOR_MAP.keys()),
-        }))
+        })
+        cache_set(ck, payload)
+        return jsonify(payload)
+
     except Exception as e:
-        print(f"BIST100 list error: {traceback.format_exc()}")
+        app.logger.exception("BIST100 list error")
         return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/bist30', methods=['GET'])
-def get_bist30_list():
-    """BIST30 hisse listesi"""
-    try:
-        stocks = []
-        for code in BIST30_STOCKS:
-            data = fetch_stock_quick(code)
-            if data:
-                stocks.append(data)
-        return jsonify(safe_dict({'success': True, 'stocks': stocks, 'count': len(stocks)}))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 
 # ─────────────────────────────── STOCK DETAIL ────────────────────────────
 
