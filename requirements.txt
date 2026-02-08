@@ -1,0 +1,7 @@
+flask
+flask-cors
+gunicorn
+yfinance
+pandas
+numpy
+requests
