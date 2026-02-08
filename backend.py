@@ -364,7 +364,29 @@ def _background_loop():
                     if (i + 1) % 10 == 0:
                         print(f"  [STOCKS] {i+1}/{len(BIST30)}, cache={len(_stock_cache)}")
                     time.sleep(0.5)
-
+# === FAZE 3: Kalan BIST100 hisseleri (BIST30 disindakiler) ===
+            remaining = [s for s in BIST100_STOCKS.keys() if s not in BIST30 and s not in _stock_cache]
+            if remaining:
+                print(f"[LOADER] ====== FAZE 3: {len(remaining)} kalan hisse ======")
+                for i, sym in enumerate(remaining):
+                    data = _fetch_stock_data(sym)
+                    if data:
+                        cur, prev = sf(data['close']), sf(data['prev'])
+                        if prev > 0:
+                            ch = sf(cur - prev); o = sf(data.get('open', cur))
+                            _cset(_stock_cache, sym, {
+                                'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
+                                'price': cur, 'prevClose': prev,
+                                'change': ch, 'changePct': sf(ch / prev * 100),
+                                'volume': si(data.get('volume', 0)),
+                                'open': o, 'high': sf(data.get('high', cur)),
+                                'low': sf(data.get('low', cur)),
+                                'gap': sf(o - prev), 'gapPct': sf((o - prev) / prev * 100),
+                            })
+                    if (i + 1) % 10 == 0:
+                        print(f"  [BIST100] {i+1}/{len(remaining)}, cache={len(_stock_cache)}")
+                    time.sleep(0.5)
+                    
             _status['phase'] = 'done'
             _status['lastRun'] = datetime.now().isoformat()
             print(f"\n[LOADER] ====== SONUC: {len(_stock_cache)} hisse, {len(_index_cache)} endeks ======\n")
@@ -629,34 +651,64 @@ def bist30():
         return jsonify({'error':str(e)}),500
 
 @app.route('/api/stock/<symbol>')
+@app.route('/api/stock/<symbol>')
 def stock_detail(symbol):
-    """Hisse detay - cache'den al, yoksa background'da yukle"""
+    """Tek hisse detay - senkron cek (tek hisse icin timeout riski yok)"""
     try:
-        symbol=symbol.upper(); period=request.args.get('period','1y')
-        hist=_cget(_hist_cache, f"{symbol}_{period}")
-        if hist is None:
-            # Background'da yukle
-            def _bg():
-                try:
-                    h=yf.Ticker(f"{symbol}.IS").history(period=period,timeout=12)
-                    if h is not None and not h.empty and len(h)>=2:
-                        _cset(_hist_cache,f"{symbol}_{period}",h)
-                        print(f"  [BG] {symbol} {period} yuklendi: {len(h)} bar")
-                except Exception as e:
-                    print(f"  [BG] {symbol} hata: {e}")
-            threading.Thread(target=_bg, daemon=True).start()
-            # Quick data varsa onu don
-            quick=_cget(_stock_cache, symbol)
-            if quick:
-                return jsonify(safe_dict({'success':True,'code':symbol,'name':quick['name'],'price':quick['price'],'change':quick['change'],'changePercent':quick['changePct'],'volume':quick['volume'],'dayOpen':quick['open'],'dayHigh':quick['high'],'dayLow':quick['low'],'prevClose':quick['prevClose'],'currency':'TRY','period':period,'loading':True,'message':'Detayli veri yukleniyor, 5sn sonra yenileyin','indicators':{},'chartData':{'candlestick':[],'dates':[],'prices':[],'volumes':[],'dataPoints':0},'fibonacci':{'levels':{}},'supportResistance':{'supports':[],'resistances':[]}}))
-            return jsonify({'success':True,'loading':True,'message':f'{symbol} verileri yukleniyor...','code':symbol}),202
+        symbol = symbol.upper()
+        period = request.args.get('period', '1y')
 
-        cp=float(hist['Close'].iloc[-1])
-        prev=float(hist['Close'].iloc[-2]) if len(hist)>1 else cp
-        return jsonify(safe_dict({'success':True,'code':symbol,'name':BIST100_STOCKS.get(symbol,symbol),'price':sf(cp),'change':sf(cp-prev),'changePercent':sf((cp-prev)/prev*100 if prev else 0),'volume':si(hist['Volume'].iloc[-1]),'dayHigh':sf(hist['High'].iloc[-1]),'dayLow':sf(hist['Low'].iloc[-1]),'dayOpen':sf(hist['Open'].iloc[-1]),'prevClose':sf(prev),'currency':'TRY','period':period,'dataPoints':len(hist),'indicators':calc_all_indicators(hist,cp),'chartData':prepare_chart_data(hist),'fibonacci':calc_fibonacci(hist),'supportResistance':calc_support_resistance(hist)}))
+        # Once hist cache'e bak
+        hist = _cget(_hist_cache, f"{symbol}_{period}")
+
+        if hist is None:
+            # Cache'de yok - SENKRON cek (tek hisse sorun olmaz)
+            if YF_OK:
+                try:
+                    hist = yf.Ticker(f"{symbol}.IS").history(period=period, timeout=15)
+                    if hist is not None and not hist.empty and len(hist) >= 2:
+                        _cset(_hist_cache, f"{symbol}_{period}", hist)
+                except Exception as e:
+                    print(f"[STOCK-YF] {symbol}: {e}")
+
+            # yfinance basarisizsa, quick data don
+            if hist is None or hist.empty or len(hist) < 2:
+                quick = _cget(_stock_cache, symbol)
+                if quick:
+                    return jsonify(safe_dict({
+                        'success': True, 'code': symbol, 'name': quick['name'],
+                        'price': quick['price'], 'change': quick['change'],
+                        'changePercent': quick['changePct'],
+                        'volume': quick['volume'], 'dayOpen': quick['open'],
+                        'dayHigh': quick['high'], 'dayLow': quick['low'],
+                        'prevClose': quick['prevClose'], 'currency': 'TRY',
+                        'period': period, 'dataPoints': 0,
+                        'indicators': {}, 'chartData': {'candlestick': [], 'dates': [], 'prices': [], 'volumes': [], 'dataPoints': 0},
+                        'fibonacci': {'levels': {}}, 'supportResistance': {'supports': [], 'resistances': []}
+                    }))
+                return jsonify({'error': f'{symbol} verisi bulunamadi'}), 404
+
+        cp = float(hist['Close'].iloc[-1])
+        prev = float(hist['Close'].iloc[-2]) if len(hist) > 1 else cp
+        return jsonify(safe_dict({
+            'success': True, 'code': symbol,
+            'name': BIST100_STOCKS.get(symbol, symbol),
+            'price': sf(cp), 'change': sf(cp - prev),
+            'changePercent': sf((cp - prev) / prev * 100 if prev else 0),
+            'volume': si(hist['Volume'].iloc[-1]),
+            'dayHigh': sf(hist['High'].iloc[-1]),
+            'dayLow': sf(hist['Low'].iloc[-1]),
+            'dayOpen': sf(hist['Open'].iloc[-1]),
+            'prevClose': sf(prev), 'currency': 'TRY',
+            'period': period, 'dataPoints': len(hist),
+            'indicators': calc_all_indicators(hist, cp),
+            'chartData': prepare_chart_data(hist),
+            'fibonacci': calc_fibonacci(hist),
+            'supportResistance': calc_support_resistance(hist),
+        }))
     except Exception as e:
         print(f"STOCK {symbol}: {traceback.format_exc()}")
-        return jsonify({'error':str(e)}),500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/stock/<symbol>/events')
 def stock_events(symbol):
