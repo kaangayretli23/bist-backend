@@ -1,11 +1,12 @@
 """
-BIST Pro v4.0.0 - IS YATIRIM API PRIMARY
+BIST Pro v5.0.0 - IS YATIRIM API PRIMARY
 Thread guvenli: before_request ile lazy start.
 Hicbir route yfinance CAGIRMAZ.
+SQLite veritabani, kullanici sistemi, backtest, KAP haberleri
 """
-from flask import Flask, jsonify, request, send_from_directory, make_response
+from flask import Flask, jsonify, request, send_from_directory, make_response, session
 from flask_cors import CORS
-import traceback, os, time, threading, json
+import traceback, os, time, threading, json, hashlib, sqlite3, uuid
 from datetime import datetime, timedelta
 
 try:
@@ -21,8 +22,69 @@ except ImportError:
     pass
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, 'bist.db')
 app = Flask(__name__)
-CORS(app)
+app.secret_key = os.environ.get('SECRET_KEY', 'bist-pro-secret-' + str(hash(BASE_DIR)))
+CORS(app, supports_credentials=True)
+
+# =====================================================================
+# DATABASE (SQLite)
+# =====================================================================
+def get_db():
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    return db
+
+def init_db():
+    db = get_db()
+    db.executescript('''
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            email TEXT,
+            telegram_chat_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS portfolios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            avg_cost REAL NOT NULL,
+            added_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE TABLE IF NOT EXISTS watchlists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            added_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, symbol),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            condition TEXT NOT NULL,
+            target_value REAL NOT NULL,
+            active INTEGER DEFAULT 1,
+            triggered INTEGER DEFAULT 0,
+            triggered_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+    ''')
+    db.commit()
+    db.close()
+    print("[DB] Veritabani hazir:", DB_PATH)
+
+init_db()
+
+def hash_password(pw):
+    return hashlib.sha256((pw + app.secret_key).encode()).hexdigest()
 
 @app.after_request
 def force_json(resp):
@@ -1566,7 +1628,122 @@ def search():
 
 @app.route('/api/backtest', methods=['POST'])
 def backtest():
-    return jsonify({'success':True,'message':'Backtest hazirlaniyor'})
+    try:
+        d = request.json or {}
+        sym = d.get('symbol', '').upper()
+        strategy = d.get('strategy', 'ma_cross')
+        params = d.get('params', {})
+        period = d.get('period', '1y')
+        commission = float(d.get('commission', 0.001))
+        initial_capital = float(d.get('initialCapital', 100000))
+
+        if not sym:
+            return jsonify({'error': 'Hisse kodu gerekli'}), 400
+
+        hist = _fetch_hist_df(sym, period)
+        if hist is None or len(hist) < 30:
+            return jsonify({'error': f'{sym} icin yeterli veri yok'}), 400
+
+        closes = hist['Close'].values.astype(float)
+        highs = hist['High'].values.astype(float)
+        lows = hist['Low'].values.astype(float)
+        dates = [d.strftime('%Y-%m-%d') for d in hist.index]
+        n = len(closes)
+
+        # Sinyal uret
+        signals = [0] * n  # 1=al, -1=sat, 0=bekle
+
+        if strategy == 'ma_cross':
+            fast_p = int(params.get('fast', 20))
+            slow_p = int(params.get('slow', 50))
+            s = pd.Series(closes)
+            fast_ma = s.rolling(fast_p).mean().values
+            slow_ma = s.rolling(slow_p).mean().values
+            for i in range(slow_p + 1, n):
+                if fast_ma[i] > slow_ma[i] and fast_ma[i-1] <= slow_ma[i-1]:
+                    signals[i] = 1
+                elif fast_ma[i] < slow_ma[i] and fast_ma[i-1] >= slow_ma[i-1]:
+                    signals[i] = -1
+
+        elif strategy == 'breakout':
+            lookback = int(params.get('lookback', 20))
+            for i in range(lookback, n):
+                high_n = max(highs[i-lookback:i])
+                low_n = min(lows[i-lookback:i])
+                if closes[i] > high_n:
+                    signals[i] = 1
+                elif closes[i] < low_n:
+                    signals[i] = -1
+
+        elif strategy == 'mean_reversion':
+            rsi_low = float(params.get('rsi_low', 30))
+            rsi_high = float(params.get('rsi_high', 70))
+            for i in range(15, n):
+                rsi = calc_rsi_single(closes[:i+1])
+                if rsi is not None:
+                    if rsi < rsi_low: signals[i] = 1
+                    elif rsi > rsi_high: signals[i] = -1
+
+        # Backtest calistir
+        cash = initial_capital
+        shares = 0
+        equity_curve = []
+        trades = []
+        peak_equity = initial_capital
+        max_dd = 0
+        wins = 0
+        losses = 0
+
+        for i in range(n):
+            price = closes[i]
+            if signals[i] == 1 and shares == 0:
+                shares = int(cash * (1 - commission) / price)
+                if shares > 0:
+                    cost = shares * price * (1 + commission)
+                    cash -= cost
+                    trades.append({'date': dates[i], 'action': 'AL', 'price': sf(price), 'shares': shares, 'pnl': 0})
+            elif signals[i] == -1 and shares > 0:
+                revenue = shares * price * (1 - commission)
+                pnl = revenue - (trades[-1]['shares'] * trades[-1]['price'] * (1 + commission)) if trades else 0
+                cash += revenue
+                trades.append({'date': dates[i], 'action': 'SAT', 'price': sf(price), 'shares': shares, 'pnl': sf(pnl)})
+                if pnl > 0: wins += 1
+                else: losses += 1
+                shares = 0
+
+            equity = cash + shares * price
+            equity_curve.append({'date': dates[i], 'equity': sf(equity)})
+            if equity > peak_equity: peak_equity = equity
+            dd = (peak_equity - equity) / peak_equity * 100
+            if dd > max_dd: max_dd = dd
+
+        final_equity = cash + shares * closes[-1]
+        total_return = sf(((final_equity - initial_capital) / initial_capital) * 100)
+        bh_return = sf(((closes[-1] - closes[0]) / closes[0]) * 100)
+        years = n / 252
+        cagr = sf(((final_equity / initial_capital) ** (1 / years) - 1) * 100) if years > 0 else 0
+
+        daily_returns = np.diff([e['equity'] for e in equity_curve]) / np.array([e['equity'] for e in equity_curve[:-1]])
+        sharpe = sf(float(np.mean(daily_returns) / np.std(daily_returns) * (252**0.5))) if len(daily_returns) > 0 and np.std(daily_returns) > 0 else 0
+
+        total_trades = wins + losses
+        win_rate = sf(wins / total_trades * 100) if total_trades > 0 else 0
+        alpha = sf(float(total_return) - float(bh_return))
+
+        return jsonify(safe_dict({
+            'success': True,
+            'results': {
+                'totalReturn': total_return, 'cagr': cagr, 'sharpeRatio': sharpe,
+                'maxDrawdown': sf(-max_dd), 'winRate': win_rate, 'totalTrades': total_trades,
+                'buyAndHoldReturn': bh_return, 'alpha': alpha,
+                'finalEquity': sf(final_equity), 'initialCapital': sf(initial_capital),
+            },
+            'equityCurve': equity_curve[::max(1, len(equity_curve)//200)],
+            'trades': trades[-50:],
+        }))
+    except Exception as e:
+        print(f"[BACKTEST] Hata: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/docs')
 def docs():
