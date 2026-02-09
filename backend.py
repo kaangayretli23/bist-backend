@@ -188,8 +188,22 @@ def _fetch_isyatirim_df(symbol, days=365):
         url = f"{IS_YATIRIM_BASE}?hisse={symbol}&startdate={sd}&enddate={ed}.json"
 
         print(f"  [ISYATIRIM] {symbol} {days}d cekiliyor...")
-        resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=15)
-        resp.raise_for_status()
+        resp = None
+        last_err = None
+        for http_attempt in range(3):
+            try:
+                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=15)
+                resp.raise_for_status()
+                break
+            except Exception as http_e:
+                last_err = http_e
+                if http_attempt < 2:
+                    wait = (http_attempt + 1) * 1.5
+                    print(f"  [ISYATIRIM] {symbol} HTTP hata ({http_e}), {wait}s sonra tekrar...")
+                    time.sleep(wait)
+        if resp is None:
+            print(f"  [ISYATIRIM] {symbol} 3 HTTP denemesi basarisiz: {last_err}")
+            return None
 
         data = resp.json()
         rows = data.get('value', [])
@@ -366,35 +380,41 @@ def _fetch_yahoo_http_df(symbol, period1_days=365):
 
 
 # ---- BIRLESIK FETCHER (3 katmanli fallback) ----
-def _fetch_stock_data(sym):
-    """Hisse verisi cek: 1.IsYatirim -> 2.Yahoo HTTP -> 3.yfinance"""
-    # 1. Is Yatirim
-    data = _fetch_isyatirim_quick(sym)
-    if data:
-        return data
-
-    # 2. Yahoo HTTP
-    for ticker in [f"{sym}.IS", sym]:
-        data = _fetch_yahoo_http(ticker)
+def _fetch_stock_data(sym, retry_count=2):
+    """Hisse verisi cek: 1.IsYatirim -> 2.Yahoo HTTP -> 3.yfinance (retry destekli)"""
+    for attempt in range(1, retry_count + 1):
+        # 1. Is Yatirim
+        data = _fetch_isyatirim_quick(sym)
         if data:
-            print(f"  [YAHOO] {sym} OK")
             return data
 
-    # 3. yfinance (son care)
-    if YF_OK:
-        try:
-            h = yf.Ticker(f"{sym}.IS").history(period="5d", timeout=10)
-            if h is not None and not h.empty and len(h) >= 2:
-                cur, prev = float(h['Close'].iloc[-1]), float(h['Close'].iloc[-2])
-                if prev > 0:
-                    print(f"  [YF] {sym} OK: {cur}")
-                    return {'close': cur, 'prev': prev, 'open': float(h['Open'].iloc[-1]),
-                            'high': float(h['High'].iloc[-1]), 'low': float(h['Low'].iloc[-1]),
-                            'volume': int(h['Volume'].iloc[-1])}
-        except Exception as e:
-            print(f"  [YF] {sym}: {e}")
+        # 2. Yahoo HTTP
+        for ticker in [f"{sym}.IS", sym]:
+            data = _fetch_yahoo_http(ticker)
+            if data:
+                print(f"  [YAHOO] {sym} OK")
+                return data
 
-    print(f"  [ALL] {sym} BASARISIZ")
+        # 3. yfinance (son care)
+        if YF_OK:
+            try:
+                h = yf.Ticker(f"{sym}.IS").history(period="5d", timeout=10)
+                if h is not None and not h.empty and len(h) >= 2:
+                    cur, prev = float(h['Close'].iloc[-1]), float(h['Close'].iloc[-2])
+                    if prev > 0:
+                        print(f"  [YF] {sym} OK: {cur}")
+                        return {'close': cur, 'prev': prev, 'open': float(h['Open'].iloc[-1]),
+                                'high': float(h['High'].iloc[-1]), 'low': float(h['Low'].iloc[-1]),
+                                'volume': int(h['Volume'].iloc[-1])}
+            except Exception as e:
+                print(f"  [YF] {sym}: {e}")
+
+        if attempt < retry_count:
+            wait = attempt * 2
+            print(f"  [RETRY] {sym} deneme {attempt}/{retry_count} basarisiz, {wait}s bekleniyor...")
+            time.sleep(wait)
+
+    print(f"  [ALL] {sym} BASARISIZ ({retry_count} deneme)")
     return None
 
 
@@ -483,14 +503,16 @@ def _background_loop():
                         'changePct': sf((cur - prev) / prev * 100 if prev else 0),
                         'volume': si(data.get('volume', 0)),
                     })
-                time.sleep(0.3)
+                time.sleep(0.5)
 
             print(f"[LOADER] Endeksler: {len(_index_cache)}/{len(INDEX_TICKERS)}")
 
             # === FAZE 2: BIST30 hisseleri ===
             _status['phase'] = 'stocks'
-            _status['total'] = len(BIST30)
+            _status['total'] = len(BIST100_STOCKS)
             _status['loaded'] = 0
+            fail_count = 0
+            fail_list = []
             print(f"\n[LOADER] ====== FAZE 2: BIST30 ({len(BIST30)} hisse) ======")
 
             for i, sym in enumerate(BIST30):
@@ -508,17 +530,30 @@ def _background_loop():
                             'low': sf(data.get('low', cur)),
                             'gap': sf(o - prev), 'gapPct': sf((o - prev) / prev * 100),
                         })
+                    else:
+                        fail_count += 1; fail_list.append(sym)
+                        print(f"  [SKIP] {sym}: prev <= 0 (prev={prev})")
+                else:
+                    fail_count += 1; fail_list.append(sym)
                 _status['loaded'] = i + 1
                 if (i + 1) % 10 == 0:
-                    print(f"  [BIST30] {i+1}/{len(BIST30)}, cache={len(_stock_cache)}")
-                time.sleep(0.3)
+                    print(f"  [BIST30] {i+1}/{len(BIST30)}, cache={len(_stock_cache)}, fail={fail_count}")
+                time.sleep(0.8)
 
-            print(f"[LOADER] BIST30: {len(_stock_cache)} hisse cache'de")
+            print(f"[LOADER] BIST30: {len(_stock_cache)} hisse cache'de, {fail_count} basarisiz")
+            if fail_list:
+                print(f"[LOADER] BIST30 basarisiz: {fail_list}")
 
             # === FAZE 3: Kalan BIST100 hisseleri ===
-            remaining = [s for s in BIST100_STOCKS.keys() if s not in _stock_cache]
+            # Cache key'i olsa bile TTL dolmussa yeniden cek
+            with _lock:
+                cached_and_valid = {s for s in BIST100_STOCKS.keys()
+                                    if s in _stock_cache and time.time() - _stock_cache[s]['ts'] < CACHE_TTL}
+            remaining = [s for s in BIST100_STOCKS.keys() if s not in cached_and_valid]
             if remaining:
                 print(f"\n[LOADER] ====== FAZE 3: {len(remaining)} kalan hisse ======")
+                phase3_fail = 0
+                phase3_fail_list = []
                 for i, sym in enumerate(remaining):
                     data = _fetch_stock_data(sym)
                     if data:
@@ -534,9 +569,17 @@ def _background_loop():
                                 'low': sf(data.get('low', cur)),
                                 'gap': sf(o - prev), 'gapPct': sf((o - prev) / prev * 100),
                             })
+                        else:
+                            phase3_fail += 1; phase3_fail_list.append(sym)
+                            print(f"  [SKIP] {sym}: prev <= 0 (prev={prev})")
+                    else:
+                        phase3_fail += 1; phase3_fail_list.append(sym)
                     if (i + 1) % 10 == 0:
-                        print(f"  [BIST100] {i+1}/{len(remaining)}, toplam cache={len(_stock_cache)}")
-                    time.sleep(0.3)
+                        print(f"  [BIST100] {i+1}/{len(remaining)}, toplam cache={len(_stock_cache)}, fail={phase3_fail}")
+                    time.sleep(0.8)
+                print(f"[LOADER] BIST100 kalan: {phase3_fail} basarisiz")
+                if phase3_fail_list:
+                    print(f"[LOADER] BIST100 basarisiz: {phase3_fail_list}")
 
             _status['phase'] = 'done'
             _status['lastRun'] = datetime.now().isoformat()
