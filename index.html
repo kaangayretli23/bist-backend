@@ -263,22 +263,42 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 }
 .stock-header .stock-name { font-size: 14px; color: var(--text-secondary); }
 
+/* ─── COLLAPSIBLE SECTIONS ─── */
+.collapsible-header {
+  display: flex; justify-content: space-between; align-items: center;
+  cursor: pointer; user-select: none; padding: 4px 0;
+}
+.collapsible-header:hover { opacity: 0.8; }
+.collapsible-header .collapse-icon {
+  transition: transform 0.3s ease; font-size: 14px; color: var(--text-muted);
+}
+.collapsible-header.collapsed .collapse-icon { transform: rotate(-90deg); }
+.collapsible-body { transition: max-height 0.3s ease, opacity 0.3s ease; overflow: hidden; }
+.collapsible-body.collapsed { max-height: 0 !important; opacity: 0; padding-top: 0; padding-bottom: 0; }
+
 /* ─── INDICATOR PILL ─── */
-.indicator-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.indicator-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .indicator-card {
   background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 14px;
+  border-radius: var(--radius-sm); padding: 14px; transition: border-color 0.2s;
 }
+.indicator-card:hover { border-color: var(--accent); }
+.indicator-card.signal-buy { border-left: 3px solid var(--green); }
+.indicator-card.signal-sell { border-left: 3px solid var(--red); }
+.indicator-card.signal-neutral { border-left: 3px solid var(--text-muted); }
 .indicator-card .ind-name { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
 .indicator-card .ind-value { font-family: var(--font-mono); font-size: 18px; font-weight: 700; }
+.indicator-card .ind-detail { font-size: 11px; color: var(--text-secondary); margin-top: 6px; line-height: 1.5; }
 .indicator-card .ind-explanation { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+.indicator-card .ind-bar { height: 4px; border-radius: 2px; background: var(--border); margin-top: 8px; overflow: hidden; }
+.indicator-card .ind-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
 
 /* ─── FIBONACCI LEVELS ─── */
 .fib-bar {
   display: flex; align-items: center; gap: 12px;
   padding: 8px 0; border-bottom: 1px solid rgba(42,53,72,0.3);
 }
-.fib-label { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); width: 50px; }
+.fib-label { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); min-width: 80px; }
 .fib-value { font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
 .fib-line { flex: 1; height: 2px; background: var(--border); position: relative; }
 .fib-marker {
@@ -377,7 +397,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
   <div class="section-title mb-24"><span class="icon">📊</span> Piyasa Özeti</div>
 
   <!-- Endeks Kartları -->
-  <div class="grid-5 mb-24" id="indicesCards">
+  <div class="mb-24" id="indicesCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;">
     <div class="index-card"><div class="label">Yükleniyor...</div><div class="spinner" style="margin:8px auto;width:20px;height:20px;border-width:2px;"></div></div>
   </div>
 
@@ -479,25 +499,87 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 <div class="page" id="page-screener">
   <div class="section-title mb-24"><span class="icon">🔍</span> Hisse Tarayıcı</div>
 
+  <!-- Koşul Açıklamaları -->
+  <div class="card mb-16" style="border:1px solid rgba(99,102,241,0.2);background:rgba(99,102,241,0.05);">
+    <div class="collapsible-header" onclick="toggleSection(this)">
+      <div style="font-weight:700;font-size:13px;color:var(--accent);">ℹ️ Koşullar Nasıl Kullanılır?</div>
+      <span class="collapse-icon">▼</span>
+    </div>
+    <div class="collapsible-body collapsed" style="max-height:800px;">
+      <div style="font-size:12px;color:var(--text-secondary);line-height:1.8;padding-top:12px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;">
+          <div style="padding:8px;border-radius:6px;background:var(--card-bg);">
+            <div style="font-weight:700;color:var(--text-primary);margin-bottom:4px;">RSI (Göreceli Güç Endeksi)</div>
+            0-100 arası değer alır. <b>RSI &lt; 30</b> → Aşırı satım (alış fırsatı). <b>RSI &gt; 70</b> → Aşırı alım (satış sinyali).
+            <br><i>Örnek: RSI &lt; 30 → Aşırı satılan hisseleri bulur</i>
+          </div>
+          <div style="padding:8px;border-radius:6px;background:var(--card-bg);">
+            <div style="font-weight:700;color:var(--text-primary);margin-bottom:4px;">Hacim Oranı</div>
+            Güncel hacim / ortalama hacim. <b>&gt; 2</b> → Normalin 2 katı işlem. Ani hacim artışı fiyat kırılımı habercisi olabilir.
+            <br><i>Örnek: Hacim Oranı &gt; 2 → Yüksek işlem hacimli hisseler</i>
+          </div>
+          <div style="padding:8px;border-radius:6px;background:var(--card-bg);">
+            <div style="font-weight:700;color:var(--text-primary);margin-bottom:4px;">ATR % (Ortalama Gerçek Aralık)</div>
+            Günlük fiyat hareketinin yüzdesi. <b>Yüksek ATR</b> = yüksek volatilite. Scalping ve day trade için kullanılır.
+            <br><i>Örnek: ATR % &gt; 3 → Günlük %3'ten fazla hareket eden hisseler</i>
+          </div>
+          <div style="padding:8px;border-radius:6px;background:var(--card-bg);">
+            <div style="font-weight:700;color:var(--text-primary);margin-bottom:4px;">EMA Cross</div>
+            EMA20 ve EMA50 kesişimi. <b>1</b> = EMA20 yukarı kesti (altın kesişim, alış). <b>-1</b> = EMA20 aşağı kesti (ölüm kesişimi, satış).
+            <br><i>Örnek: EMA Cross &gt; 0 → Yukarı trend başlayan hisseler</i>
+          </div>
+          <div style="padding:8px;border-radius:6px;background:var(--card-bg);">
+            <div style="font-weight:700;color:var(--text-primary);margin-bottom:4px;">Breakout (Kırılım)</div>
+            Fiyatın son 20 günlük en yüksek seviyeyi geçmesi. <b>1</b> = yukarı kırılım. Yeni yükseliş trendinin habercisi.
+            <br><i>Örnek: Breakout &gt; 0 → Direnç kıran hisseler</i>
+          </div>
+          <div style="padding:8px;border-radius:6px;background:var(--card-bg);">
+            <div style="font-weight:700;color:var(--text-primary);margin-bottom:4px;">MACD Sinyal</div>
+            MACD çizgisi sinyal çizgisini kestiğinde. <b>1</b> = alış sinyali (yukarı kesişim). <b>-1</b> = satış sinyali (aşağı kesişim).
+            <br><i>Örnek: MACD Sinyal &gt; 0 → MACD alış veren hisseler</i>
+          </div>
+          <div style="padding:8px;border-radius:6px;background:var(--card-bg);">
+            <div style="font-weight:700;color:var(--text-primary);margin-bottom:4px;">Fiyat &gt; EMA20</div>
+            Kısa vadeli trendin üstünde olan hisseler. <b>1</b> = fiyat EMA20'nin üstünde. Kısa vadeli yükseliş trendi.
+            <br><i>Örnek: Fiyat &gt; EMA20 &gt; 0 → Kısa vadeli yükselişte olanlar</i>
+          </div>
+          <div style="padding:8px;border-radius:6px;background:var(--card-bg);">
+            <div style="font-weight:700;color:var(--text-primary);margin-bottom:4px;">Fiyat &gt; EMA50</div>
+            Orta vadeli trendin üstünde olan hisseler. <b>1</b> = fiyat EMA50'nin üstünde. Orta vadeli yükseliş trendi.
+            <br><i>Örnek: Fiyat &gt; EMA50 &gt; 0 → Orta vadeli yükselişte olanlar</i>
+          </div>
+        </div>
+        <div style="margin-top:12px;padding:8px;border-radius:6px;background:var(--card-bg);border-left:3px solid var(--accent);">
+          <b>İpucu:</b> Birden fazla koşul ekleyerek daha hassas tarama yapabilirsiniz.
+          Örneğin: RSI &lt; 30 <b>VE</b> Hacim Oranı &gt; 1.5 → Aşırı satılan ama yüksek hacimli hisseler (potansiyel dönüş sinyali).
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="card mb-24">
     <div style="font-weight:700;margin-bottom:12px;">Koşullar</div>
     <div id="screenerConditions">
       <div class="condition-row">
-        <select class="sc-indicator">
-          <option value="rsi">RSI</option>
-          <option value="volume_ratio">Hacim Oranı</option>
-          <option value="atr_pct">ATR %</option>
-          <option value="ema_cross">EMA Cross</option>
-          <option value="breakout">Breakout</option>
-          <option value="macd_signal">MACD Sinyal</option>
-          <option value="price_above_ema20">Fiyat > EMA20</option>
-          <option value="price_above_ema50">Fiyat > EMA50</option>
+        <select class="sc-indicator" onchange="updateScreenerHint(this)">
+          <option value="rsi">RSI (0-100)</option>
+          <option value="volume_ratio">Hacim Oranı (x)</option>
+          <option value="atr_pct">ATR % (volatilite)</option>
+          <option value="ema_cross">EMA Cross (1/-1)</option>
+          <option value="breakout">Breakout (0/1)</option>
+          <option value="macd_signal">MACD Sinyal (1/-1)</option>
+          <option value="price_above_ema20">Fiyat > EMA20 (0/1)</option>
+          <option value="price_above_ema50">Fiyat > EMA50 (0/1)</option>
+          <option value="changePct">Günlük Değişim %</option>
+          <option value="price">Fiyat (TL)</option>
+          <option value="volume">Hacim (lot)</option>
+          <option value="gapPct">Gap %</option>
         </select>
         <select class="sc-operator">
-          <option value="<">&lt;</option>
           <option value=">">&gt;</option>
-          <option value="<=">&le;</option>
+          <option value="<">&lt;</option>
           <option value=">=">&ge;</option>
+          <option value="<=">&le;</option>
           <option value="==">=</option>
         </select>
         <input class="sc-value" placeholder="Değer" style="width:100px;">
@@ -510,6 +592,13 @@ tr:hover td { background: rgba(26,34,52,0.5); }
         <option value="">Tüm Sektörler</option>
       </select>
       <button class="btn btn-primary" onclick="runScreener()">Tara 🔍</button>
+    </div>
+    <!-- Hazır tarama şablonları -->
+    <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn btn-sm" style="font-size:11px;background:rgba(16,185,129,0.1);color:var(--green);border:1px solid rgba(16,185,129,0.3);" onclick="applyScreenerTemplate('oversold')">Aşırı Satım (RSI&lt;30)</button>
+      <button class="btn btn-sm" style="font-size:11px;background:rgba(239,68,68,0.1);color:var(--red);border:1px solid rgba(239,68,68,0.3);" onclick="applyScreenerTemplate('overbought')">Aşırı Alım (RSI&gt;70)</button>
+      <button class="btn btn-sm" style="font-size:11px;background:rgba(99,102,241,0.1);color:var(--accent);border:1px solid rgba(99,102,241,0.3);" onclick="applyScreenerTemplate('highvolume')">Yüksek Hacim</button>
+      <button class="btn btn-sm" style="font-size:11px;background:rgba(245,158,11,0.1);color:#F59E0B;border:1px solid rgba(245,158,11,0.3);" onclick="applyScreenerTemplate('breakout')">Kırılım</button>
     </div>
   </div>
 
@@ -864,15 +953,17 @@ async function loadIndices() {
   }
 
   const idx = data.indices;
-  const cards = Object.entries(idx).map(([key, val]) => `
-    <div class="index-card">
+  const currencyMap = {'GOLD':'$','SILVER':'$','USDTRY':'₺','EURTRY':'₺','GOLDTL':'₺','SILVERTL':'₺'};
+  const cards = Object.entries(idx).map(([key, val]) => {
+    const cur = currencyMap[key] || '';
+    return `<div class="index-card">
       <div class="label">${val.name}</div>
-      <div class="value">${fmtPrice(val.value)}</div>
+      <div class="value">${fmtPrice(val.value)} ${cur}</div>
       <div class="change ${changeClass(val.changePct)}">
-        ${val.change >= 0 ? '▲' : '▼'} ${fmtPrice(Math.abs(val.change))} (${fmtPct(val.changePct)})
+        ${(val.changePct||0) >= 0 ? '▲' : '▼'} ${fmtPct(val.changePct)}
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
   document.getElementById('indicesCards').innerHTML = cards;
 }
 
@@ -1037,74 +1128,107 @@ async function loadStockDetail(symbol) {
       <canvas id="priceChart"></canvas>
     </div>
 
-    <!-- Indicators Grid -->
-    <div class="section-title mb-16">Teknik İndikatörler</div>
-    <div class="indicator-grid mb-24 fade-in">
-      ${renderIndicator(ind.rsi)}
-      ${renderIndicator(ind.macd, 'MACD', ind.macd?.macd)}
-      ${renderIndicator(ind.bollinger, 'Bollinger', null)}
-      ${renderIndicator(ind.ema)}
-      ${renderIndicator(ind.stochastic, 'Stochastic', ind.stochastic?.k)}
-      ${renderIndicator(ind.atr)}
-      ${renderIndicator(ind.adx)}
-      ${renderIndicator(ind.cci)}
-      ${renderIndicator(ind.williamsR, 'Williams %R', ind.williamsR?.value)}
-      ${renderIndicator(ind.obv, 'OBV', ind.obv?.value)}
-      ${renderIndicator(ind.mfi)}
-      ${renderIndicator(ind.vwap)}
-      ${renderIndicator(ind.ichimoku, 'Ichimoku', ind.ichimoku?.tenkan)}
-      ${renderIndicator(ind.psar, 'Parabolic SAR', ind.psar?.value)}
-      ${renderIndicator(ind.roc, 'ROC (Momentum)', ind.roc?.value)}
-      ${renderIndicator(ind.aroon, 'Aroon', ind.aroon?.oscillator)}
-      ${renderIndicator(ind.trix, 'TRIX', ind.trix?.value)}
-      ${renderIndicator(ind.dmi, 'DMI', ind.dmi?.adx)}
+    <!-- Indicators Grid - Collapsible -->
+    <div class="card mb-24 fade-in">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:15px;">Teknik Indikatörler</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:2000px;padding-top:12px;">
+        <div class="indicator-grid">
+          ${renderIndicatorDetailed(ind.rsi, 'RSI', ind.rsi?.value, 'Göreceli Güç Endeksi. 0-100 arası. <30 aşırı satım (alış fırsatı), >70 aşırı alım (satış sinyali). 50 üzeri pozitif momentum.', 0, 100)}
+          ${renderIndicatorDetailed(ind.macd, 'MACD', ind.macd?.histogram, 'Hareketli Ortalama Yakınsama/Iraksama. Histogram pozitif → alış, negatif → satış. MACD çizgisi sinyal çizgisini yukarı keserse alış sinyali.', null, null, `MACD: ${ind.macd?.macd?.toFixed(2)||'-'} | Sinyal: ${ind.macd?.signal?.toFixed(2)||'-'}`)}
+          ${renderIndicatorDetailed(ind.bollinger, 'Bollinger Bantları', ind.bollinger?.bandwidth, 'Fiyat volatilitesini ölçer. Fiyat alt banda yakınsa → alış, üst banda yakınsa → satış. Bantlar daralıyorsa sert hareket beklenir.', null, null, `Üst: ${fmtPrice(ind.bollinger?.upper)} | Orta: ${fmtPrice(ind.bollinger?.middle)} | Alt: ${fmtPrice(ind.bollinger?.lower)}`)}
+          ${renderIndicatorDetailed(ind.ema, 'EMA', null, 'Üstel Hareketli Ortalama. Fiyat > EMA20 > EMA50 → güçlü yükseliş. Fiyat < EMA20 < EMA50 → güçlü düşüş.', null, null, `EMA20: ${fmtPrice(ind.ema?.ema20)} | EMA50: ${fmtPrice(ind.ema?.ema50)} ${ind.ema?.ema200 ? '| EMA200: '+fmtPrice(ind.ema.ema200) : ''}`)}
+          ${renderIndicatorDetailed(ind.stochastic, 'Stochastic', ind.stochastic?.k, 'Kapanış fiyatının belirli dönemdeki aralığa göre konumu. K<20 aşırı satım, K>80 aşırı alım.', 0, 100)}
+          ${renderIndicatorDetailed(ind.atr, 'ATR', ind.atr?.value, 'Ortalama Gerçek Aralık. Volatilite ölçer. Yüksek ATR = yüksek risk/fırsat. Stop-loss belirlemede kullanılır.', null, null, `Günlük ort. hareket: ${ind.atr?.pct?.toFixed(2)||'-'}%`)}
+          ${renderIndicatorDetailed(ind.adx, 'ADX', ind.adx?.value, 'Ortalama Yönsel Endeks. Trend gücünü ölçer. >25 güçlü trend, <20 trendsiz piyasa. +DI>-DI → yükseliş.', 0, 100, `+DI: ${ind.adx?.plusDI?.toFixed(1)||'-'} | -DI: ${ind.adx?.minusDI?.toFixed(1)||'-'}`)}
+          ${renderIndicatorDetailed(ind.cci, 'CCI', ind.cci?.value, 'Emtia Kanal Endeksi. >100 aşırı alım, <-100 aşırı satım. 0 çizgisi trend yönünü gösterir.', -200, 200)}
+          ${renderIndicatorDetailed(ind.williamsR, 'Williams %R', ind.williamsR?.value, 'Aşırı alım/satım göstergesi. -80 altı aşırı satım (alış), -20 üstü aşırı alım (satış).', -100, 0)}
+          ${renderIndicatorDetailed(ind.obv, 'OBV', null, 'Denge Hacmi. Fiyat yükselirken hacim artıyorsa → güçlü trend. Hacim düşerken fiyat yükseliyorsa → zayıf hareket.', null, null, `Hacim: ${ind.obv?.value || '-'} | Trend: ${ind.obv?.trend === 'up' ? '↑ Yükseliş' : '↓ Düşüş'}`)}
+          ${renderIndicatorDetailed(ind.mfi, 'MFI', ind.mfi?.value, 'Para Akış Endeksi. Hacim ağırlıklı RSI. <20 aşırı satım, >80 aşırı alım. Akıllı para takibi.', 0, 100)}
+          ${renderIndicatorDetailed(ind.vwap, 'VWAP', ind.vwap?.value, 'Hacim Ağırlıklı Ortalama Fiyat. Fiyat > VWAP → alıcılar güçlü. Fiyat < VWAP → satıcılar güçlü.', null, null, `VWAP: ${fmtPrice(ind.vwap?.value)} ₺`)}
+          ${renderIndicatorDetailed(ind.ichimoku, 'Ichimoku', null, 'Japon bulut sistemi. Fiyat bulutun üstünde → yükseliş, altında → düşüş. Tenkan>Kijun → alış sinyali.', null, null, `Tenkan: ${fmtPrice(ind.ichimoku?.tenkan)} | Kijun: ${fmtPrice(ind.ichimoku?.kijun)} | SpanA: ${fmtPrice(ind.ichimoku?.senkouA)} | SpanB: ${fmtPrice(ind.ichimoku?.senkouB)}`)}
+          ${renderIndicatorDetailed(ind.psar, 'Parabolic SAR', ind.psar?.value, 'Dur ve Geri Dön. Fiyat SAR üstünde → yükseliş trendi. Fiyat SAR altına inerse → trend dönüşü. Stop-loss seviyesi olarak kullanılır.', null, null, `SAR: ${fmtPrice(ind.psar?.value)} ₺ | Trend: ${ind.psar?.trend === 'up' ? '↑ Yükseliş' : '↓ Düşüş'}`)}
+          ${renderIndicatorDetailed(ind.roc, 'ROC (Momentum)', ind.roc?.value, 'Değişim Oranı. Fiyatın belirli dönem öncesine göre yüzde değişimi. >5 pozitif momentum, <-5 negatif momentum.', null, null, `${ind.roc?.period || 12} günlük değişim`)}
+          ${renderIndicatorDetailed(ind.aroon, 'Aroon', ind.aroon?.oscillator, 'Trend yönü ve gücü. Up>70 & Down<30 → güçlü yükseliş. Down>70 & Up<30 → güçlü düşüş.', -100, 100, `Up: ${ind.aroon?.up?.toFixed(0)||'-'} | Down: ${ind.aroon?.down?.toFixed(0)||'-'}`)}
+          ${renderIndicatorDetailed(ind.trix, 'TRIX', ind.trix?.value, 'Üçlü üstel ortalama. Sıfır üstü → yükseliş, sıfır altı → düşüş. Trend dönüşlerini erken yakalar.', null, null)}
+          ${renderIndicatorDetailed(ind.dmi, 'DMI', ind.dmi?.adx, 'Yönsel Hareket Endeksi. ADX>25 → güçlü trend. +DI>-DI → yükseliş trendi.', 0, 100, `+DI: ${ind.dmi?.plusDI?.toFixed(1)||'-'} | -DI: ${ind.dmi?.minusDI?.toFixed(1)||'-'}`)}
+        </div>
+      </div>
     </div>
 
-    <!-- AL/SAT Önerisi -->
+    <!-- AL/SAT Önerisi - Collapsible -->
     <div class="card mb-24 fade-in" style="border:2px solid var(--border);">
-      <div style="font-weight:700;margin-bottom:16px;font-size:16px;">📊 AL / SAT Önerisi</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:12px;">⚠️ Bu öneriler teknik indikatörlere dayanır, yatırım tavsiyesi değildir.</div>
-      ${renderRecommendation(s.recommendation)}
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:16px;">📊 AL / SAT Önerisi</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:2000px;">
+        <div style="font-size:11px;color:var(--text-muted);margin:8px 0 12px;">⚠️ Bu öneriler teknik indikatörlere dayanır, yatırım tavsiyesi değildir.</div>
+        ${renderRecommendation(s.recommendation)}
+      </div>
     </div>
 
-    <!-- Pivot Points & Fibonacci & S/R -->
+    <!-- Pivot Points & Fibonacci & S/R - Collapsible -->
     <div class="grid-2 grid-3col mb-24" style="grid-template-columns:repeat(3,1fr);">
       <div class="card fade-in">
-        <div style="font-weight:700;margin-bottom:12px;">Pivot Noktaları</div>
-        ${renderPivotPoints(s.pivotPoints)}
+        <div class="collapsible-header" onclick="toggleSection(this)">
+          <div style="font-weight:700;">Pivot Noktaları</div>
+          <span class="collapse-icon">▼</span>
+        </div>
+        <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+          ${renderPivotPoints(s.pivotPoints)}
+        </div>
       </div>
       <div class="card fade-in">
-        <div style="font-weight:700;margin-bottom:12px;">Fibonacci Seviyeleri</div>
-        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">${s.fibonacci?.currentZone || ''}</div>
-        ${renderFibonacci(s.fibonacci)}
+        <div class="collapsible-header" onclick="toggleSection(this)">
+          <div style="font-weight:700;">Fibonacci Seviyeleri</div>
+          <span class="collapse-icon">▼</span>
+        </div>
+        <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">${s.fibonacci?.currentZone || ''}</div>
+          ${s.fibonacci?.description ? '<div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;line-height:1.5;">' + s.fibonacci.description.split(' | ').join('<br>') + '</div>' : ''}
+          ${renderFibonacci(s.fibonacci)}
+        </div>
       </div>
       <div class="card fade-in">
-        <div style="font-weight:700;margin-bottom:12px;">Destek / Direnç</div>
-        ${renderSR(s.supportResistance)}
+        <div class="collapsible-header" onclick="toggleSection(this)">
+          <div style="font-weight:700;">Destek / Direnç</div>
+          <span class="collapse-icon">▼</span>
+        </div>
+        <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+          ${renderSR(s.supportResistance)}
+        </div>
       </div>
     </div>
 
-    <!-- Fundamentals -->
+    <!-- Fundamentals - Collapsible -->
     <div class="card mb-24 fade-in">
-      <div style="font-weight:700;margin-bottom:12px;">Temel Veriler</div>
-      <div class="grid-4">
-        <div><span style="font-size:11px;color:var(--text-muted);">F/K</span><div class="td-mono">${s.peRatio || '-'}</div></div>
-        <div><span style="font-size:11px;color:var(--text-muted);">PD/DD</span><div class="td-mono">${s.pbRatio || '-'}</div></div>
-        <div><span style="font-size:11px;color:var(--text-muted);">Temettü Verimi</span><div class="td-mono">${s.dividendYield ? s.dividendYield + '%' : '-'}</div></div>
-        <div><span style="font-size:11px;color:var(--text-muted);">Beta</span><div class="td-mono">${s.beta || '-'}</div></div>
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;">Temel Veriler</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+        ${renderFundamentals(s.fundamentals, s)}
       </div>
     </div>
 
     <!-- Events -->
     ${events.dividends && events.dividends.length > 0 ? `
     <div class="card mb-24 fade-in">
-      <div style="font-weight:700;margin-bottom:12px;">Temettü Geçmişi</div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Tarih</th><th>Tutar</th></tr></thead>
-        <tbody>${events.dividends.slice(-10).reverse().map(d =>
-          `<tr><td>${d.date}</td><td class="td-mono">${fmtPrice(d.amount)} ₺</td></tr>`
-        ).join('')}</tbody>
-      </table></div>
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;">Temettü Geçmişi</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+        <div class="table-wrap"><table>
+          <thead><tr><th>Tarih</th><th>Tutar</th></tr></thead>
+          <tbody>${events.dividends.slice(-10).reverse().map(d =>
+            `<tr><td>${d.date}</td><td class="td-mono">${fmtPrice(d.amount)} ₺</td></tr>`
+          ).join('')}</tbody>
+        </table></div>
+      </div>
     </div>` : ''}
   `;
 
@@ -1135,6 +1259,12 @@ async function loadStockDetailWithPeriod(symbol, period) {
   navigate('stock', { symbol });
 }
 
+function toggleSection(header) {
+  header.classList.toggle('collapsed');
+  const body = header.nextElementSibling;
+  body.classList.toggle('collapsed');
+}
+
 function renderIndicator(ind, nameOverride, valueOverride) {
   if (!ind) return '';
   const name = nameOverride || ind.name || '';
@@ -1151,15 +1281,95 @@ function renderIndicator(ind, nameOverride, valueOverride) {
   `;
 }
 
-function renderFibonacci(fib) {
-  if (!fib || !fib.levels) return '<div style="color:var(--text-muted);font-size:13px;">Veri yok</div>';
-  return Object.entries(fib.levels).map(([key, val]) => `
-    <div class="fib-bar">
-      <div class="fib-label">${key}%</div>
-      <div class="fib-line"></div>
-      <div class="fib-value">${fmtPrice(val)}</div>
+function renderIndicatorDetailed(ind, name, value, description, rangeMin, rangeMax, extraInfo) {
+  if (!ind) return '';
+  const sig = ind.signal || ind.signalType || 'neutral';
+  const displayVal = value !== undefined && value !== null ? value : ind.value;
+  const sigClass = sig === 'buy' ? 'signal-buy' : (sig === 'sell' ? 'signal-sell' : 'signal-neutral');
+  const sigText = sig === 'buy' ? 'ALIŞ' : (sig === 'sell' ? 'SATIŞ' : 'NÖTR');
+  const sigColor = sig === 'buy' ? 'var(--green)' : (sig === 'sell' ? 'var(--red)' : 'var(--text-muted)');
+
+  let barHtml = '';
+  if (rangeMin !== null && rangeMax !== null && displayVal != null) {
+    const pct = Math.max(0, Math.min(100, ((displayVal - rangeMin) / (rangeMax - rangeMin)) * 100));
+    const barColor = sig === 'buy' ? 'var(--green)' : (sig === 'sell' ? 'var(--red)' : 'var(--accent)');
+    barHtml = `<div class="ind-bar"><div class="ind-bar-fill" style="width:${pct}%;background:${barColor};"></div></div>`;
+  }
+
+  return `
+    <div class="indicator-card ${sigClass}">
+      <div class="flex-between" style="margin-bottom:4px;">
+        <div class="ind-name" style="margin-bottom:0;">${name}</div>
+        <span style="font-size:10px;font-weight:700;color:${sigColor};padding:2px 6px;border-radius:4px;background:${sig==='buy'?'var(--green-bg)':(sig==='sell'?'var(--red-bg)':'rgba(255,255,255,0.05)')};">${sigText}</span>
+      </div>
+      <div class="ind-value">${displayVal != null ? (typeof displayVal === 'number' ? displayVal.toFixed(2) : displayVal) : '-'}</div>
+      ${extraInfo ? '<div style="font-size:11px;color:var(--accent);margin-top:4px;font-family:var(--font-mono);">' + extraInfo + '</div>' : ''}
+      ${barHtml}
+      <div class="ind-detail">${description || ''}</div>
     </div>
-  `).join('');
+  `;
+}
+
+function renderFundamentals(fund, stock) {
+  if (!fund || Object.keys(fund).length === 0) {
+    return '<div style="color:var(--text-muted);font-size:13px;">Veri hesaplanıyor...</div>';
+  }
+  let html = '<div class="grid-4" style="gap:16px;">';
+  const items = [
+    {label:'Volatilite (Yıllık)', value: fund.volatility ? '%'+fund.volatility : '-', desc:'Fiyat dalgalanma oranı'},
+    {label:'Beta', value: fund.beta || '-', desc:'Piyasaya göre risk'},
+    {label:'Ort. Hacim (20G)', value: fund.avgVolume20 ? fmtVolume(fund.avgVolume20) : '-', desc:'Son 20 gün ort.'},
+    {label:'Ort. Hacim (60G)', value: fund.avgVolume60 ? fmtVolume(fund.avgVolume60) : '-', desc:'Son 60 gün ort.'},
+    {label:'Ort. Günlük Aralık', value: fund.avgDailyRange ? fmtPrice(fund.avgDailyRange) + ' ₺' : '-', desc: fund.avgDailyRangePct ? '%'+fund.avgDailyRangePct : ''},
+    {label:'52H Tepeden Uzaklık', value: fund.distFromHigh52w ? '%'+fund.distFromHigh52w : '-', desc:'52 hafta zirvesinden'},
+    {label:'52H Dipten Uzaklık', value: fund.distFromLow52w ? '%'+fund.distFromLow52w : '-', desc:'52 hafta dibinden'},
+    {label:'Ort. İşlem Hacmi', value: fund.avgTurnover ? fmtVolume(fund.avgTurnover) + ' ₺' : '-', desc:'Günlük TL hacim'},
+  ];
+  items.forEach(item => {
+    html += `<div style="padding:8px 0;">
+      <div style="font-size:11px;color:var(--text-muted);">${item.label}</div>
+      <div class="td-mono" style="font-size:15px;margin-top:2px;">${item.value}</div>
+      ${item.desc ? '<div style="font-size:10px;color:var(--text-muted);">'+item.desc+'</div>' : ''}
+    </div>`;
+  });
+  html += '</div>';
+
+  // Getiriler
+  if (fund.returns && Object.keys(fund.returns).length > 0) {
+    html += '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">';
+    html += '<div style="font-size:12px;font-weight:600;margin-bottom:8px;">Dönemsel Getiri</div>';
+    html += '<div class="flex-center gap-16" style="flex-wrap:wrap;">';
+    Object.entries(fund.returns).forEach(([period, ret]) => {
+      const color = ret >= 0 ? 'var(--green)' : 'var(--red)';
+      html += `<div style="text-align:center;min-width:60px;">
+        <div style="font-size:11px;color:var(--text-muted);">${period}</div>
+        <div style="font-family:var(--font-mono);font-size:14px;font-weight:700;color:${color};">${ret >= 0 ? '+' : ''}%${ret}</div>
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+  return html;
+}
+
+function renderFibonacci(fib) {
+  if (!fib || !fib.levels || Object.keys(fib.levels).length === 0) return '<div style="color:var(--text-muted);font-size:13px;">Veri yok</div>';
+  const hi = fib.high || 0;
+  const lo = fib.low || 0;
+  const range = hi - lo;
+  return Object.entries(fib.levels).map(([key, val]) => {
+    const pct = range > 0 ? ((val - lo) / range * 100) : 50;
+    const isNearSupport = fib.nearestSupport && Math.abs(val - fib.nearestSupport.price) < 0.01;
+    const isNearResistance = fib.nearestResistance && Math.abs(val - fib.nearestResistance.price) < 0.01;
+    const labelColor = isNearSupport ? 'var(--green)' : (isNearResistance ? 'var(--red)' : 'var(--text-muted)');
+    const valColor = isNearSupport ? 'var(--green)' : (isNearResistance ? 'var(--red)' : 'inherit');
+    return `<div class="fib-bar">
+      <div class="fib-label" style="color:${labelColor};">${key}</div>
+      <div class="fib-line">
+        <div style="position:absolute;left:${pct}%;top:-3px;width:8px;height:8px;background:var(--accent);border-radius:50%;transform:translateX(-50%);"></div>
+      </div>
+      <div class="fib-value" style="color:${valColor};">${fmtPrice(val)} ₺</div>
+    </div>`;
+  }).join('');
 }
 
 function renderSR(sr) {
@@ -1259,10 +1469,10 @@ function renderRecommendation(rec) {
   if (!rec) return '<div style="color:var(--text-muted);font-size:13px;">Veri yok</div>';
   const actionColor = (a) => {
     if (!a) return 'var(--text-muted)';
-    if (a.includes('AL') && !a.includes('SAT')) return 'var(--green)';
-    if (a.includes('SAT') && !a.includes('AL')) return 'var(--red)';
-    if (a.includes('TUTUN/AL')) return '#4CAF50';
-    if (a.includes('TUTUN/SAT')) return '#FF9800';
+    if (a === 'AL') return 'var(--green)';
+    if (a === 'SAT') return 'var(--red)';
+    if (a === 'TUTUN/AL') return '#4CAF50';
+    if (a === 'TUTUN/SAT') return '#FF9800';
     return 'var(--text-secondary)';
   };
   const actionIcon = (a) => {
@@ -1273,24 +1483,72 @@ function renderRecommendation(rec) {
     if (a === 'TUTUN/SAT') return '🟠';
     return '⚪';
   };
+  const actionDesc = (a) => {
+    if (a === 'AL') return 'Teknik göstergeler güçlü alış sinyali veriyor';
+    if (a === 'SAT') return 'Teknik göstergeler satış yönünde';
+    if (a === 'TUTUN/AL') return 'Hafif pozitif, alış yönünde eğilim var';
+    if (a === 'TUTUN/SAT') return 'Hafif negatif, dikkatli olunmalı';
+    return 'Belirgin bir yön sinyali yok';
+  };
   let html = '';
   [['weekly','Haftalık'],['monthly','Aylık'],['yearly','Yıllık']].forEach(([key, label]) => {
     const r = rec[key];
     if (!r) return;
     const conf = r.confidence || 0;
-    html += `<div style="padding:12px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;background:var(--card-bg);">
+    const kl = r.keyLevels || {};
+
+    html += `<div style="padding:14px;border:1px solid var(--border);border-radius:10px;margin-bottom:12px;background:var(--card-bg);">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <span style="font-weight:700;font-size:13px;">${label}</span>
-        <span style="font-size:18px;font-weight:800;color:${actionColor(r.action)};">${actionIcon(r.action)} ${r.action || 'NOTR'}</span>
+        <span style="font-weight:700;font-size:14px;">${label}</span>
+        <span style="font-size:20px;font-weight:800;color:${actionColor(r.action)};">${actionIcon(r.action)} ${r.action || 'NOTR'}</span>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
-          <div style="width:${conf}%;height:100%;background:${actionColor(r.action)};border-radius:3px;"></div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">${actionDesc(r.action)}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <div style="flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden;">
+          <div style="width:${conf}%;height:100%;background:${actionColor(r.action)};border-radius:4px;"></div>
         </div>
-        <span style="font-size:11px;color:var(--text-muted);">%${conf.toFixed ? conf.toFixed(0) : conf} güven</span>
-      </div>
-      ${r.reasons && r.reasons.length ? '<div style="font-size:11px;color:var(--text-secondary);line-height:1.6;">' + r.reasons.map(x => '• ' + x).join('<br>') + '</div>' : ''}
-    </div>`;
+        <span style="font-size:12px;font-weight:600;color:var(--text-muted);">%${conf.toFixed ? conf.toFixed(0) : conf}</span>
+      </div>`;
+
+    // Strateji kutusu
+    if (r.strategy) {
+      html += `<div style="background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.2);border-radius:8px;padding:10px;margin-bottom:10px;">
+        <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:4px;">STRATEJİ</div>
+        <div style="font-size:12px;color:var(--text-primary);line-height:1.6;">${r.strategy.split(' | ').map(s => '→ ' + s).join('<br>')}</div>
+      </div>`;
+    }
+
+    // Onemli seviyeler
+    if (kl.supports?.length || kl.resistances?.length) {
+      html += '<div style="display:flex;gap:12px;margin-bottom:10px;flex-wrap:wrap;">';
+      if (kl.supports?.length) {
+        html += '<div style="flex:1;min-width:120px;padding:8px;border-radius:6px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);">';
+        html += '<div style="font-size:10px;font-weight:700;color:var(--green);margin-bottom:4px;">DESTEK</div>';
+        kl.supports.forEach(s => { html += '<div style="font-family:var(--font-mono);font-size:12px;color:var(--green);">' + fmtPrice(s) + ' ₺</div>'; });
+        html += '</div>';
+      }
+      if (kl.resistances?.length) {
+        html += '<div style="flex:1;min-width:120px;padding:8px;border-radius:6px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);">';
+        html += '<div style="font-size:10px;font-weight:700;color:var(--red);margin-bottom:4px;">DİRENÇ</div>';
+        kl.resistances.forEach(r2 => { html += '<div style="font-family:var(--font-mono);font-size:12px;color:var(--red);">' + fmtPrice(r2) + ' ₺</div>'; });
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    // Nedenler
+    if (r.reasons && r.reasons.length) {
+      html += '<div style="font-size:11px;color:var(--text-secondary);line-height:1.7;border-top:1px solid var(--border);padding-top:8px;">';
+      r.reasons.forEach(reason => {
+        let icon = '•';
+        if (reason.toLowerCase().includes('alis') || reason.toLowerCase().includes('uzerinde') || reason.toLowerCase().includes('yukari') || reason.toLowerCase().includes('pozitif')) icon = '<span style="color:var(--green);">▲</span>';
+        else if (reason.toLowerCase().includes('satis') || reason.toLowerCase().includes('altinda') || reason.toLowerCase().includes('asagi') || reason.toLowerCase().includes('negatif') || reason.toLowerCase().includes('dusus')) icon = '<span style="color:var(--red);">▼</span>';
+        html += icon + ' ' + reason + '<br>';
+      });
+      html += '</div>';
+    }
+
+    html += '</div>';
   });
   return html;
 }
@@ -1379,27 +1637,64 @@ function addScreenerCondition() {
   const row = document.createElement('div');
   row.className = 'condition-row';
   row.innerHTML = `
-    <select class="sc-indicator">
-      <option value="rsi">RSI</option>
-      <option value="volume_ratio">Hacim Oranı</option>
-      <option value="atr_pct">ATR %</option>
-      <option value="ema_cross">EMA Cross</option>
-      <option value="breakout">Breakout</option>
-      <option value="macd_signal">MACD Sinyal</option>
-      <option value="price_above_ema20">Fiyat > EMA20</option>
-      <option value="price_above_ema50">Fiyat > EMA50</option>
+    <select class="sc-indicator" onchange="updateScreenerHint(this)">
+      <option value="rsi">RSI (0-100)</option>
+      <option value="volume_ratio">Hacim Oranı (x)</option>
+      <option value="atr_pct">ATR % (volatilite)</option>
+      <option value="ema_cross">EMA Cross (1/-1)</option>
+      <option value="breakout">Breakout (0/1)</option>
+      <option value="macd_signal">MACD Sinyal (1/-1)</option>
+      <option value="price_above_ema20">Fiyat > EMA20 (0/1)</option>
+      <option value="price_above_ema50">Fiyat > EMA50 (0/1)</option>
+      <option value="changePct">Günlük Değişim %</option>
+      <option value="price">Fiyat (TL)</option>
+      <option value="volume">Hacim (lot)</option>
+      <option value="gapPct">Gap %</option>
     </select>
     <select class="sc-operator">
-      <option value="<">&lt;</option>
       <option value=">">&gt;</option>
-      <option value="<=">&le;</option>
+      <option value="<">&lt;</option>
       <option value=">=">&ge;</option>
+      <option value="<=">&le;</option>
       <option value="==">=</option>
     </select>
     <input class="sc-value" placeholder="Değer" style="width:100px;">
     <button class="remove-condition" onclick="this.parentElement.remove()">✕</button>
   `;
   document.getElementById('screenerConditions').appendChild(row);
+}
+
+function applyScreenerTemplate(tpl) {
+  const container = document.getElementById('screenerConditions');
+  container.innerHTML = '';
+  const templates = {
+    'oversold': [{indicator:'rsi',operator:'<',value:'30'}],
+    'overbought': [{indicator:'rsi',operator:'>',value:'70'}],
+    'highvolume': [{indicator:'volume_ratio',operator:'>',value:'2'}],
+    'breakout': [{indicator:'breakout',operator:'>',value:'0'},{indicator:'volume_ratio',operator:'>',value:'1.5'}],
+  };
+  const conditions = templates[tpl] || [];
+  conditions.forEach(c => {
+    addScreenerCondition();
+    const rows = container.querySelectorAll('.condition-row');
+    const lastRow = rows[rows.length - 1];
+    lastRow.querySelector('.sc-indicator').value = c.indicator;
+    lastRow.querySelector('.sc-operator').value = c.operator;
+    lastRow.querySelector('.sc-value').value = c.value;
+  });
+  if (conditions.length === 0) addScreenerCondition();
+}
+
+function updateScreenerHint(select) {
+  // Placeholder hint based on selected indicator
+  const hints = {
+    'rsi': 'Örn: 30', 'volume_ratio': 'Örn: 2', 'atr_pct': 'Örn: 3',
+    'ema_cross': '1 veya -1', 'breakout': '0 veya 1', 'macd_signal': '1 veya -1',
+    'price_above_ema20': '0 veya 1', 'price_above_ema50': '0 veya 1',
+    'changePct': 'Örn: 5', 'price': 'Örn: 100', 'volume': 'Örn: 1000000', 'gapPct': 'Örn: 2'
+  };
+  const input = select.parentElement.querySelector('.sc-value');
+  if (input) input.placeholder = hints[select.value] || 'Değer';
 }
 
 async function runScreener() {

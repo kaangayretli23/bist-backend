@@ -124,7 +124,9 @@ SECTOR_MAP = {
 INDEX_TICKERS = {
     'XU100':('XU100.IS','BIST 100'),'XU030':('XU030.IS','BIST 30'),
     'XBANK':('XBANK.IS','Bankacilik'),'USDTRY':('USDTRY=X','USD/TRY'),
-    'GOLD':('GC=F','Altin'),
+    'GOLD':('GC=F','Altin (USD)'),
+    'SILVER':('SI=F','Gumus (USD)'),
+    'EURTRY':('EURTRY=X','EUR/TRY'),
 }
 
 # =====================================================================
@@ -723,15 +725,93 @@ def calc_support_resistance(hist):
 
 def calc_fibonacci(hist):
     try:
-        c=hist['Close'].values.astype(float); n=min(90,len(c)); r=c[-n:]
-        hi,lo=float(np.max(r)),float(np.min(r)); d=hi-lo
-        levels={'0.0':sf(hi),'23.6':sf(hi-d*0.236),'38.2':sf(hi-d*0.382),'50.0':sf(hi-d*0.5),'61.8':sf(hi-d*0.618),'78.6':sf(hi-d*0.786),'100.0':sf(lo)}
-        cur=float(c[-1]); zone="Belirsiz"
-        lk,lv=list(levels.keys()),list(levels.values())
-        for i in range(len(lv)-1):
-            if cur<=lv[i] and cur>=lv[i+1]: zone=f"{lk[i]}%-{lk[i+1]}%"; break
-        return {'levels':levels,'high':sf(hi),'low':sf(lo),'currentZone':zone}
-    except: return {'levels':{},'currentZone':'-'}
+        c=hist['Close'].values.astype(float)
+        h=hist['High'].values.astype(float)
+        l=hist['Low'].values.astype(float)
+
+        # Birden fazla periyot dene: 90, 60, 30, tum veri
+        for lookback in [90, 60, 30, len(c)]:
+            n=min(lookback, len(c))
+            if n < 5: continue
+            rc, rh, rl = c[-n:], h[-n:], l[-n:]
+            hi = float(np.max(rh))
+            lo = float(np.min(rl))
+            d = hi - lo
+            if d > 0: break
+        else:
+            return {'levels':{},'currentZone':'-','trend':'-','description':'Yeterli veri yok'}
+
+        # Trend yonu belirle
+        mid_idx = n // 2
+        first_half_avg = float(np.mean(rc[:mid_idx]))
+        second_half_avg = float(np.mean(rc[mid_idx:]))
+        trend = 'yukari' if second_half_avg > first_half_avg else 'asagi'
+
+        # Yukari trendde: dip->tepe (retracement), asagi trendde: tepe->dip
+        if trend == 'yukari':
+            levels = {
+                '0.0 (Tepe)': sf(hi),
+                '23.6': sf(hi - d * 0.236),
+                '38.2': sf(hi - d * 0.382),
+                '50.0': sf(hi - d * 0.5),
+                '61.8': sf(hi - d * 0.618),
+                '78.6': sf(hi - d * 0.786),
+                '100.0 (Dip)': sf(lo)
+            }
+        else:
+            levels = {
+                '0.0 (Dip)': sf(lo),
+                '23.6': sf(lo + d * 0.236),
+                '38.2': sf(lo + d * 0.382),
+                '50.0': sf(lo + d * 0.5),
+                '61.8': sf(lo + d * 0.618),
+                '78.6': sf(lo + d * 0.786),
+                '100.0 (Tepe)': sf(hi)
+            }
+
+        cur = float(c[-1])
+        zone = "Belirsiz"
+        lk = list(levels.keys())
+        lv = list(levels.values())
+        sorted_vals = sorted([(lk[i], lv[i]) for i in range(len(lv))], key=lambda x: -x[1])
+
+        for i in range(len(sorted_vals) - 1):
+            if cur <= sorted_vals[i][1] and cur >= sorted_vals[i+1][1]:
+                zone = f"{sorted_vals[i][0]} - {sorted_vals[i+1][0]}"
+                break
+
+        # Destek ve direnc seviyeleri
+        nearest_support = None
+        nearest_resistance = None
+        for k, v in sorted(levels.items(), key=lambda x: x[1]):
+            if v < cur:
+                nearest_support = {'level': k, 'price': v}
+            elif v > cur and nearest_resistance is None:
+                nearest_resistance = {'level': k, 'price': v}
+
+        # Aciklama olustur
+        desc_parts = [f"Son {n} barda analiz"]
+        desc_parts.append(f"Trend: {'Yukari' if trend == 'yukari' else 'Asagi'}")
+        desc_parts.append(f"Aralik: {sf(lo)} - {sf(hi)} ({sf(d)} TL fark)")
+        if nearest_support:
+            desc_parts.append(f"En yakin destek: {nearest_support['price']} TL ({nearest_support['level']})")
+        if nearest_resistance:
+            desc_parts.append(f"En yakin direnc: {nearest_resistance['price']} TL ({nearest_resistance['level']})")
+        pos_pct = sf((cur - lo) / d * 100) if d > 0 else 50
+        desc_parts.append(f"Fiyat araliktaki konum: %{pos_pct}")
+
+        return {
+            'levels': levels, 'high': sf(hi), 'low': sf(lo),
+            'currentZone': zone, 'trend': trend,
+            'nearestSupport': nearest_support,
+            'nearestResistance': nearest_resistance,
+            'positionPct': pos_pct,
+            'lookbackBars': n,
+            'description': ' | '.join(desc_parts)
+        }
+    except Exception as e:
+        print(f"  [FIB] Hata: {e}")
+        return {'levels':{},'currentZone':'-','trend':'-','description':'Hesaplama hatasi'}
 
 def calc_williams_r(closes, highs, lows, period=14):
     if len(closes)<period: return {'name':'Williams %R','value':-50,'signal':'neutral'}
@@ -879,86 +959,252 @@ def calc_dmi(highs, lows, closes, period=14):
     return {'name':'DMI','diPlus':diP,'diMinus':diM,'adx':sf(dx),'signal':sig}
 
 def calc_recommendation(hist, indicators):
-    """Haftalik/Aylik/Yillik al-sat onerisi"""
+    """Haftalik/Aylik/Yillik al-sat onerisi - destek/direnc yorumlu"""
     try:
         c=hist['Close'].values.astype(float)
         h=hist['High'].values.astype(float)
         l=hist['Low'].values.astype(float)
         v=hist['Volume'].values.astype(float)
         n=len(c)
+        cur=float(c[-1])
         recommendations={}
 
+        # Destek/direnc hesapla (tum periyotlar icin ortak)
+        sr = calc_support_resistance(hist)
+        supports = sr.get('supports', [])
+        resistances = sr.get('resistances', [])
+        fib = calc_fibonacci(hist)
+        fib_sup = fib.get('nearestSupport')
+        fib_res = fib.get('nearestResistance')
+
+        # Bollinger bantlari
+        bb = calc_bollinger(c, cur)
+        bb_upper = bb.get('upper', 0)
+        bb_lower = bb.get('lower', 0)
+        bb_middle = bb.get('middle', 0)
+
         for label, days in [('weekly',5),('monthly',22),('yearly',252)]:
-            if n<days+14: recommendations[label]={'action':'neutral','confidence':0,'reasons':[],'score':0}; continue
+            if n<days+14: recommendations[label]={'action':'neutral','confidence':0,'reasons':[],'score':0,'strategy':'Yeterli veri yok'}; continue
 
             sl=slice(-days,None)
             sc=c[sl]; sh=h[sl]; slow=l[sl]; sv=v[sl]
 
-            score=0; reasons=[]
+            score=0; reasons=[]; strategy_parts=[]
 
             # 1. Trend (SMA)
             sma20=np.mean(c[-20:]) if n>=20 else c[-1]
             sma50=np.mean(c[-50:]) if n>=50 else sma20
-            if c[-1]>sma20: score+=1; reasons.append(f'Fiyat SMA20 uzerinde ({sf(sma20)})')
-            else: score-=1; reasons.append(f'Fiyat SMA20 altinda ({sf(sma20)})')
+            sma200=np.mean(c[-200:]) if n>=200 else sma50
+            if cur>sma20: score+=1; reasons.append(f'Fiyat ({sf(cur)}) SMA20 ({sf(sma20)}) uzerinde')
+            else: score-=1; reasons.append(f'Fiyat ({sf(cur)}) SMA20 ({sf(sma20)}) altinda')
 
-            if sma20>sma50: score+=1; reasons.append('SMA20 > SMA50 (yukari trend)')
-            else: score-=1; reasons.append('SMA20 < SMA50 (asagi trend)')
+            if sma20>sma50: score+=1; reasons.append(f'SMA20 ({sf(sma20)}) > SMA50 ({sf(sma50)}) → Yukari trend')
+            else: score-=1; reasons.append(f'SMA20 ({sf(sma20)}) < SMA50 ({sf(sma50)}) → Asagi trend')
 
             # 2. RSI
             rsi_val=calc_rsi(c)
-            if rsi_val.get('value',50)<30: score+=2; reasons.append(f'RSI asiri satim ({rsi_val["value"]})')
-            elif rsi_val.get('value',50)>70: score-=2; reasons.append(f'RSI asiri alim ({rsi_val["value"]})')
-            elif rsi_val.get('value',50)<50: score-=0.5
-            else: score+=0.5
+            rsi_v = rsi_val.get('value', 50)
+            if rsi_v<30: score+=2; reasons.append(f'RSI={sf(rsi_v)}: Asiri satim bolgesi (<30) → Alis firsati olabilir')
+            elif rsi_v<40: score+=1; reasons.append(f'RSI={sf(rsi_v)}: Zayif bolge (30-40) → Toparlanma bekleniyor')
+            elif rsi_v>70: score-=2; reasons.append(f'RSI={sf(rsi_v)}: Asiri alim bolgesi (>70) → Kar realizasyonu bekleniyor')
+            elif rsi_v>60: score-=0.5; reasons.append(f'RSI={sf(rsi_v)}: Guclu bolge (60-70)')
+            elif rsi_v>=50: score+=0.5; reasons.append(f'RSI={sf(rsi_v)}: Notr-pozitif')
+            else: score-=0.5; reasons.append(f'RSI={sf(rsi_v)}: Notr-negatif')
 
             # 3. MACD
             macd=calc_macd(c)
-            if macd.get('signal')=='buy': score+=1.5; reasons.append('MACD alis sinyali')
-            elif macd.get('signal')=='sell': score-=1.5; reasons.append('MACD satis sinyali')
+            macd_type = macd.get('signalType', 'neutral')
+            macd_hist = macd.get('histogram', 0)
+            if macd_type=='buy':
+                score+=1.5
+                reasons.append(f'MACD alis sinyali (histogram: {macd_hist})')
+            elif macd_type=='sell':
+                score-=1.5
+                reasons.append(f'MACD satis sinyali (histogram: {macd_hist})')
 
             # 4. Bollinger
-            bb=calc_bollinger(c,float(c[-1]))
-            if bb.get('position')=='below': score+=1; reasons.append('Fiyat alt Bollinger bandinda')
-            elif bb.get('position')=='above': score-=1; reasons.append('Fiyat ust Bollinger bandinda')
+            if bb_lower > 0 and cur < bb_lower:
+                score+=1; reasons.append(f'Fiyat ({sf(cur)}) alt Bollinger bandinin ({sf(bb_lower)}) altinda → Toparlanma bekleniyor')
+            elif bb_upper > 0 and cur > bb_upper:
+                score-=1; reasons.append(f'Fiyat ({sf(cur)}) ust Bollinger bandinin ({sf(bb_upper)}) uzerinde → Geri cekilme bekleniyor')
+            elif bb_middle > 0:
+                if cur > bb_middle:
+                    reasons.append(f'Fiyat Bollinger orta bant ({sf(bb_middle)}) uzerinde')
+                else:
+                    reasons.append(f'Fiyat Bollinger orta bant ({sf(bb_middle)}) altinda')
 
             # 5. Hacim trendi
             if len(sv)>5:
                 vol_avg=np.mean(sv[-20:]) if len(sv)>=20 else np.mean(sv)
                 vol_recent=np.mean(sv[-5:])
-                if vol_recent>vol_avg*1.5: 
-                    if c[-1]>c[-5]: score+=1; reasons.append('Yukselen hacimle yukari hareket')
-                    else: score-=1; reasons.append('Yukselen hacimle dusus')
+                vol_ratio = vol_recent / vol_avg if vol_avg > 0 else 1
+                if vol_ratio > 1.5:
+                    if c[-1]>c[-5]: score+=1; reasons.append(f'Hacim ortalamanin {sf(vol_ratio)}x uzerinde + yukari hareket → Guclu alis')
+                    else: score-=1; reasons.append(f'Hacim ortalamanin {sf(vol_ratio)}x uzerinde + dusus → Guclu satis baskisi')
 
             # 6. Momentum (periyoda gore)
             if len(sc)>=days:
                 period_return=sf(((c[-1]-sc[0])/sc[0])*100)
-                if period_return>5: score+=1; reasons.append(f'{label} getiri: %{period_return}')
-                elif period_return<-5: score-=1; reasons.append(f'{label} getiri: %{period_return}')
+                if period_return>10: score+=1.5; reasons.append(f'{label} getiri: %{period_return} (guclu yukselis)')
+                elif period_return>5: score+=1; reasons.append(f'{label} getiri: %{period_return} (pozitif)')
+                elif period_return<-10: score-=1.5; reasons.append(f'{label} getiri: %{period_return} (sert dusus)')
+                elif period_return<-5: score-=1; reasons.append(f'{label} getiri: %{period_return} (negatif)')
 
             # 7. Stochastic
             stoch=calc_stochastic(c,h,l)
-            if stoch.get('signal')=='buy': score+=1; reasons.append('Stochastic alis bolgesi')
-            elif stoch.get('signal')=='sell': score-=1; reasons.append('Stochastic satis bolgesi')
+            stoch_k = stoch.get('k', 50)
+            if stoch_k<20: score+=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri satim bolgesi')
+            elif stoch_k>80: score-=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri alim bolgesi')
+
+            # 8. ADX - Trend gucu
+            adx_data = calc_adx(h, l, c)
+            adx_val = adx_data.get('value', 25)
+            if adx_val > 25:
+                trend_dir = 'yukari' if adx_data.get('plusDI', 0) > adx_data.get('minusDI', 0) else 'asagi'
+                reasons.append(f'ADX={sf(adx_val)}: Guclu {trend_dir} trend')
+                if trend_dir == 'yukari': score += 0.5
+                else: score -= 0.5
+
+            # 9. Destek/Direnc bazli yorumlar
+            if supports:
+                nearest_sup = supports[0]
+                sup_dist = sf(((cur - nearest_sup) / nearest_sup) * 100)
+                if float(sup_dist) < 2:
+                    score += 1
+                    reasons.append(f'Fiyat destege ({sf(nearest_sup)}) cok yakin (%{sup_dist}) → Destek bolgesi')
+                    strategy_parts.append(f'{sf(nearest_sup)} TL desteginden alis yapilabilir')
+                elif float(sup_dist) < 5:
+                    strategy_parts.append(f'{sf(nearest_sup)} TL destegine yaklasirsa alis firsati')
+
+            if resistances:
+                nearest_res = resistances[0]
+                res_dist = sf(((nearest_res - cur) / cur) * 100)
+                if float(res_dist) < 2:
+                    score -= 1
+                    reasons.append(f'Fiyat dirence ({sf(nearest_res)}) cok yakin (%{res_dist}) → Satis baskisi')
+                    strategy_parts.append(f'{sf(nearest_res)} TL direncinde satis/kar realizasyonu')
+                elif float(res_dist) < 5:
+                    strategy_parts.append(f'{sf(nearest_res)} TL direncini kirarsa alis guclenir')
+
+            # 10. Fibonacci bazli yorumlar
+            if fib_sup and fib_sup.get('price'):
+                fib_sup_dist = sf(((cur - fib_sup['price']) / cur) * 100)
+                if float(fib_sup_dist) < 3:
+                    strategy_parts.append(f"Fibonacci {fib_sup['level']} destegi ({fib_sup['price']} TL) yakininda")
+            if fib_res and fib_res.get('price'):
+                fib_res_dist = sf(((fib_res['price'] - cur) / cur) * 100)
+                if float(fib_res_dist) < 3:
+                    strategy_parts.append(f"Fibonacci {fib_res['level']} direnci ({fib_res['price']} TL) yakininda")
 
             # Sonuc
-            max_score=9.5
+            max_score=12.0
             conf=min(abs(score)/max_score*100, 100)
-            if score>=2.5: action='AL'
-            elif score>=1: action='TUTUN/AL'
-            elif score<=-2.5: action='SAT'
-            elif score<=-1: action='TUTUN/SAT'
+            if score>=3: action='AL'
+            elif score>=1.5: action='TUTUN/AL'
+            elif score<=-3: action='SAT'
+            elif score<=-1.5: action='TUTUN/SAT'
             else: action='NOTR'
+
+            # Strateji olustur
+            if not strategy_parts:
+                if action == 'AL':
+                    strategy_parts.append('Teknik gostergeler alis yonunde')
+                    if supports: strategy_parts.append(f'Stop-loss: {sf(supports[0])} TL altinda')
+                    if resistances: strategy_parts.append(f'Hedef: {sf(resistances[0])} TL')
+                elif action == 'SAT':
+                    strategy_parts.append('Teknik gostergeler satis yonunde')
+                    if resistances: strategy_parts.append(f'{sf(resistances[0])} TL direnci asagi sari')
+                    if supports: strategy_parts.append(f'{sf(supports[0])} TL destegi kirilirsa satis guclenir')
+                else:
+                    strategy_parts.append('Belirgin bir sinyal yok, bekle-gor stratejisi')
 
             recommendations[label]={
                 'action':action,'score':sf(score),'confidence':sf(conf),
-                'reasons':reasons[:5]  # en fazla 5 neden
+                'reasons':reasons[:8],
+                'strategy': ' | '.join(strategy_parts[:4]),
+                'keyLevels': {
+                    'supports': supports[:3],
+                    'resistances': resistances[:3],
+                    'sma20': sf(sma20),
+                    'sma50': sf(sma50),
+                    'bollingerUpper': sf(bb_upper),
+                    'bollingerLower': sf(bb_lower),
+                }
             }
 
         return recommendations
     except Exception as e:
         print(f"  [REC] Hata: {e}")
-        return {'weekly':{'action':'neutral','confidence':0,'reasons':[]},'monthly':{'action':'neutral','confidence':0,'reasons':[]},'yearly':{'action':'neutral','confidence':0,'reasons':[]}}
+        return {'weekly':{'action':'neutral','confidence':0,'reasons':[],'strategy':''},'monthly':{'action':'neutral','confidence':0,'reasons':[],'strategy':''},'yearly':{'action':'neutral','confidence':0,'reasons':[],'strategy':''}}
+
+def calc_fundamentals(hist, symbol):
+    """Temel verileri mevcut fiyat/hacim verisinden hesapla"""
+    try:
+        c = hist['Close'].values.astype(float)
+        v = hist['Volume'].values.astype(float)
+        h = hist['High'].values.astype(float)
+        l = hist['Low'].values.astype(float)
+        n = len(c)
+        cur = float(c[-1])
+
+        # Ortalama gunluk hacim (son 20 gun)
+        avg_vol_20 = float(np.mean(v[-20:])) if n >= 20 else float(np.mean(v))
+        avg_vol_60 = float(np.mean(v[-60:])) if n >= 60 else avg_vol_20
+
+        # Volatilite (yillik)
+        if n >= 20:
+            daily_returns = np.diff(c[-60:]) / c[-60:-1] if n >= 60 else np.diff(c) / c[:-1]
+            volatility = sf(float(np.std(daily_returns)) * (252 ** 0.5) * 100)
+        else:
+            volatility = 0
+
+        # Beta hesapla (BIST100'e gore) - basit yaklasim: volatilite bazli
+        beta = sf(volatility / 25) if volatility else 1.0  # BIST100 avg vol ~25%
+
+        # Ortalama islem hacmi (TL)
+        avg_turnover = sf(cur * avg_vol_20)
+
+        # 1 aylik, 3 aylik, 6 aylik, 1 yillik getiri
+        returns = {}
+        for label, days in [('1ay', 22), ('3ay', 66), ('6ay', 132), ('1yil', 252)]:
+            if n > days:
+                ret = sf(((cur - float(c[-days])) / float(c[-days])) * 100)
+                returns[label] = ret
+
+        # Gunluk ortalama aralik (ATR benzeri)
+        if n >= 14:
+            daily_range = [(float(h[i]) - float(l[i])) for i in range(-14, 0)]
+            avg_daily_range = sf(np.mean(daily_range))
+            avg_daily_range_pct = sf(avg_daily_range / cur * 100)
+        else:
+            avg_daily_range = 0
+            avg_daily_range_pct = 0
+
+        # 52 haftalik high/low'dan uzaklik
+        if n >= 252:
+            hi52 = float(np.max(h[-252:]))
+            lo52 = float(np.min(l[-252:]))
+        else:
+            hi52 = float(np.max(h))
+            lo52 = float(np.min(l))
+        dist_from_high = sf(((cur - hi52) / hi52) * 100) if hi52 else 0
+        dist_from_low = sf(((cur - lo52) / lo52) * 100) if lo52 else 0
+
+        return {
+            'avgVolume20': si(avg_vol_20),
+            'avgVolume60': si(avg_vol_60),
+            'avgTurnover': avg_turnover,
+            'volatility': volatility,
+            'beta': beta,
+            'returns': returns,
+            'avgDailyRange': avg_daily_range,
+            'avgDailyRangePct': avg_daily_range_pct,
+            'distFromHigh52w': dist_from_high,
+            'distFromLow52w': dist_from_low,
+        }
+    except Exception as e:
+        print(f"  [FUND] {symbol} hata: {e}")
+        return {}
 
 def calc_52w(hist):
     """52 hafta (veya mevcut veri) high/low hesapla"""
@@ -1071,6 +1317,36 @@ def indices():
         data=_get_indices()
         if not data:
             return jsonify(safe_dict({'success':True,'loading':True,'indices':{},'message':'Endeksler yukleniyor...'}))
+
+        # Gold/TL ve Silver/TL hesapla
+        usdtry_data = data.get('USDTRY')
+        gold_data = data.get('GOLD')
+        silver_data = data.get('SILVER')
+        if usdtry_data and gold_data:
+            usd_rate = usdtry_data.get('value', 0)
+            if usd_rate > 0:
+                gold_usd = gold_data.get('value', 0)
+                gold_tl = sf(gold_usd * usd_rate / 31.1035, 2)  # ons -> gram (1 ons = 31.1035 gram)
+                data['GOLDTL'] = {
+                    'name': 'Altin/TL (gram)',
+                    'value': gold_tl,
+                    'change': 0,
+                    'changePct': gold_data.get('changePct', 0),
+                    'volume': 0,
+                }
+        if usdtry_data and silver_data:
+            usd_rate = usdtry_data.get('value', 0)
+            if usd_rate > 0:
+                silver_usd = silver_data.get('value', 0)
+                silver_tl = sf(silver_usd * usd_rate / 31.1035, 2)  # ons -> gram
+                data['SILVERTL'] = {
+                    'name': 'Gumus/TL (gram)',
+                    'value': silver_tl,
+                    'change': 0,
+                    'changePct': silver_data.get('changePct', 0),
+                    'volume': 0,
+                }
+
         return jsonify(safe_dict({'success':True,'indices':data}))
     except Exception as e:
         return jsonify({'error':str(e)}),500
@@ -1158,6 +1434,7 @@ def stock_detail(symbol):
             'supportResistance':calc_support_resistance(hist),
             'pivotPoints':calc_pivot_points(hist),
             'recommendation':calc_recommendation(hist, None),
+            'fundamentals':calc_fundamentals(hist, symbol),
         }))
     except Exception as e:
         print(f"STOCK {symbol}: {traceback.format_exc()}")
