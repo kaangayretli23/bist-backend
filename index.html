@@ -401,6 +401,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
     <button class="nav-link" data-page="screener" onclick="navigate('screener')">Tarayıcı</button>
     <button class="nav-link" data-page="compare" onclick="navigate('compare')">Karşılaştır</button>
     <button class="nav-link" data-page="report" onclick="navigate('report')">Günlük Rapor</button>
+    <button class="nav-link" data-page="watchlist" onclick="navigate('watchlist')">Favoriler</button>
     <button class="nav-link" data-page="portfolio" onclick="navigate('portfolio')">Portföy</button>
     <button class="nav-link" data-page="backtest" onclick="navigate('backtest')">Backtest</button>
     <button class="nav-link" data-page="alerts" onclick="navigate('alerts')">Uyarılar</button>
@@ -518,6 +519,40 @@ tr:hover td { background: rgba(26,34,52,0.5); }
       <div class="icon">📈</div>
       <div>Bir hisse seçin veya arama yapın</div>
     </div>
+  </div>
+</div>
+
+<!-- ═══════════ COMMODITY DETAIL ═══════════ -->
+<div class="page" id="page-commodity">
+  <div id="commodityDetailContent">
+    <div class="empty-state">
+      <div class="icon">🥇</div>
+      <div>Bir emtia seçin (Dashboard'dan Altın/Gümüş kartına tıklayın)</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ WATCHLIST (FAVORİLER) ═══════════ -->
+<div class="page" id="page-watchlist">
+  <div class="flex-between mb-24">
+    <div class="section-title"><span class="icon">⭐</span> Favori Hisselerim</div>
+    <div class="flex-center gap-8">
+      <input id="wlAddSymbol" placeholder="Hisse kodu (THYAO)" style="width:160px;">
+      <button class="btn btn-primary btn-sm" onclick="addToWatchlist()">+ Ekle</button>
+    </div>
+  </div>
+  <div id="watchlistLoginMsg" style="display:none;" class="card mb-24">
+    <div class="empty-state">
+      <div class="icon">🔒</div>
+      <div>Favorileri kullanmak için giriş yapın</div>
+      <button class="btn btn-primary btn-sm" onclick="showLogin()" style="margin-top:12px;">Giriş Yap</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="table-wrap"><table>
+      <thead><tr><th>Kod</th><th>İsim</th><th>Fiyat</th><th>Değişim</th><th>Değişim %</th><th>Hacim</th><th></th></tr></thead>
+      <tbody id="watchlistTable"></tbody>
+    </table></div>
   </div>
 </div>
 
@@ -892,8 +927,10 @@ function navigate(page, params) {
     case 'dashboard': loadDashboard(); break;
     case 'bist100': loadBist100(); break;
     case 'stock': if(params?.symbol) loadStockDetail(params.symbol); break;
+    case 'commodity': if(params?.symbol) loadCommodityDetail(params.symbol); break;
     case 'screener': loadSectors('screenerSector'); break;
     case 'portfolio': loadPortfolio(); break;
+    case 'watchlist': loadWatchlist(); break;
     case 'backtest': break;
     case 'alerts': loadAlerts(); break;
     case 'heatmap': loadHeatmap(); break;
@@ -904,6 +941,10 @@ function navigate(page, params) {
 
 function goToStock(symbol) {
   navigate('stock', { symbol });
+}
+
+function goToCommodity(symbol) {
+  navigate('commodity', { symbol });
 }
 
 // =============================================================================
@@ -1040,10 +1081,13 @@ async function loadIndices() {
 
   const idx = data.indices;
   const currencyMap = {'GOLD':'$','SILVER':'$','USDTRY':'₺','EURTRY':'₺','GOLDTL':'₺','SILVERTL':'₺'};
+  const commodityKeys = ['GOLD','SILVER','GOLDTL','SILVERTL','USDTRY','EURTRY'];
   const cards = Object.entries(idx).map(([key, val]) => {
     const cur = currencyMap[key] || '';
-    return `<div class="index-card">
-      <div class="label">${val.name}</div>
+    const clickable = commodityKeys.includes(key);
+    const clickAttr = clickable ? `onclick="goToCommodity('${key}')" style="cursor:pointer;"` : '';
+    return `<div class="index-card" ${clickAttr}>
+      <div class="label">${val.name}${clickable ? ' <span style="font-size:9px;opacity:0.5;">detay</span>' : ''}</div>
       <div class="value">${fmtPrice(val.value)} ${cur}</div>
       <div class="change ${changeClass(val.changePct)}">
         ${(val.changePct||0) >= 0 ? '▲' : '▼'} ${fmtPct(val.changePct)}
@@ -1344,6 +1388,179 @@ async function loadStockDetailWithPeriod(symbol, period) {
   // Rebuild (reuse loadStockDetail flow by temporarily overriding)
   navigate('stock', { symbol });
 }
+
+// =============================================================================
+// COMMODITY DETAIL (Altın, Gümüş, Döviz)
+// =============================================================================
+async function loadCommodityDetail(symbol, period) {
+  period = period || '1y';
+  const container = document.getElementById('commodityDetailContent');
+  container.innerHTML = '<div class="loading"><div class="spinner"></div>Emtia verisi yükleniyor...</div>';
+
+  document.querySelectorAll('.nav-link').forEach(n => n.classList.remove('active'));
+
+  const s = await api('/commodity/' + symbol + '?period=' + period);
+
+  if (s.error && !s.success) {
+    container.innerHTML = `<div class="empty-state"><div class="icon">❌</div><div>Hata: ${s.error}</div></div>`;
+    return;
+  }
+
+  if (!s.indicators || Object.keys(s.indicators).length === 0) {
+    if (s.dataPoints === 0) {
+      container.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto 16px;"></div><div style="color:var(--yellow);">Emtia verisi yükleniyor...</div><button class="btn btn-primary btn-sm" onclick="loadCommodityDetail('${symbol}')" style="margin-top:12px;">Yenile</button></div>`;
+      return;
+    }
+  }
+
+  const ind = s.indicators || {};
+  const summary = ind.summary || {};
+  const cur = s.currency === 'USD' ? '$' : '₺';
+  const nameEmoji = symbol.includes('GOLD') ? '🥇' : symbol.includes('SILVER') ? '🥈' : '💱';
+
+  container.innerHTML = `
+    <!-- Header -->
+    <div class="stock-header fade-in">
+      <div>
+        <div class="stock-name">${nameEmoji} ${s.name} · ${s.code}</div>
+        <div class="stock-price-big ${changeClass(s.changePercent)}">${fmtPrice(s.price)} ${cur}</div>
+        <div class="stock-change-big ${changeClass(s.changePercent)}">
+          ${s.change >= 0 ? '▲' : '▼'} ${fmtPrice(Math.abs(s.change))} (${fmtPct(s.changePercent)})
+        </div>
+      </div>
+      <div class="flex-center gap-8">
+        ${['1mo','3mo','6mo','1y','2y','5y'].map(p =>
+          `<button class="btn btn-sm ${p === period ? 'btn-primary' : 'btn-secondary'}" onclick="loadCommodityPeriod('${s.code}','${p}')">${p}</button>`
+        ).join('')}
+      </div>
+    </div>
+
+    <!-- Info Cards -->
+    <div class="grid-4 mb-24 fade-in">
+      <div class="card" style="text-align:center;">
+        <div style="font-size:11px;color:var(--text-muted);">Gün Aralığı</div>
+        <div class="td-mono" style="margin-top:4px;">${fmtPrice(s.dayLow)} - ${fmtPrice(s.dayHigh)} ${cur}</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:11px;color:var(--text-muted);">Hacim</div>
+        <div class="td-mono" style="margin-top:4px;">${fmtVolume(s.volume)}</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:11px;color:var(--text-muted);">52H Aralık</div>
+        <div class="td-mono" style="margin-top:4px;">${s.week52?.low52w ? fmtPrice(s.week52.low52w) + ' - ' + fmtPrice(s.week52.high52w) + ' ' + cur : '-'}</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:11px;color:var(--text-muted);">Önceki Kapanış</div>
+        <div class="td-mono" style="margin-top:4px;">${fmtPrice(s.prevClose)} ${cur}</div>
+      </div>
+    </div>
+
+    <!-- Sinyal Özeti -->
+    <div class="card mb-24 fade-in">
+      <div class="flex-between mb-8">
+        <div style="font-weight:700;">Teknik Sinyal Özeti</div>
+        ${signalBadge(summary.overall)}
+      </div>
+      <div style="font-size:13px;color:var(--text-secondary);">${summary.explanation || ''}</div>
+      <div class="flex-center gap-16 mt-16" style="font-size:13px;">
+        <span class="price-up">AL: ${summary.buySignals || 0}</span>
+        <span class="price-down">SAT: ${summary.sellSignals || 0}</span>
+        <span style="color:var(--text-muted);">Nötr: ${summary.neutralSignals || 0}</span>
+      </div>
+    </div>
+
+    <!-- Price Chart -->
+    <div class="chart-container mb-24 fade-in">
+      <canvas id="priceChart"></canvas>
+    </div>
+
+    <!-- Indicators Grid -->
+    <div class="card mb-24 fade-in">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:15px;">Teknik Indikatörler</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:2000px;padding-top:12px;">
+        <div class="indicator-grid">
+          ${renderIndicatorDetailed(ind.rsi, 'RSI', ind.rsi?.value, 'Göreceli Güç Endeksi. 0-100 arası. <30 aşırı satım, >70 aşırı alım.', 0, 100)}
+          ${renderIndicatorDetailed(ind.macd, 'MACD', ind.macd?.histogram, 'Hareketli Ortalama Yakınsama/Iraksama.', null, null, `MACD: ${ind.macd?.macd?.toFixed(2)||'-'} | Sinyal: ${ind.macd?.signal?.toFixed(2)||'-'}`)}
+          ${renderIndicatorDetailed(ind.bollinger, 'Bollinger Bantları', ind.bollinger?.bandwidth, 'Fiyat volatilitesini ölçer.', null, null, `Üst: ${fmtPrice(ind.bollinger?.upper)} | Orta: ${fmtPrice(ind.bollinger?.middle)} | Alt: ${fmtPrice(ind.bollinger?.lower)}`)}
+          ${renderIndicatorDetailed(ind.ema, 'EMA', null, 'Üstel Hareketli Ortalama.', null, null, `EMA20: ${fmtPrice(ind.ema?.ema20)} | EMA50: ${fmtPrice(ind.ema?.ema50)}`)}
+          ${renderIndicatorDetailed(ind.stochastic, 'Stochastic', ind.stochastic?.k, 'K<20 aşırı satım, K>80 aşırı alım.', 0, 100)}
+          ${renderIndicatorDetailed(ind.atr, 'ATR', ind.atr?.value, 'Ortalama Gerçek Aralık. Volatilite ölçer.', null, null, `Günlük ort. hareket: ${ind.atr?.pct?.toFixed(2)||'-'}%`)}
+          ${renderIndicatorDetailed(ind.adx, 'ADX', ind.adx?.value, 'Trend gücünü ölçer. >25 güçlü trend.', 0, 100)}
+          ${renderIndicatorDetailed(ind.cci, 'CCI', ind.cci?.value, 'Emtia Kanal Endeksi.', -200, 200)}
+          ${renderIndicatorDetailed(ind.williamsR, 'Williams %R', ind.williamsR?.value, 'Aşırı alım/satım göstergesi.', -100, 0)}
+          ${renderIndicatorDetailed(ind.mfi, 'MFI', ind.mfi?.value, 'Para Akış Endeksi.', 0, 100)}
+          ${renderIndicatorDetailed(ind.ichimoku, 'Ichimoku', null, 'Japon bulut sistemi.', null, null, `Tenkan: ${fmtPrice(ind.ichimoku?.tenkan)} | Kijun: ${fmtPrice(ind.ichimoku?.kijun)}`)}
+          ${renderIndicatorDetailed(ind.psar, 'Parabolic SAR', ind.psar?.value, 'Dur ve Geri Dön.', null, null, `SAR: ${fmtPrice(ind.psar?.value)} | Trend: ${ind.psar?.trend === 'up' ? '↑ Yükseliş' : '↓ Düşüş'}`)}
+        </div>
+      </div>
+    </div>
+
+    <!-- AL/SAT Önerisi -->
+    <div class="card mb-24 fade-in" style="border:2px solid var(--border);">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:16px;">AL / SAT Önerisi</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:2000px;">
+        <div style="font-size:11px;color:var(--text-muted);margin:8px 0 12px;">Bu öneriler teknik indikatörlere dayanır, yatırım tavsiyesi değildir.</div>
+        ${renderRecommendation(s.recommendation)}
+      </div>
+    </div>
+
+    <!-- Pivot Points & Fibonacci & S/R -->
+    <div class="grid-2 grid-3col mb-24" style="grid-template-columns:repeat(3,1fr);">
+      <div class="card fade-in">
+        <div class="collapsible-header" onclick="toggleSection(this)">
+          <div style="font-weight:700;">Pivot Noktaları</div>
+          <span class="collapse-icon">▼</span>
+        </div>
+        <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+          ${renderPivotPoints(s.pivotPoints)}
+        </div>
+      </div>
+      <div class="card fade-in">
+        <div class="collapsible-header" onclick="toggleSection(this)">
+          <div style="font-weight:700;">Fibonacci Seviyeleri</div>
+          <span class="collapse-icon">▼</span>
+        </div>
+        <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+          ${renderFibonacci(s.fibonacci)}
+        </div>
+      </div>
+      <div class="card fade-in">
+        <div class="collapsible-header" onclick="toggleSection(this)">
+          <div style="font-weight:700;">Destek / Direnç</div>
+          <span class="collapse-icon">▼</span>
+        </div>
+        <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+          ${renderSR(s.supportResistance)}
+        </div>
+      </div>
+    </div>
+
+    <!-- Fundamentals -->
+    <div class="card mb-24 fade-in">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;">Temel Veriler</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+        ${renderFundamentals(s.fundamentals, s)}
+      </div>
+    </div>
+  `;
+
+  drawPriceChart(s.chartData, s.code, ind);
+}
+
+function loadCommodityPeriod(symbol, period) {
+  navigate('commodity', { symbol });
+  setTimeout(() => loadCommodityDetail(symbol, period), 50);
+}
+
 
 function toggleSection(header) {
   header.classList.toggle('collapsed');
@@ -1834,10 +2051,12 @@ async function runScreener() {
 // PORTFOLIO
 // =============================================================================
 function showAddPositionForm() {
+  if (!currentUser) { showLogin(); return; }
   document.getElementById('addPositionForm').style.display = 'block';
 }
 
 async function addPosition() {
+  if (!currentUser) { showLogin(); return; }
   const symbol = document.getElementById('pfSymbol').value.toUpperCase();
   const quantity = parseFloat(document.getElementById('pfQty').value);
   const avgCost = parseFloat(document.getElementById('pfCost').value);
@@ -1846,7 +2065,7 @@ async function addPosition() {
 
   await api('/portfolio', {
     method: 'POST',
-    body: JSON.stringify({ symbol, quantity, avgCost }),
+    body: JSON.stringify({ userId: currentUser.userId, symbol, quantity, avgCost }),
   });
 
   document.getElementById('addPositionForm').style.display = 'none';
@@ -1856,17 +2075,22 @@ async function addPosition() {
   loadPortfolio();
 }
 
-async function removePosition(symbol) {
+async function removePosition(symbol, posId) {
   if (!confirm(`${symbol} portföyden çıkarılsın mı?`)) return;
   await api('/portfolio', {
     method: 'DELETE',
-    body: JSON.stringify({ symbol }),
+    body: JSON.stringify({ userId: currentUser?.userId, symbol, id: posId }),
   });
   loadPortfolio();
 }
 
 async function loadPortfolio() {
-  const data = await api('/portfolio');
+  if (!currentUser) {
+    document.getElementById('portfolioSummary').innerHTML = '';
+    document.getElementById('portfolioTable').innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="icon">🔒</div><div>Portföy kaydetmek için giriş yapın</div><button class="btn btn-primary btn-sm" onclick="showLogin()" style="margin-top:12px;">Giriş Yap</button></div></td></tr>`;
+    return;
+  }
+  const data = await api('/portfolio?userId=' + currentUser.userId);
   if (!data.success) return;
 
   const s = data.summary || {};
@@ -1907,12 +2131,84 @@ async function loadPortfolio() {
       <td class="td-mono ${p.unrealizedPnL >= 0 ? 'pnl-positive' : 'pnl-negative'}">${fmtMoney(p.unrealizedPnL)}</td>
       <td class="td-mono ${p.unrealizedPnLPct >= 0 ? 'pnl-positive' : 'pnl-negative'}">${fmtPct(p.unrealizedPnLPct)}</td>
       <td class="td-mono">${p.weight}%</td>
-      <td><button class="btn btn-sm" style="background:var(--red-bg);color:var(--red);border:none;padding:4px 8px;font-size:11px;" onclick="removePosition('${p.symbol}')">Sil</button></td>
+      <td><button class="btn btn-sm" style="background:var(--red-bg);color:var(--red);border:none;padding:4px 8px;font-size:11px;" onclick="removePosition('${p.symbol}', ${p.id})">Sil</button></td>
     </tr>
   `).join('');
 
-  // Load risk
   loadPortfolioRisk();
+}
+
+// =============================================================================
+// WATCHLIST (FAVORİLER)
+// =============================================================================
+async function loadWatchlist() {
+  const table = document.getElementById('watchlistTable');
+  const loginMsg = document.getElementById('watchlistLoginMsg');
+
+  if (!currentUser) {
+    loginMsg.style.display = 'block';
+    table.innerHTML = '';
+    return;
+  }
+  loginMsg.style.display = 'none';
+
+  table.innerHTML = '<tr><td colspan="7"><div class="loading"><div class="spinner"></div>Yükleniyor...</div></td></tr>';
+
+  const data = await api('/watchlist?userId=' + currentUser.userId);
+  if (!data.success) return;
+
+  const stocks = data.watchlist || [];
+  if (stocks.length === 0) {
+    table.innerHTML = '<tr><td colspan="7" class="empty-state">Favori listeniz boş. Yukarıdan hisse ekleyin.</td></tr>';
+    return;
+  }
+
+  table.innerHTML = stocks.map(s => `
+    <tr class="stock-row" onclick="goToStock('${s.code}')">
+      <td class="td-mono td-clickable">${s.code}</td>
+      <td>${s.name}</td>
+      <td class="td-mono">${fmtPrice(s.price)}</td>
+      <td class="td-mono ${changeClass(s.change)}">${fmtPrice(s.change)}</td>
+      <td class="td-mono ${changeClass(s.changePct)}">${fmtPct(s.changePct)}</td>
+      <td class="td-mono">${fmtVolume(s.volume)}</td>
+      <td><button class="btn btn-sm" style="background:var(--red-bg);color:var(--red);border:none;padding:4px 8px;font-size:11px;" onclick="event.stopPropagation(); removeFromWatchlist('${s.code}')">Kaldır</button></td>
+    </tr>
+  `).join('');
+}
+
+async function addToWatchlist(symbolOverride) {
+  if (!currentUser) { showLogin(); return; }
+  const sym = symbolOverride || document.getElementById('wlAddSymbol')?.value?.toUpperCase();
+  if (!sym) { alert('Hisse kodu girin'); return; }
+
+  const data = await api('/watchlist', {
+    method: 'POST',
+    body: JSON.stringify({ userId: currentUser.userId, symbol: sym, action: 'add' }),
+  });
+
+  if (data.success) {
+    const input = document.getElementById('wlAddSymbol');
+    if (input) input.value = '';
+    loadWatchlist();
+  }
+}
+
+async function removeFromWatchlist(symbol) {
+  if (!currentUser) return;
+  await api('/watchlist', {
+    method: 'POST',
+    body: JSON.stringify({ userId: currentUser.userId, symbol, action: 'remove' }),
+  });
+  loadWatchlist();
+}
+
+async function toggleWatchlist(symbol) {
+  if (!currentUser) { showLogin(); return; }
+  const data = await api('/watchlist', {
+    method: 'POST',
+    body: JSON.stringify({ userId: currentUser.userId, symbol, action: 'toggle' }),
+  });
+  return data;
 }
 
 async function loadPortfolioRisk() {
