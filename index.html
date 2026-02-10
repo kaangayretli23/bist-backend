@@ -140,9 +140,31 @@ body {
 }
 @media (max-width: 640px) {
   .grid-2, .grid-3, .grid-4, .grid-5, .grid-3col { grid-template-columns: 1fr !important; }
-  .navbar { padding: 0 12px; }
+  .navbar { padding: 0 8px; gap: 4px; }
   .nav-links { display: none; }
-  .page { padding: 16px; }
+  .page { padding: 12px; }
+  .main { padding-top: 60px; }
+  .section-title { font-size: 16px; }
+  .stock-header .stock-price-big { font-size: 22px; }
+  .indicator-grid { grid-template-columns: 1fr !important; }
+  .chart-container { height: 250px; }
+  .card { padding: 12px; }
+  .table-wrap { font-size: 12px; }
+  .table-wrap th, .table-wrap td { padding: 6px 8px; }
+  .nav-search input { width: 100px; font-size: 12px; }
+  .index-card { padding: 10px; }
+  .index-card .value { font-size: 14px; }
+  .btn { padding: 8px 14px; font-size: 12px; }
+  .btn-sm { padding: 4px 10px; font-size: 11px; }
+  #userStatus { display: none; }
+  .condition-row { flex-direction: column; align-items: stretch; }
+  .condition-row select, .condition-row input { max-width: 100% !important; width: 100% !important; }
+  .stock-header { flex-direction: column; gap: 12px; }
+  .flex-center { flex-wrap: wrap; }
+}
+@media (max-width: 400px) {
+  .page { padding: 8px; }
+  .navbar-brand span { display: none; }
 }
 
 .badge {
@@ -375,7 +397,10 @@ tr:hover td { background: rgba(26,34,52,0.5); }
   <div class="nav-links">
     <button class="nav-link active" data-page="dashboard" onclick="navigate('dashboard')">Dashboard</button>
     <button class="nav-link" data-page="bist100" onclick="navigate('bist100')">BIST 100</button>
+    <button class="nav-link" data-page="heatmap" onclick="navigate('heatmap')">Isı Haritası</button>
     <button class="nav-link" data-page="screener" onclick="navigate('screener')">Tarayıcı</button>
+    <button class="nav-link" data-page="compare" onclick="navigate('compare')">Karşılaştır</button>
+    <button class="nav-link" data-page="report" onclick="navigate('report')">Günlük Rapor</button>
     <button class="nav-link" data-page="portfolio" onclick="navigate('portfolio')">Portföy</button>
     <button class="nav-link" data-page="backtest" onclick="navigate('backtest')">Backtest</button>
     <button class="nav-link" data-page="alerts" onclick="navigate('alerts')">Uyarılar</button>
@@ -387,6 +412,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
     </div>
     <div class="search-results-dropdown" id="searchDropdown"></div>
   </div>
+  <div id="userStatus" style="margin-left:8px;"></div>
 </nav>
 
 <!-- MAIN -->
@@ -778,6 +804,63 @@ tr:hover td { background: rgba(26,34,52,0.5); }
   </div>
 </div>
 
+<!-- ═══════════ HEATMAP ═══════════ -->
+<div class="page" id="page-heatmap">
+  <div class="section-title mb-24"><span class="icon">🗺️</span> Sektör Isı Haritası</div>
+  <div id="heatmapContent">
+    <div class="loading"><div class="spinner"></div>Yükleniyor...</div>
+  </div>
+</div>
+
+<!-- ═══════════ COMPARE ═══════════ -->
+<div class="page" id="page-compare">
+  <div class="section-title mb-24"><span class="icon">⚖️</span> Hisse Karşılaştırma</div>
+  <div class="card mb-24">
+    <div style="font-weight:700;margin-bottom:12px;">Karşılaştırılacak Hisseler</div>
+    <div class="flex-center gap-8" style="flex-wrap:wrap;">
+      <input id="cmpInput1" placeholder="THYAO" style="width:100px;text-transform:uppercase;">
+      <input id="cmpInput2" placeholder="PGSUS" style="width:100px;text-transform:uppercase;">
+      <input id="cmpInput3" placeholder="TAVHL" style="width:100px;text-transform:uppercase;">
+      <input id="cmpInput4" placeholder="" style="width:100px;text-transform:uppercase;">
+      <button class="btn btn-primary" onclick="runCompare()">Karşılaştır</button>
+    </div>
+  </div>
+  <div id="compareResults" style="display:none;"></div>
+</div>
+
+<!-- ═══════════ DAILY REPORT ═══════════ -->
+<div class="page" id="page-report">
+  <div class="section-title mb-24"><span class="icon">📋</span> Günlük Piyasa Raporu</div>
+  <div id="reportContent">
+    <div class="loading"><div class="spinner"></div>Rapor hazırlanıyor...</div>
+  </div>
+</div>
+
+<!-- ═══════════ LOGIN MODAL ═══════════ -->
+<div id="loginModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:none;align-items:center;justify-content:center;">
+  <div class="card" style="width:360px;max-width:90vw;">
+    <div style="font-weight:700;font-size:16px;margin-bottom:16px;" id="authTitle">Giriş Yap</div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Kullanıcı Adı</label>
+      <input id="authUsername" placeholder="kullanici_adi" style="width:100%;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Şifre</label>
+      <input id="authPassword" type="password" placeholder="****" style="width:100%;">
+    </div>
+    <div id="authEmailRow" style="margin-bottom:12px;display:none;">
+      <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">E-posta (opsiyonel)</label>
+      <input id="authEmail" placeholder="email@ornek.com" style="width:100%;">
+    </div>
+    <div id="authError" style="color:var(--red);font-size:12px;margin-bottom:8px;display:none;"></div>
+    <div class="flex-center gap-8">
+      <button class="btn btn-primary" onclick="doAuth()">Giriş</button>
+      <button class="btn btn-secondary" onclick="toggleAuthMode()">Kayıt Ol</button>
+      <button class="btn btn-secondary" onclick="closeLogin()">İptal</button>
+    </div>
+  </div>
+</div>
+
 </div><!-- /main -->
 
 <script>
@@ -813,6 +896,9 @@ function navigate(page, params) {
     case 'portfolio': loadPortfolio(); break;
     case 'backtest': break;
     case 'alerts': loadAlerts(); break;
+    case 'heatmap': loadHeatmap(); break;
+    case 'compare': break;
+    case 'report': loadReport(); break;
   }
 }
 
@@ -2003,10 +2089,278 @@ async function deleteAlert(id) {
 }
 
 // =============================================================================
+// HEATMAP
+// =============================================================================
+async function loadHeatmap() {
+  const container = document.getElementById('heatmapContent');
+  container.innerHTML = '<div class="loading"><div class="spinner"></div>Isı haritası yükleniyor...</div>';
+
+  const data = await api('/heatmap');
+  if (!data.success || !data.sectors || data.sectors.length === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">🗺️</div><div>Veriler yükleniyor...</div></div>';
+    if (data.loading) setTimeout(loadHeatmap, 5000);
+    return;
+  }
+
+  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;">';
+  data.sectors.forEach(sector => {
+    const sColor = sector.avgChange > 1 ? 'var(--green)' : (sector.avgChange < -1 ? 'var(--red)' : 'var(--text-muted)');
+    const sBg = sector.avgChange > 1 ? 'rgba(16,185,129,0.08)' : (sector.avgChange < -1 ? 'rgba(239,68,68,0.08)' : 'rgba(255,255,255,0.03)');
+    html += `<div class="card" style="border-left:4px solid ${sColor};background:${sBg};">
+      <div class="flex-between mb-8">
+        <div style="font-weight:700;font-size:14px;">${sector.displayName}</div>
+        <div style="font-weight:800;font-size:16px;color:${sColor};">${sector.avgChange >= 0 ? '+' : ''}%${sector.avgChange}</div>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">${sector.stockCount} hisse</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;">`;
+
+    sector.stocks.forEach(s => {
+      const c = s.changePct > 0.5 ? 'var(--green)' : (s.changePct < -0.5 ? 'var(--red)' : 'var(--text-muted)');
+      const bg = s.changePct > 2 ? 'rgba(16,185,129,0.2)' : (s.changePct > 0 ? 'rgba(16,185,129,0.08)' : (s.changePct < -2 ? 'rgba(239,68,68,0.2)' : (s.changePct < 0 ? 'rgba(239,68,68,0.08)' : 'rgba(255,255,255,0.05)')));
+      const size = Math.max(70, Math.min(120, 80 + Math.abs(s.changePct) * 8));
+      html += `<div onclick="goToStock('${s.code}')" style="cursor:pointer;padding:8px;border-radius:8px;background:${bg};border:1px solid ${c}33;min-width:${size}px;text-align:center;transition:transform 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+        <div style="font-weight:700;font-size:12px;color:${c};">${s.code}</div>
+        <div style="font-family:var(--font-mono);font-size:11px;color:${c};">${s.changePct >= 0 ? '+' : ''}%${s.changePct}</div>
+        <div style="font-size:10px;color:var(--text-muted);">${fmtPrice(s.price)}</div>
+      </div>`;
+    });
+
+    html += '</div></div>';
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// =============================================================================
+// COMPARE
+// =============================================================================
+async function runCompare() {
+  const symbols = [1,2,3,4].map(i => document.getElementById('cmpInput'+i).value.trim().toUpperCase()).filter(Boolean);
+  if (symbols.length < 2) { alert('En az 2 hisse girin'); return; }
+
+  const container = document.getElementById('compareResults');
+  container.style.display = 'block';
+  container.innerHTML = '<div class="loading"><div class="spinner"></div>Karşılaştırılıyor...</div>';
+
+  const data = await api('/compare', { method: 'POST', body: JSON.stringify({ symbols }) });
+  if (!data.success || !data.comparison || data.comparison.length < 2) {
+    container.innerHTML = '<div class="card" style="color:var(--red);">Karşılaştırma yapılamadı. Hisse kodlarını kontrol edin.</div>';
+    return;
+  }
+
+  const stocks = data.comparison;
+  let html = '<div class="card mb-24"><div style="font-weight:700;margin-bottom:16px;">Karşılaştırma Tablosu</div>';
+  html += '<div class="table-wrap"><table><thead><tr><th>Metrik</th>';
+  stocks.forEach(s => { html += `<th style="text-align:center;"><span class="td-clickable" onclick="goToStock('${s.code}')">${s.code}</span><br><span style="font-size:10px;color:var(--text-muted);">${s.name}</span></th>`; });
+  html += '</tr></thead><tbody>';
+
+  const metrics = [
+    {label:'Fiyat', key:'price', fmt:v=>fmtPrice(v)+' ₺'},
+    {label:'Değişim %', key:'changePct', fmt:v=>'%'+v, color:true},
+    {label:'Hacim', key:'volume', fmt:v=>fmtVolume(v)},
+    {label:'Açılış', key:'open', fmt:v=>fmtPrice(v)+' ₺'},
+    {label:'Yüksek', key:'high', fmt:v=>fmtPrice(v)+' ₺'},
+    {label:'Düşük', key:'low', fmt:v=>fmtPrice(v)+' ₺'},
+    {label:'Önceki Kapanış', key:'prevClose', fmt:v=>fmtPrice(v)+' ₺'},
+    {label:'Gap %', key:'gapPct', fmt:v=>'%'+v, color:true},
+    {label:'RSI', key:'rsi', fmt:v=>v?v.toFixed(1):'-'},
+    {label:'MACD Sinyal', key:'macdSignal', fmt:v=>v||'-'},
+    {label:'EMA20', key:'ema20', fmt:v=>v?fmtPrice(v)+' ₺':'-'},
+    {label:'EMA50', key:'ema50', fmt:v=>v?fmtPrice(v)+' ₺':'-'},
+    {label:'52H Yüksek', key:'high52w', fmt:v=>v?fmtPrice(v)+' ₺':'-'},
+    {label:'52H Düşük', key:'low52w', fmt:v=>v?fmtPrice(v)+' ₺':'-'},
+    {label:'52H Pozisyon %', key:'pos52w', fmt:v=>v?'%'+v.toFixed(0):'-'},
+  ];
+
+  metrics.forEach(m => {
+    html += `<tr><td style="font-weight:600;font-size:12px;">${m.label}</td>`;
+    // Find best value for highlighting
+    const vals = stocks.map(s => s[m.key] || 0);
+    stocks.forEach((s, i) => {
+      const v = s[m.key];
+      const cls = m.color ? changeClass(v) : '';
+      const isBest = m.color && Math.abs(v) === Math.max(...vals.map(Math.abs)) && v > 0;
+      html += `<td class="td-mono ${cls}" style="text-align:center;${isBest ? 'font-weight:700;' : ''}">${m.fmt(v)}</td>`;
+    });
+    html += '</tr>';
+  });
+
+  html += '</tbody></table></div></div>';
+  container.innerHTML = html;
+}
+
+// =============================================================================
+// DAILY REPORT
+// =============================================================================
+async function loadReport() {
+  const container = document.getElementById('reportContent');
+  container.innerHTML = '<div class="loading"><div class="spinner"></div>Rapor hazırlanıyor...</div>';
+
+  const data = await api('/report');
+  if (!data.success) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">📋</div><div>Veriler yükleniyor...</div></div>';
+    if (data.loading) setTimeout(loadReport, 5000);
+    return;
+  }
+
+  const mb = data.marketBreadth || {};
+  const upPct = mb.total ? (mb.advancing/mb.total*100).toFixed(0) : 0;
+  const downPct = mb.total ? (mb.declining/mb.total*100).toFixed(0) : 0;
+
+  let html = `
+    <div class="card mb-24 fade-in">
+      <div style="font-weight:700;font-size:16px;margin-bottom:8px;">📋 ${data.date} Piyasa Özeti</div>
+      <div style="font-size:13px;color:var(--text-secondary);line-height:1.8;">
+        ${(data.reportLines||[]).map(l => '• ' + l).join('<br>')}
+      </div>
+    </div>
+
+    <div class="grid-4 mb-24 fade-in">
+      <div class="card" style="text-align:center;border-left:3px solid var(--green);">
+        <div style="font-size:11px;color:var(--text-muted);">Yükselen</div>
+        <div style="font-size:24px;font-weight:800;color:var(--green);">${mb.advancing}</div>
+        <div style="font-size:11px;color:var(--text-muted);">%${upPct}</div>
+      </div>
+      <div class="card" style="text-align:center;border-left:3px solid var(--red);">
+        <div style="font-size:11px;color:var(--text-muted);">Düşen</div>
+        <div style="font-size:24px;font-weight:800;color:var(--red);">${mb.declining}</div>
+        <div style="font-size:11px;color:var(--text-muted);">%${downPct}</div>
+      </div>
+      <div class="card" style="text-align:center;border-left:3px solid var(--text-muted);">
+        <div style="font-size:11px;color:var(--text-muted);">Değişmez</div>
+        <div style="font-size:24px;font-weight:800;">${mb.unchanged}</div>
+      </div>
+      <div class="card" style="text-align:center;border-left:3px solid var(--accent);">
+        <div style="font-size:11px;color:var(--text-muted);">Ort. Değişim</div>
+        <div class="td-mono ${changeClass(mb.avgChange)}" style="font-size:24px;font-weight:800;">%${mb.avgChange}</div>
+      </div>
+    </div>
+
+    <div class="grid-2 mb-24 fade-in">
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:12px;color:var(--green);">🟢 En Çok Yükselenler</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Kod</th><th>Fiyat</th><th>Değişim</th></tr></thead>
+          <tbody>${(data.topGainers||[]).map(s => `<tr class="stock-row" onclick="goToStock('${s.code}')"><td class="td-clickable td-mono">${s.code}</td><td class="td-mono">${fmtPrice(s.price)}</td><td class="td-mono price-up">+%${s.changePct}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:12px;color:var(--red);">🔴 En Çok Düşenler</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Kod</th><th>Fiyat</th><th>Değişim</th></tr></thead>
+          <tbody>${(data.topLosers||[]).map(s => `<tr class="stock-row" onclick="goToStock('${s.code}')"><td class="td-clickable td-mono">${s.code}</td><td class="td-mono">${fmtPrice(s.price)}</td><td class="td-mono price-down">%${s.changePct}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <div class="grid-2 mb-24 fade-in">
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:12px;">📊 Hacim Liderleri</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Kod</th><th>Hacim</th><th>Değişim</th></tr></thead>
+          <tbody>${(data.volumeLeaders||[]).map(s => `<tr class="stock-row" onclick="goToStock('${s.code}')"><td class="td-clickable td-mono">${s.code}</td><td class="td-mono">${fmtVolume(s.volume)}</td><td class="td-mono ${changeClass(s.changePct)}">%${s.changePct}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:12px;">📈 Sektör Performansı</div>
+        ${(data.sectorPerformance||[]).map(s => {
+          const c = s.avgChange > 0 ? 'var(--green)' : (s.avgChange < 0 ? 'var(--red)' : 'var(--text-muted)');
+          const w = Math.min(100, Math.abs(s.avgChange) * 15);
+          return `<div style="margin-bottom:8px;">
+            <div class="flex-between" style="font-size:12px;margin-bottom:2px;">
+              <span>${s.name}</span>
+              <span style="color:${c};font-weight:700;">${s.avgChange >= 0 ? '+' : ''}%${s.avgChange}</span>
+            </div>
+            <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+              <div style="width:${w}%;height:100%;background:${c};border-radius:3px;"></div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+
+  container.innerHTML = html;
+}
+
+
+// =============================================================================
+// AUTH (LOGIN/REGISTER)
+// =============================================================================
+let currentUser = JSON.parse(localStorage.getItem('bistUser') || 'null');
+let authMode = 'login';
+
+function showLogin() {
+  document.getElementById('loginModal').style.display = 'flex';
+  authMode = 'login';
+  document.getElementById('authTitle').textContent = 'Giriş Yap';
+  document.getElementById('authEmailRow').style.display = 'none';
+  document.getElementById('authError').style.display = 'none';
+}
+
+function closeLogin() {
+  document.getElementById('loginModal').style.display = 'none';
+}
+
+function toggleAuthMode() {
+  if (authMode === 'login') {
+    authMode = 'register';
+    document.getElementById('authTitle').textContent = 'Kayıt Ol';
+    document.getElementById('authEmailRow').style.display = 'block';
+  } else {
+    authMode = 'login';
+    document.getElementById('authTitle').textContent = 'Giriş Yap';
+    document.getElementById('authEmailRow').style.display = 'none';
+  }
+  document.getElementById('authError').style.display = 'none';
+}
+
+async function doAuth() {
+  const username = document.getElementById('authUsername').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const email = document.getElementById('authEmail')?.value || '';
+  const errEl = document.getElementById('authError');
+
+  const endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
+  const data = await api(endpoint, {
+    method: 'POST',
+    body: JSON.stringify({ username, password, email }),
+  });
+
+  if (data.error) {
+    errEl.textContent = data.error;
+    errEl.style.display = 'block';
+    return;
+  }
+
+  currentUser = { userId: data.userId, username: data.username, email: data.email || '' };
+  localStorage.setItem('bistUser', JSON.stringify(currentUser));
+  closeLogin();
+  updateUserUI();
+}
+
+function logout() {
+  currentUser = null;
+  localStorage.removeItem('bistUser');
+  updateUserUI();
+}
+
+function updateUserUI() {
+  const el = document.getElementById('userStatus');
+  if (!el) return;
+  if (currentUser) {
+    el.innerHTML = `<span style="font-size:12px;color:var(--accent);">${currentUser.username}</span> <button class="btn btn-sm btn-secondary" onclick="logout()" style="font-size:10px;padding:2px 8px;">Çıkış</button>`;
+  } else {
+    el.innerHTML = `<button class="btn btn-sm btn-primary" onclick="showLogin()" style="font-size:11px;">Giriş</button>`;
+  }
+}
+
+
+// =============================================================================
 // INIT
 // =============================================================================
 document.addEventListener('DOMContentLoaded', () => {
   loadDashboard();
+  updateUserUI();
 });
 </script>
 </body>
