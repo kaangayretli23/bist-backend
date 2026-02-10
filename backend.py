@@ -1890,22 +1890,6 @@ def del_alert(aid):
         return jsonify({'success':True})
     except Exception as e: return jsonify({'error':str(e)}),500
 
-@app.route('/api/alerts/check', methods=['POST'])
-def check_alerts():
-    return jsonify({'success':True,'triggered':[]})
-
-@app.route('/api/watchlist', methods=['GET'])
-def get_watchlist():
-    return jsonify(safe_dict({'success':True,'watchlist':_get_stocks(watchlist_store.get(request.args.get('user','default'),[]))}))
-
-@app.route('/api/watchlist', methods=['POST'])
-def update_watchlist():
-    d=request.json or {}; uid=d.get('user','default'); sym=d.get('symbol','').upper(); act=d.get('action','add')
-    if uid not in watchlist_store: watchlist_store[uid]=[]
-    if act=='add' and sym not in watchlist_store[uid]: watchlist_store[uid].append(sym)
-    elif act=='remove': watchlist_store[uid]=[s for s in watchlist_store[uid] if s!=sym]
-    return jsonify({'success':True,'watchlist':watchlist_store[uid]})
-
 @app.route('/api/sectors')
 def sectors():
     try:
