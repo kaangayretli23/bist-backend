@@ -156,7 +156,7 @@ body {
   .index-card .value { font-size: 14px; }
   .btn { padding: 8px 14px; font-size: 12px; }
   .btn-sm { padding: 4px 10px; font-size: 11px; }
-  #userStatus { display: none; }
+  #userStatus { display: flex; align-items: center; gap: 8px; }
   .condition-row { flex-direction: column; align-items: stretch; }
   .condition-row select, .condition-row input { max-width: 100% !important; width: 100% !important; }
   .stock-header { flex-direction: column; gap: 12px; }
@@ -783,7 +783,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 <div class="page" id="page-alerts">
   <div class="flex-between mb-24">
     <div class="section-title"><span class="icon">🔔</span> Uyarılar</div>
-    <button class="btn btn-primary btn-sm" onclick="document.getElementById('alertForm').style.display='block'">+ Uyarı Ekle</button>
+    <button class="btn btn-primary btn-sm" onclick="if(!currentUser){showLogin();return;} document.getElementById('alertForm').style.display='block'">+ Uyarı Ekle</button>
   </div>
 
   <div class="card mb-24" id="alertForm" style="display:none;">
@@ -798,31 +798,13 @@ tr:hover td { background: rgba(26,34,52,0.5); }
         <select id="alertCondition" style="width:100%;">
           <option value="price_above">Fiyat Üstünde</option>
           <option value="price_below">Fiyat Altında</option>
-          <option value="rsi_above">RSI Üstünde</option>
-          <option value="rsi_below">RSI Altında</option>
-          <option value="volume_spike">Hacim Spike</option>
-          <option value="breakout">Breakout</option>
-          <option value="macd_cross_up">MACD Yukarı Cross</option>
-          <option value="macd_cross_down">MACD Aşağı Cross</option>
+          <option value="change_above">Değişim % Üstünde</option>
+          <option value="change_below">Değişim % Altında</option>
         </select>
       </div>
       <div>
         <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Eşik Değer</label>
         <input id="alertThreshold" type="number" step="0.01" placeholder="300" style="width:100%;">
-      </div>
-    </div>
-    <div class="grid-3 gap-16 mt-16" style="align-items:end;">
-      <div>
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">E-posta</label>
-        <input id="alertEmail" placeholder="email@example.com" style="width:100%;">
-      </div>
-      <div>
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Cooldown (dk)</label>
-        <input id="alertCooldown" type="number" value="60" style="width:100%;">
-      </div>
-      <div>
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Teyit Bar</label>
-        <input id="alertConfirm" type="number" value="2" style="width:100%;">
       </div>
     </div>
     <div class="flex-center gap-8 mt-16">
@@ -833,7 +815,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 
   <div class="card">
     <div class="table-wrap"><table>
-      <thead><tr><th>Hisse</th><th>Koşul</th><th>Eşik</th><th>Cooldown</th><th>Teyit</th><th>Tetikleme</th><th>Durum</th><th></th></tr></thead>
+      <thead><tr><th>Hisse</th><th>Koşul</th><th>Eşik</th><th>Tetikleme</th><th>Durum</th><th></th></tr></thead>
       <tbody id="alertsTable"></tbody>
     </table></div>
   </div>
@@ -1212,10 +1194,13 @@ async function loadStockDetail(symbol) {
           ${s.change >= 0 ? '▲' : '▼'} ${fmtPrice(Math.abs(s.change))} (${fmtPct(s.changePercent)})
         </div>
       </div>
-      <div class="flex-center gap-8">
+      <div class="flex-center gap-8" style="flex-wrap:wrap;">
         ${['1mo','3mo','6mo','1y','2y','5y'].map(p =>
           `<button class="btn btn-sm ${p === s.period ? 'btn-primary' : 'btn-secondary'}" onclick="loadStockPeriod('${s.code}','${p}')">${p}</button>`
         ).join('')}
+        <span style="width:1px;height:20px;background:var(--border);margin:0 4px;"></span>
+        <button class="btn btn-sm" style="background:rgba(255,197,71,0.1);color:var(--yellow);border:1px solid rgba(255,197,71,0.3);" onclick="toggleWatchlist('${s.code}').then(d => { if(d?.action==='added') this.textContent='Favorilerde'; else if(d?.action==='removed') this.textContent='Favorilere Ekle'; })">Favorilere Ekle</button>
+        <button class="btn btn-sm" style="background:rgba(0,212,170,0.1);color:var(--accent);border:1px solid rgba(0,212,170,0.3);" onclick="document.getElementById('pfSymbol').value='${s.code}'; navigate('portfolio'); showAddPositionForm();">Portföye Ekle</button>
       </div>
     </div>
 
@@ -2337,18 +2322,16 @@ async function runBacktest() {
 // ALERTS
 // =============================================================================
 async function createAlert() {
+  if (!currentUser) { showLogin(); return; }
   const symbol = document.getElementById('alertSymbol').value.toUpperCase();
   const condition = document.getElementById('alertCondition').value;
   const threshold = parseFloat(document.getElementById('alertThreshold').value);
-  const email = document.getElementById('alertEmail').value;
-  const cooldown = parseInt(document.getElementById('alertCooldown').value);
-  const confirm = parseInt(document.getElementById('alertConfirm').value);
 
-  if (!symbol || !condition || !email) { alert('Zorunlu alanları doldurun'); return; }
+  if (!symbol || !condition || !threshold) { alert('Zorunlu alanları doldurun'); return; }
 
   await api('/alerts', {
     method: 'POST',
-    body: JSON.stringify({ symbol, condition, threshold, email, cooldownMinutes: cooldown, confirmBars: confirm }),
+    body: JSON.stringify({ userId: currentUser.userId, symbol, condition, targetValue: threshold }),
   });
 
   document.getElementById('alertForm').style.display = 'none';
@@ -2356,7 +2339,11 @@ async function createAlert() {
 }
 
 async function loadAlerts() {
-  const data = await api('/alerts');
+  if (!currentUser) {
+    document.getElementById('alertsTable').innerHTML = '<tr><td colspan="8"><div class="empty-state"><div class="icon">🔒</div><div>Uyarıları kullanmak için giriş yapın</div><button class="btn btn-primary btn-sm" onclick="showLogin()" style="margin-top:12px;">Giriş Yap</button></div></td></tr>';
+    return;
+  }
+  const data = await api('/alerts?userId=' + currentUser.userId);
   if (!data.success) return;
 
   const alerts = data.alerts || [];
@@ -2365,16 +2352,24 @@ async function loadAlerts() {
     return;
   }
 
+  const conditionNames = {
+    'price_above': 'Fiyat Üstünde', 'price_below': 'Fiyat Altında',
+    'change_above': 'Değişim Üstünde', 'change_below': 'Değişim Altında',
+    'rsi_above': 'RSI Üstünde', 'rsi_below': 'RSI Altında',
+    'volume_spike': 'Hacim Spike', 'breakout': 'Kırılım',
+    'macd_cross_up': 'MACD Yukarı', 'macd_cross_down': 'MACD Aşağı',
+  };
+
   document.getElementById('alertsTable').innerHTML = alerts.map(a => `
     <tr>
-      <td class="td-mono">${a.symbol}</td>
-      <td>${a.condition}</td>
-      <td class="td-mono">${a.threshold || '-'}</td>
-      <td>${a.cooldownMinutes} dk</td>
-      <td>${a.confirmBars} bar</td>
-      <td class="td-mono">${a.triggerCount || 0}x</td>
-      <td>${a.active ? '<span class="badge badge-green">Aktif</span>' : '<span class="badge badge-neutral">Pasif</span>'}</td>
-      <td><button class="btn btn-sm" style="background:var(--red-bg);color:var(--red);border:none;padding:4px 8px;font-size:11px;" onclick="deleteAlert('${a.id}')">Sil</button></td>
+      <td class="td-mono td-clickable" onclick="goToStock('${a.symbol}')">${a.symbol}</td>
+      <td>${conditionNames[a.condition] || a.condition}</td>
+      <td class="td-mono">${a.targetValue || '-'}</td>
+      <td>-</td>
+      <td>-</td>
+      <td class="td-mono">${a.triggered ? '1x' : '0x'}</td>
+      <td>${a.active && !a.triggered ? '<span class="badge badge-green">Aktif</span>' : a.triggered ? '<span class="badge badge-yellow">Tetiklendi</span>' : '<span class="badge badge-neutral">Pasif</span>'}</td>
+      <td><button class="btn btn-sm" style="background:var(--red-bg);color:var(--red);border:none;padding:4px 8px;font-size:11px;" onclick="deleteAlert(${a.id})">Sil</button></td>
     </tr>
   `).join('');
 }
@@ -2632,6 +2627,14 @@ async function doAuth() {
   localStorage.setItem('bistUser', JSON.stringify(currentUser));
   closeLogin();
   updateUserUI();
+  // Aktif sayfayı yenile
+  const activePage = document.querySelector('.page.active');
+  if (activePage) {
+    const pageId = activePage.id.replace('page-', '');
+    if (pageId === 'portfolio') loadPortfolio();
+    else if (pageId === 'watchlist') loadWatchlist();
+    else if (pageId === 'alerts') loadAlerts();
+  }
 }
 
 function logout() {
@@ -2643,10 +2646,13 @@ function logout() {
 function updateUserUI() {
   const el = document.getElementById('userStatus');
   if (!el) return;
+  el.style.display = 'flex';
+  el.style.alignItems = 'center';
+  el.style.gap = '8px';
   if (currentUser) {
-    el.innerHTML = `<span style="font-size:12px;color:var(--accent);">${currentUser.username}</span> <button class="btn btn-sm btn-secondary" onclick="logout()" style="font-size:10px;padding:2px 8px;">Çıkış</button>`;
+    el.innerHTML = `<span style="font-size:12px;color:var(--accent);font-weight:600;">👤 ${currentUser.username}</span> <button class="btn btn-sm btn-secondary" onclick="logout()" style="font-size:10px;padding:2px 8px;">Çıkış</button>`;
   } else {
-    el.innerHTML = `<button class="btn btn-sm btn-primary" onclick="showLogin()" style="font-size:11px;">Giriş</button>`;
+    el.innerHTML = `<button class="btn btn-sm btn-primary" onclick="showLogin()" style="font-size:11px;background:var(--accent);color:#000;font-weight:700;">Giriş / Kayıt</button>`;
   }
 }
 
