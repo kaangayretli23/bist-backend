@@ -1508,17 +1508,100 @@ def stock_events(symbol):
 
 @app.route('/api/stock/<symbol>/kap')
 def stock_kap(symbol):
-    return jsonify({'success':True,'symbol':symbol.upper(),'message':'KAP aktif degil','notifications':[]})
+    """KAP bildirimlerini scrape et"""
+    symbol = symbol.upper()
+    try:
+        url = f"https://www.kap.org.tr/tr/api/disclosures?company={symbol}&type=FR&lang=tr"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'Referer': 'https://www.kap.org.tr/',
+        }
+        try:
+            resp = req_lib.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                notifications = []
+                items = data if isinstance(data, list) else data.get('disclosures', data.get('data', []))
+                for item in items[:20]:
+                    notifications.append({
+                        'title': item.get('title', item.get('subject', '')),
+                        'date': item.get('publishDate', item.get('date', '')),
+                        'type': item.get('type', item.get('disclosureType', '')),
+                        'summary': item.get('summary', '')[:200],
+                    })
+                if notifications:
+                    return jsonify({'success': True, 'symbol': symbol, 'notifications': notifications})
+        except Exception as e:
+            print(f"[KAP-API] {symbol}: {e}")
+
+        # Fallback: Is Yatirim haberler
+        try:
+            url2 = f"https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/HaberlerHisseTekil?hession={symbol}&startdate={datetime.now().strftime('%d-%m-%Y')}&enddate={datetime.now().strftime('%d-%m-%Y')}"
+            resp2 = req_lib.get(url2, headers=IS_YATIRIM_HEADERS, timeout=10)
+            if resp2.status_code == 200:
+                data2 = resp2.json()
+                news = data2.get('value', [])
+                notifications = [{'title': n.get('BASLIK', ''), 'date': n.get('TARIH', ''), 'type': 'haber', 'summary': ''} for n in news[:10]]
+                return jsonify({'success': True, 'symbol': symbol, 'notifications': notifications})
+        except Exception as e:
+            print(f"[KAP-ISYATIRIM] {symbol}: {e}")
+
+        return jsonify({'success': True, 'symbol': symbol, 'notifications': [], 'message': 'KAP verisi alinamadi'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/compare', methods=['POST'])
 def compare():
+    """Hisseleri detayli karsilastir"""
     try:
-        data=request.json or {}; symbols=data.get('symbols',[])
-        if len(symbols)<2: return jsonify({'error':'En az 2 hisse'}),400
-        results=[{'code':s['code'],'name':s['name'],'price':s['price'],'changePct':s['changePct'],'volume':s['volume']} for sym in symbols[:5] if (s:=_cget(_stock_cache,sym.upper()))]
-        return jsonify(safe_dict({'success':True,'comparison':results}))
+        data = request.json or {}
+        symbols = data.get('symbols', [])
+        if len(symbols) < 2:
+            return jsonify({'error': 'En az 2 hisse gerekli'}), 400
+
+        results = []
+        for sym in symbols[:5]:
+            sym = sym.upper()
+            s = _cget(_stock_cache, sym)
+            if not s:
+                continue
+
+            # Indicator hesapla
+            hist = _cget(_hist_cache, f"{sym}_1y")
+            indicators = {}
+            if hist is not None and len(hist) >= 14:
+                c = hist['Close'].values.astype(float)
+                h = hist['High'].values.astype(float)
+                l = hist['Low'].values.astype(float)
+                rsi = calc_rsi(c)
+                macd = calc_macd(c)
+                ema = calc_ema(c, float(c[-1]))
+                w52 = calc_52w(hist)
+                indicators = {
+                    'rsi': rsi.get('value', 0),
+                    'rsiSignal': rsi.get('signal', 'neutral'),
+                    'macdSignal': macd.get('signalType', 'neutral'),
+                    'ema20': ema.get('ema20', 0),
+                    'ema50': ema.get('ema50', 0),
+                    'high52w': w52.get('high52w', 0),
+                    'low52w': w52.get('low52w', 0),
+                    'pos52w': w52.get('currentPct', 50),
+                }
+
+            results.append({
+                'code': sym, 'name': s['name'], 'price': s['price'],
+                'change': s['change'], 'changePct': s['changePct'],
+                'volume': s['volume'], 'open': s.get('open', 0),
+                'high': s.get('high', 0), 'low': s.get('low', 0),
+                'prevClose': s.get('prevClose', 0),
+                'gap': s.get('gap', 0), 'gapPct': s.get('gapPct', 0),
+                **indicators
+            })
+
+        return jsonify(safe_dict({'success': True, 'comparison': results}))
     except Exception as e:
-        return jsonify({'error':str(e)}),500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/screener', methods=['POST'])
 def screener():
@@ -1745,14 +1828,476 @@ def backtest():
         print(f"[BACKTEST] Hata: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
+# =====================================================================
+# ISI HARITASI (HEATMAP)
+# =====================================================================
+@app.route('/api/heatmap')
+def heatmap():
+    """Sektor bazli isi haritasi verisi"""
+    try:
+        stocks = _get_stocks()
+        if not stocks:
+            return jsonify({'success': True, 'sectors': [], 'loading': True})
+
+        stock_map = {s['code']: s for s in stocks}
+        sectors = []
+
+        for sector_name, symbols in SECTOR_MAP.items():
+            sector_stocks = []
+            total_change = 0
+            count = 0
+            for sym in symbols:
+                if sym in stock_map:
+                    s = stock_map[sym]
+                    sector_stocks.append({
+                        'code': s['code'], 'name': s['name'],
+                        'price': s['price'], 'changePct': s['changePct'],
+                        'volume': s['volume'],
+                    })
+                    total_change += s['changePct']
+                    count += 1
+
+            avg_change = sf(total_change / count) if count > 0 else 0
+            sectors.append({
+                'name': sector_name,
+                'displayName': {
+                    'bankacilik': 'Bankacilik', 'havacilik': 'Havacilik',
+                    'otomotiv': 'Otomotiv', 'enerji': 'Enerji',
+                    'holding': 'Holding', 'perakende': 'Perakende',
+                    'teknoloji': 'Teknoloji', 'telekom': 'Telekom',
+                    'demir_celik': 'Demir Celik', 'gida': 'Gida',
+                    'insaat': 'Insaat', 'gayrimenkul': 'Gayrimenkul',
+                }.get(sector_name, sector_name),
+                'avgChange': avg_change,
+                'stockCount': count,
+                'stocks': sorted(sector_stocks, key=lambda x: x['changePct'], reverse=True),
+            })
+
+        sectors.sort(key=lambda x: x['avgChange'], reverse=True)
+        return jsonify(safe_dict({'success': True, 'sectors': sectors}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# GUNLUK RAPOR
+# =====================================================================
+@app.route('/api/report')
+def daily_report():
+    """Gunluk piyasa raporu"""
+    try:
+        stocks = _get_stocks()
+        indices = _get_indices()
+
+        if not stocks:
+            return jsonify({'success': True, 'loading': True, 'message': 'Veriler yukleniyor'})
+
+        # Piyasa genisligi
+        up = [s for s in stocks if s.get('changePct', 0) > 0]
+        down = [s for s in stocks if s.get('changePct', 0) < 0]
+        unchanged = [s for s in stocks if s.get('changePct', 0) == 0]
+
+        # En cok artanlar / azalanlar
+        sorted_up = sorted(stocks, key=lambda x: x.get('changePct', 0), reverse=True)
+        sorted_down = sorted(stocks, key=lambda x: x.get('changePct', 0))
+
+        # Hacim liderleri
+        sorted_vol = sorted(stocks, key=lambda x: x.get('volume', 0), reverse=True)
+
+        # Gap analizi
+        gap_up = sorted([s for s in stocks if s.get('gapPct', 0) > 1], key=lambda x: x.get('gapPct', 0), reverse=True)
+        gap_down = sorted([s for s in stocks if s.get('gapPct', 0) < -1], key=lambda x: x.get('gapPct', 0))
+
+        # Ortalama degisim
+        all_changes = [s.get('changePct', 0) for s in stocks]
+        avg_change = sf(np.mean(all_changes)) if all_changes else 0
+
+        # Sektor performansi
+        sector_perf = []
+        stock_map = {s['code']: s for s in stocks}
+        for sname, syms in SECTOR_MAP.items():
+            changes = [stock_map[s]['changePct'] for s in syms if s in stock_map]
+            if changes:
+                sector_perf.append({
+                    'name': sname, 'avgChange': sf(np.mean(changes)),
+                    'bestStock': max([(s, stock_map[s]['changePct']) for s in syms if s in stock_map], key=lambda x: x[1])[0] if changes else '',
+                })
+        sector_perf.sort(key=lambda x: x['avgChange'], reverse=True)
+
+        # Rapor metni olustur
+        report_lines = []
+        bist100 = indices.get('XU100', {})
+        if bist100:
+            direction = 'yukselis' if bist100.get('changePct', 0) > 0 else 'dusus'
+            report_lines.append(f"BIST 100 endeksi %{bist100.get('changePct', 0)} {direction} gosteriyor.")
+
+        report_lines.append(f"Toplam {len(stocks)} hisseden {len(up)} yukselen, {len(down)} dusen, {len(unchanged)} degismez.")
+        report_lines.append(f"Piyasa ortalama degisimi: %{avg_change}")
+
+        if sorted_up:
+            report_lines.append(f"Gunun yildizi: {sorted_up[0]['code']} (%{sorted_up[0]['changePct']})")
+        if sorted_down:
+            report_lines.append(f"Gunun kaybi: {sorted_down[0]['code']} (%{sorted_down[0]['changePct']})")
+
+        if sector_perf:
+            report_lines.append(f"En iyi sektor: {sector_perf[0]['name']} (%{sector_perf[0]['avgChange']})")
+
+        return jsonify(safe_dict({
+            'success': True,
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'summary': ' '.join(report_lines),
+            'reportLines': report_lines,
+            'marketBreadth': {
+                'advancing': len(up), 'declining': len(down),
+                'unchanged': len(unchanged), 'total': len(stocks),
+                'avgChange': avg_change,
+            },
+            'topGainers': [{'code': s['code'], 'name': s['name'], 'changePct': s['changePct'], 'price': s['price']} for s in sorted_up[:5]],
+            'topLosers': [{'code': s['code'], 'name': s['name'], 'changePct': s['changePct'], 'price': s['price']} for s in sorted_down[:5]],
+            'volumeLeaders': [{'code': s['code'], 'name': s['name'], 'volume': s['volume'], 'changePct': s['changePct']} for s in sorted_vol[:5]],
+            'gapUp': [{'code': s['code'], 'gapPct': s.get('gapPct', 0)} for s in gap_up[:5]],
+            'gapDown': [{'code': s['code'], 'gapPct': s.get('gapPct', 0)} for s in gap_down[:5]],
+            'sectorPerformance': sector_perf,
+            'indices': indices,
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# KULLANICI SISTEMI (AUTH)
+# =====================================================================
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    try:
+        d = request.json or {}
+        username = d.get('username', '').strip()
+        password = d.get('password', '')
+        email = d.get('email', '').strip()
+
+        if not username or len(username) < 3:
+            return jsonify({'error': 'Kullanici adi en az 3 karakter olmali'}), 400
+        if not password or len(password) < 4:
+            return jsonify({'error': 'Sifre en az 4 karakter olmali'}), 400
+
+        db = get_db()
+        existing = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+        if existing:
+            db.close()
+            return jsonify({'error': 'Bu kullanici adi zaten alinmis'}), 400
+
+        user_id = str(uuid.uuid4())[:8]
+        db.execute("INSERT INTO users (id, username, password_hash, email) VALUES (?, ?, ?, ?)",
+                   (user_id, username, hash_password(password), email))
+        db.commit()
+        db.close()
+
+        return jsonify({'success': True, 'userId': user_id, 'username': username})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    try:
+        d = request.json or {}
+        username = d.get('username', '').strip()
+        password = d.get('password', '')
+
+        if not username or not password:
+            return jsonify({'error': 'Kullanici adi ve sifre gerekli'}), 400
+
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        db.close()
+
+        if not user or user['password_hash'] != hash_password(password):
+            return jsonify({'error': 'Kullanici adi veya sifre hatali'}), 401
+
+        return jsonify({'success': True, 'userId': user['id'], 'username': user['username'], 'email': user['email'] or ''})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/auth/profile', methods=['POST'])
+def update_profile():
+    try:
+        d = request.json or {}
+        user_id = d.get('userId', '')
+        if not user_id:
+            return jsonify({'error': 'Giris yapmaniz gerekli'}), 401
+
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not user:
+            db.close()
+            return jsonify({'error': 'Kullanici bulunamadi'}), 404
+
+        email = d.get('email', user['email'] or '')
+        telegram = d.get('telegramChatId', user['telegram_chat_id'] or '')
+        db.execute("UPDATE users SET email=?, telegram_chat_id=? WHERE id=?", (email, telegram, user_id))
+        db.commit()
+        db.close()
+        return jsonify({'success': True, 'message': 'Profil guncellendi'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# DB-BACKED PORTFOLIO
+# =====================================================================
+@app.route('/api/db/portfolio', methods=['GET'])
+def db_portfolio():
+    try:
+        uid = request.args.get('userId', '')
+        if not uid:
+            return jsonify({'error': 'Giris yapmaniz gerekli'}), 401
+        db = get_db()
+        rows = db.execute("SELECT * FROM portfolios WHERE user_id=?", (uid,)).fetchall()
+        db.close()
+        pos = []; tv = tc = 0
+        for r in rows:
+            cd = _cget(_stock_cache, r['symbol'])
+            if not cd:
+                continue
+            q, ac, cp = r['quantity'], r['avg_cost'], cd['price']
+            mv = cp * q; cb = ac * q; upnl = mv - cb
+            tv += mv; tc += cb
+            pos.append({
+                'id': r['id'], 'symbol': r['symbol'], 'name': cd['name'],
+                'quantity': q, 'avgCost': sf(ac), 'currentPrice': sf(cp),
+                'marketValue': sf(mv), 'costBasis': sf(cb),
+                'unrealizedPnL': sf(upnl),
+                'unrealizedPnLPct': sf(upnl / cb * 100 if cb else 0),
+                'changePct': cd['changePct'], 'weight': 0,
+            })
+        for p in pos:
+            p['weight'] = sf(float(p['marketValue']) / tv * 100 if tv > 0 else 0)
+        tp = tv - tc
+        return jsonify(safe_dict({
+            'success': True, 'positions': pos,
+            'summary': {'totalValue': sf(tv), 'totalCost': sf(tc), 'totalPnL': sf(tp),
+                        'totalPnLPct': sf(tp / tc * 100 if tc else 0), 'positionCount': len(pos)}
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/db/portfolio', methods=['POST'])
+def db_add_portfolio():
+    try:
+        d = request.json or {}
+        uid = d.get('userId', '')
+        sym = d.get('symbol', '').upper()
+        qty = float(d.get('quantity', 0))
+        ac = float(d.get('avgCost', 0))
+        if not uid or not sym or qty <= 0 or ac <= 0:
+            return jsonify({'error': 'Gecersiz veri'}), 400
+        db = get_db()
+        existing = db.execute("SELECT * FROM portfolios WHERE user_id=? AND symbol=?", (uid, sym)).fetchone()
+        if existing:
+            new_qty = existing['quantity'] + qty
+            new_avg = (existing['avg_cost'] * existing['quantity'] + ac * qty) / new_qty
+            db.execute("UPDATE portfolios SET quantity=?, avg_cost=? WHERE id=?", (new_qty, new_avg, existing['id']))
+        else:
+            db.execute("INSERT INTO portfolios (user_id, symbol, quantity, avg_cost) VALUES (?, ?, ?, ?)", (uid, sym, qty, ac))
+        db.commit()
+        db.close()
+        return jsonify({'success': True, 'message': f'{sym} portfoye eklendi'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/db/portfolio/<int:pid>', methods=['DELETE'])
+def db_del_portfolio(pid):
+    try:
+        db = get_db()
+        db.execute("DELETE FROM portfolios WHERE id=?", (pid,))
+        db.commit()
+        db.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# DB-BACKED WATCHLIST
+# =====================================================================
+@app.route('/api/db/watchlist', methods=['GET'])
+def db_watchlist():
+    try:
+        uid = request.args.get('userId', '')
+        if not uid:
+            return jsonify({'success': True, 'watchlist': []})
+        db = get_db()
+        rows = db.execute("SELECT symbol FROM watchlists WHERE user_id=?", (uid,)).fetchall()
+        db.close()
+        symbols = [r['symbol'] for r in rows]
+        return jsonify(safe_dict({'success': True, 'watchlist': _get_stocks(symbols), 'symbols': symbols}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/db/watchlist', methods=['POST'])
+def db_update_watchlist():
+    try:
+        d = request.json or {}
+        uid = d.get('userId', '')
+        sym = d.get('symbol', '').upper()
+        action = d.get('action', 'add')
+        if not uid or not sym:
+            return jsonify({'error': 'Gecersiz veri'}), 400
+        db = get_db()
+        if action == 'add':
+            try:
+                db.execute("INSERT INTO watchlists (user_id, symbol) VALUES (?, ?)", (uid, sym))
+            except sqlite3.IntegrityError:
+                pass
+        else:
+            db.execute("DELETE FROM watchlists WHERE user_id=? AND symbol=?", (uid, sym))
+        db.commit()
+        db.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# DB-BACKED ALERTS
+# =====================================================================
+@app.route('/api/db/alerts', methods=['GET'])
+def db_alerts():
+    try:
+        uid = request.args.get('userId', '')
+        if not uid:
+            return jsonify({'success': True, 'alerts': []})
+        db = get_db()
+        rows = db.execute("SELECT * FROM alerts WHERE user_id=? ORDER BY created_at DESC", (uid,)).fetchall()
+        db.close()
+        alerts = [{
+            'id': r['id'], 'symbol': r['symbol'], 'condition': r['condition'],
+            'targetValue': r['target_value'], 'active': bool(r['active']),
+            'triggered': bool(r['triggered']), 'triggeredAt': r['triggered_at'],
+            'createdAt': r['created_at'],
+        } for r in rows]
+        return jsonify(safe_dict({'success': True, 'alerts': alerts}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/db/alerts', methods=['POST'])
+def db_add_alert():
+    try:
+        d = request.json or {}
+        uid = d.get('userId', '')
+        sym = d.get('symbol', '').upper()
+        condition = d.get('condition', 'price_above')
+        target = float(d.get('targetValue', 0))
+        if not uid or not sym or target <= 0:
+            return jsonify({'error': 'Gecersiz veri'}), 400
+        db = get_db()
+        db.execute("INSERT INTO alerts (user_id, symbol, condition, target_value) VALUES (?, ?, ?, ?)",
+                   (uid, sym, condition, target))
+        db.commit()
+        db.close()
+        return jsonify({'success': True, 'message': f'{sym} icin uyari eklendi'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/db/alerts/<int:aid>', methods=['DELETE'])
+def db_del_alert(aid):
+    try:
+        db = get_db()
+        db.execute("DELETE FROM alerts WHERE id=?", (aid,))
+        db.commit()
+        db.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/db/alerts/check', methods=['POST'])
+def db_check_alerts():
+    """Tetiklenen uyarilari kontrol et"""
+    try:
+        d = request.json or {}
+        uid = d.get('userId', '')
+        if not uid:
+            return jsonify({'success': True, 'triggered': []})
+        db = get_db()
+        rows = db.execute("SELECT * FROM alerts WHERE user_id=? AND active=1 AND triggered=0", (uid,)).fetchall()
+        triggered = []
+        for r in rows:
+            stock = _cget(_stock_cache, r['symbol'])
+            if not stock:
+                continue
+            price = stock['price']
+            fire = False
+            if r['condition'] == 'price_above' and price >= r['target_value']:
+                fire = True
+            elif r['condition'] == 'price_below' and price <= r['target_value']:
+                fire = True
+            elif r['condition'] == 'change_above' and stock.get('changePct', 0) >= r['target_value']:
+                fire = True
+            elif r['condition'] == 'change_below' and stock.get('changePct', 0) <= r['target_value']:
+                fire = True
+
+            if fire:
+                db.execute("UPDATE alerts SET triggered=1, triggered_at=? WHERE id=?",
+                           (datetime.now().isoformat(), r['id']))
+                triggered.append({
+                    'id': r['id'], 'symbol': r['symbol'], 'condition': r['condition'],
+                    'targetValue': r['target_value'], 'currentPrice': price,
+                    'message': f"{r['symbol']} uyarisi tetiklendi: {r['condition']} {r['target_value']} (Guncel: {price})"
+                })
+        db.commit()
+        db.close()
+
+        # Telegram bildirim gonder
+        if triggered:
+            _send_telegram_alerts(uid, triggered)
+
+        return jsonify(safe_dict({'success': True, 'triggered': triggered}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# TELEGRAM BILDIRIM
+# =====================================================================
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+
+def _send_telegram_alerts(user_id, triggered_alerts):
+    """Tetiklenen uyarilari Telegram'a gonder"""
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    try:
+        db = get_db()
+        user = db.execute("SELECT telegram_chat_id FROM users WHERE id=?", (user_id,)).fetchone()
+        db.close()
+        if not user or not user['telegram_chat_id']:
+            return
+
+        chat_id = user['telegram_chat_id']
+        for alert in triggered_alerts:
+            text = f"🔔 *BIST Pro Uyari*\n\n{alert['message']}"
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            try:
+                req_lib.post(url, json={'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}, timeout=5)
+            except:
+                pass
+    except:
+        pass
+
+
 @app.route('/api/docs')
 def docs():
-    return jsonify({'name':'BIST Pro v4.0.0','endpoints':['/api/health','/api/debug','/api/dashboard','/api/indices','/api/bist100','/api/bist30','/api/stock/<sym>','/api/screener','/api/portfolio','/api/backtest','/api/alerts','/api/watchlist','/api/sectors','/api/search']})
+    return jsonify({'name': 'BIST Pro v5.0.0', 'endpoints': [
+        '/api/health', '/api/debug', '/api/dashboard', '/api/indices',
+        '/api/bist100', '/api/bist30', '/api/stock/<sym>', '/api/stock/<sym>/kap',
+        '/api/compare', '/api/screener', '/api/heatmap', '/api/report',
+        '/api/backtest', '/api/sectors', '/api/search',
+        '/api/auth/register', '/api/auth/login', '/api/auth/profile',
+        '/api/db/portfolio', '/api/db/watchlist', '/api/db/alerts',
+    ]})
 
 # NO MODULE-LEVEL THREAD START - before_request handles it
-print("[STARTUP] BIST Pro v4.0.0 ready - batch loader")
+print("[STARTUP] BIST Pro v5.0.0 ready - batch loader + SQLite")
 
 if __name__ == '__main__':
-    port=int(os.environ.get("PORT",5000))
+    port = int(os.environ.get("PORT", 5000))
     print(f"[STARTUP] Port {port}")
-    app.run(host='0.0.0.0',port=port)
+    app.run(host='0.0.0.0', port=port)
