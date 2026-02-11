@@ -745,6 +745,22 @@ def calc_stochastic(closes, highs, lows, period=14):
     k=sf(((cur-lo)/(hi-lo))*100 if hi!=lo else 50)
     return {'name':'Stochastic','k':k,'d':k,'signal':'buy' if k<20 else ('sell' if k>80 else 'neutral')}
 
+def calc_stochastic_history(closes, highs, lows, period=14):
+    r=[]
+    for i in range(period, len(closes)):
+        hi=float(np.max(highs[i-period:i+1]))
+        lo=float(np.min(lows[i-period:i+1]))
+        cur=float(closes[i])
+        k=sf(((cur-lo)/(hi-lo))*100 if hi!=lo else 50)
+        r.append({'k':k})
+    # Smooth %D (3-period SMA of %K)
+    for i in range(len(r)):
+        if i >= 2:
+            r[i]['d'] = sf((r[i]['k'] + r[i-1]['k'] + r[i-2]['k']) / 3)
+        else:
+            r[i]['d'] = r[i]['k']
+    return r
+
 def calc_atr(highs, lows, closes, period=14):
     if len(closes)<period+1: return {'name':'ATR','value':0,'pct':0,'signal':'neutral'}
     tr=[max(float(highs[i])-float(lows[i]),abs(float(highs[i])-float(closes[i-1])),abs(float(lows[i])-float(closes[i-1]))) for i in range(1,len(closes))]
@@ -1292,7 +1308,7 @@ def calc_all_indicators(hist, cp):
         'rsi':calc_rsi(c),'rsiHistory':rsi_h,
         'macd':calc_macd(c),'macdHistory':calc_macd_history(c),
         'bollinger':calc_bollinger(c,cp),'bollingerHistory':calc_bollinger_history(c),
-        'stochastic':calc_stochastic(c,h,l),
+        'stochastic':calc_stochastic(c,h,l),'stochasticHistory':calc_stochastic_history(c,h,l),
         'ema':calc_ema(c,cp),'emaHistory':calc_ema_history(c),
         'atr':calc_atr(h,l,c),
         'adx':calc_adx(h,l,c),
