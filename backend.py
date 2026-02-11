@@ -712,12 +712,14 @@ def calc_bollinger_history(closes, period=20):
         r.append({'upper':sf(sma+2*std),'middle':sf(sma),'lower':sf(sma-2*std)})
     return r
 
+EMA_PERIODS = [5, 10, 20, 50, 100, 200]
+
 def calc_ema(closes, cp):
     result={'name':'EMA','signal':'neutral'}
     s=pd.Series(list(closes),dtype=float)
-    if len(closes)>=20: result['ema20']=sf(s.ewm(span=20).mean().iloc[-1])
-    if len(closes)>=50: result['ema50']=sf(s.ewm(span=50).mean().iloc[-1])
-    if len(closes)>=200: result['ema200']=sf(s.ewm(span=200).mean().iloc[-1])
+    for p in EMA_PERIODS:
+        if len(closes)>=p:
+            result[f'ema{p}']=sf(s.ewm(span=p).mean().iloc[-1])
     e20,e50=result.get('ema20',cp),result.get('ema50',cp)
     if float(cp)>e20>e50: result['signal']='buy'
     elif float(cp)<e20<e50: result['signal']='sell'
@@ -725,14 +727,16 @@ def calc_ema(closes, cp):
 
 def calc_ema_history(closes):
     s=pd.Series(list(closes),dtype=float)
-    e20=s.ewm(span=20).mean() if len(closes)>=20 else pd.Series([])
-    e50=s.ewm(span=50).mean() if len(closes)>=50 else pd.Series([])
+    emas={}
+    for p in EMA_PERIODS:
+        if len(closes)>=p:
+            emas[f'ema{p}']=s.ewm(span=p).mean()
     r=[]
     for i in range(len(closes)):
-        p={}
-        if i<len(e20): p['ema20']=sf(e20.iloc[i])
-        if i<len(e50): p['ema50']=sf(e50.iloc[i])
-        r.append(p)
+        pt={}
+        for k,v in emas.items():
+            if i<len(v): pt[k]=sf(v.iloc[i])
+        r.append(pt)
     return r
 
 def calc_stochastic(closes, highs, lows, period=14):
@@ -1552,19 +1556,38 @@ def commodity_detail(symbol):
                         except:
                             pass
                     if usd_hist is not None and len(usd_hist) >= 2:
-                        # Align dates
+                        # Normalize dates (remove time component for matching)
+                        hist.index = hist.index.normalize()
+                        usd_hist.index = usd_hist.index.normalize()
+                        # Remove duplicate dates (keep last)
+                        hist = hist[~hist.index.duplicated(keep='last')]
+                        usd_hist = usd_hist[~usd_hist.index.duplicated(keep='last')]
                         common_dates = hist.index.intersection(usd_hist.index)
+                        print(f"  [COMMODITY] {symbol} tarih eslestirme: hist={len(hist)}, usd={len(usd_hist)}, ortak={len(common_dates)}")
                         if len(common_dates) >= 10:
                             hist = hist.loc[common_dates].copy()
                             usd_rates = usd_hist.loc[common_dates, 'Close']
                             ons_to_gram = 31.1035
                             for col in ['Open', 'High', 'Low', 'Close']:
-                                hist[col] = hist[col] * usd_rates / ons_to_gram
-                            print(f"  [COMMODITY] {symbol} TL donusumu OK: {len(hist)} bar")
+                                hist[col] = hist[col] * usd_rates.values / ons_to_gram
+                            print(f"  [COMMODITY] {symbol} TL donusumu OK: {len(hist)} bar, son fiyat: {hist['Close'].iloc[-1]:.2f}")
                         else:
-                            print(f"  [COMMODITY] {symbol} TL donusumu: yeterli ortak tarih yok")
+                            # Fallback: tek kur ile tum seriyi donustur
+                            print(f"  [COMMODITY] {symbol} TL donusumu: ortak tarih az, son kur ile donusturuluyor")
+                            last_usd_rate = float(usd_hist['Close'].iloc[-1])
+                            ons_to_gram = 31.1035
+                            for col in ['Open', 'High', 'Low', 'Close']:
+                                hist[col] = hist[col] * last_usd_rate / ons_to_gram
                     else:
-                        print(f"  [COMMODITY] {symbol}: USDTRY verisi alinamadi")
+                        # USDTRY verisi yok, indeks cache'den kur al
+                        print(f"  [COMMODITY] {symbol}: USDTRY hist yok, cache'den kur aliniyor")
+                        usd_idx = _cget(_index_cache, 'USDTRY')
+                        if usd_idx:
+                            last_rate = usd_idx.get('value', 0)
+                            if last_rate > 0:
+                                ons_to_gram = 31.1035
+                                for col in ['Open', 'High', 'Low', 'Close']:
+                                    hist[col] = hist[col] * last_rate / ons_to_gram
 
                 _cset(_hist_cache, cache_key, hist)
                 print(f"[COMMODITY] {symbol} OK: {len(hist)} bar")

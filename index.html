@@ -1254,7 +1254,7 @@ async function loadStockDetail(symbol) {
           ${renderIndicatorDetailed(ind.rsi, 'RSI', ind.rsi?.value, 'Göreceli Güç Endeksi. 0-100 arası. <30 aşırı satım (alış fırsatı), >70 aşırı alım (satış sinyali). 50 üzeri pozitif momentum.', 0, 100)}
           ${renderIndicatorDetailed(ind.macd, 'MACD', ind.macd?.histogram, 'Hareketli Ortalama Yakınsama/Iraksama. Histogram pozitif → alış, negatif → satış. MACD çizgisi sinyal çizgisini yukarı keserse alış sinyali.', null, null, `MACD: ${ind.macd?.macd?.toFixed(2)||'-'} | Sinyal: ${ind.macd?.signal?.toFixed(2)||'-'}`)}
           ${renderIndicatorDetailed(ind.bollinger, 'Bollinger Bantları', ind.bollinger?.bandwidth, 'Fiyat volatilitesini ölçer. Fiyat alt banda yakınsa → alış, üst banda yakınsa → satış. Bantlar daralıyorsa sert hareket beklenir.', null, null, `Üst: ${fmtPrice(ind.bollinger?.upper)} | Orta: ${fmtPrice(ind.bollinger?.middle)} | Alt: ${fmtPrice(ind.bollinger?.lower)}`)}
-          ${renderIndicatorDetailed(ind.ema, 'EMA', null, 'Üstel Hareketli Ortalama. Fiyat > EMA20 > EMA50 → güçlü yükseliş. Fiyat < EMA20 < EMA50 → güçlü düşüş.', null, null, `EMA20: ${fmtPrice(ind.ema?.ema20)} | EMA50: ${fmtPrice(ind.ema?.ema50)} ${ind.ema?.ema200 ? '| EMA200: '+fmtPrice(ind.ema.ema200) : ''}`)}
+          ${renderIndicatorDetailed(ind.ema, 'EMA', null, 'Üstel Hareketli Ortalama. Fiyat > EMA20 > EMA50 → güçlü yükseliş.', null, null, `${ind.ema?.ema5?'EMA5:'+fmtPrice(ind.ema.ema5)+' | ':''} ${ind.ema?.ema10?'EMA10:'+fmtPrice(ind.ema.ema10)+' | ':''} EMA20: ${fmtPrice(ind.ema?.ema20)} | EMA50: ${fmtPrice(ind.ema?.ema50)} ${ind.ema?.ema100 ? '| EMA100: '+fmtPrice(ind.ema.ema100) : ''} ${ind.ema?.ema200 ? '| EMA200: '+fmtPrice(ind.ema.ema200) : ''}`)}
           ${renderIndicatorDetailed(ind.stochastic, 'Stochastic', ind.stochastic?.k, 'Kapanış fiyatının belirli dönemdeki aralığa göre konumu. K<20 aşırı satım, K>80 aşırı alım.', 0, 100)}
           ${renderIndicatorDetailed(ind.atr, 'ATR', ind.atr?.value, 'Ortalama Gerçek Aralık. Volatilite ölçer. Yüksek ATR = yüksek risk/fırsat. Stop-loss belirlemede kullanılır.', null, null, `Günlük ort. hareket: ${ind.atr?.pct?.toFixed(2)||'-'}%`)}
           ${renderIndicatorDetailed(ind.adx, 'ADX', ind.adx?.value, 'Ortalama Yönsel Endeks. Trend gücünü ölçer. >25 güçlü trend, <20 trendsiz piyasa. +DI>-DI → yükseliş.', 0, 100, `+DI: ${ind.adx?.plusDI?.toFixed(1)||'-'} | -DI: ${ind.adx?.minusDI?.toFixed(1)||'-'}`)}
@@ -1470,7 +1470,7 @@ async function loadCommodityDetail(symbol, period) {
           ${renderIndicatorDetailed(ind.rsi, 'RSI', ind.rsi?.value, 'Göreceli Güç Endeksi. 0-100 arası. <30 aşırı satım, >70 aşırı alım.', 0, 100)}
           ${renderIndicatorDetailed(ind.macd, 'MACD', ind.macd?.histogram, 'Hareketli Ortalama Yakınsama/Iraksama.', null, null, `MACD: ${ind.macd?.macd?.toFixed(2)||'-'} | Sinyal: ${ind.macd?.signal?.toFixed(2)||'-'}`)}
           ${renderIndicatorDetailed(ind.bollinger, 'Bollinger Bantları', ind.bollinger?.bandwidth, 'Fiyat volatilitesini ölçer.', null, null, `Üst: ${fmtPrice(ind.bollinger?.upper)} | Orta: ${fmtPrice(ind.bollinger?.middle)} | Alt: ${fmtPrice(ind.bollinger?.lower)}`)}
-          ${renderIndicatorDetailed(ind.ema, 'EMA', null, 'Üstel Hareketli Ortalama.', null, null, `EMA20: ${fmtPrice(ind.ema?.ema20)} | EMA50: ${fmtPrice(ind.ema?.ema50)}`)}
+          ${renderIndicatorDetailed(ind.ema, 'EMA', null, 'Üstel Hareketli Ortalama.', null, null, `EMA20: ${fmtPrice(ind.ema?.ema20)} | EMA50: ${fmtPrice(ind.ema?.ema50)} ${ind.ema?.ema100 ? '| EMA100: '+fmtPrice(ind.ema.ema100) : ''} ${ind.ema?.ema200 ? '| EMA200: '+fmtPrice(ind.ema.ema200) : ''}`)}
           ${renderIndicatorDetailed(ind.stochastic, 'Stochastic', ind.stochastic?.k, 'K<20 aşırı satım, K>80 aşırı alım.', 0, 100)}
           ${renderIndicatorDetailed(ind.atr, 'ATR', ind.atr?.value, 'Ortalama Gerçek Aralık. Volatilite ölçer.', null, null, `Günlük ort. hareket: ${ind.atr?.pct?.toFixed(2)||'-'}%`)}
           ${renderIndicatorDetailed(ind.adx, 'ADX', ind.adx?.value, 'Trend gücünü ölçer. >25 güçlü trend.', 0, 100)}
@@ -1844,55 +1844,145 @@ function renderRecommendation(rec) {
 // =============================================================================
 // CHARTS
 // =============================================================================
-function drawPriceChart(chartData, symbol, indicators) {
+// Chart overlay indicator system
+let _chartData = null;
+let _chartSymbol = null;
+let _chartIndicators = null;
+let _activeOverlays = new Set(['ema20', 'ema50']); // default aktif
+
+const OVERLAY_CONFIG = {
+  ema5:   { label: 'EMA 5',   color: '#ff6b6b', dash: [], group: 'ema' },
+  ema10:  { label: 'EMA 10',  color: '#ffa06b', dash: [], group: 'ema' },
+  ema20:  { label: 'EMA 20',  color: '#ffc547', dash: [], group: 'ema' },
+  ema50:  { label: 'EMA 50',  color: '#a78bfa', dash: [], group: 'ema' },
+  ema100: { label: 'EMA 100', color: '#4da6ff', dash: [], group: 'ema' },
+  ema200: { label: 'EMA 200', color: '#ff4da6', dash: [], group: 'ema' },
+  bbands: { label: 'Bollinger', color: '#ff4d6a', dash: [4,4], group: 'bb' },
+  ichimoku: { label: 'Ichimoku', color: '#26a69a', dash: [], group: 'ich' },
+  vwap:   { label: 'VWAP',    color: '#e040fb', dash: [2,2], group: 'vwap' },
+  psar:   { label: 'P.SAR',   color: '#ffeb3b', dash: [], group: 'psar' },
+};
+
+function toggleOverlay(key) {
+  if (_activeOverlays.has(key)) _activeOverlays.delete(key);
+  else _activeOverlays.add(key);
+  rebuildChart();
+}
+
+function renderOverlayButtons() {
+  return Object.entries(OVERLAY_CONFIG).map(([key, cfg]) => {
+    const active = _activeOverlays.has(key);
+    return `<button class="btn btn-sm" onclick="toggleOverlay('${key}')" style="font-size:10px;padding:3px 8px;margin:2px;border:1px solid ${cfg.color}${active?'':'44'};background:${active ? cfg.color+'22' : 'transparent'};color:${active ? cfg.color : 'var(--text-muted)'};transition:all .2s;">${cfg.label}</button>`;
+  }).join('');
+}
+
+function rebuildChart() {
+  if (!_chartData || !_chartSymbol) return;
+  drawPriceChart(_chartData, _chartSymbol, _chartIndicators, true);
+}
+
+function drawPriceChart(chartData, symbol, indicators, isRebuild) {
   if (!chartData || !chartData.dates) return;
+  _chartData = chartData;
+  _chartSymbol = symbol;
+  _chartIndicators = indicators;
+
   if (currentChart) { currentChart.destroy(); currentChart = null; }
 
   const ctx = document.getElementById('priceChart');
   if (!ctx) return;
 
-  const datasets = [
-    {
-      label: symbol + ' Kapanış',
-      data: chartData.prices,
-      borderColor: '#00d4aa',
-      backgroundColor: 'rgba(0,212,170,0.05)',
-      fill: true,
-      tension: 0.3,
-      pointRadius: 0,
-      borderWidth: 2,
+  // Render toggle buttons
+  if (!isRebuild) {
+    let btnContainer = document.getElementById('chartOverlayBtns');
+    if (!btnContainer) {
+      btnContainer = document.createElement('div');
+      btnContainer.id = 'chartOverlayBtns';
+      btnContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:8px;padding:8px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);';
+      ctx.parentElement.insertBefore(btnContainer, ctx);
     }
-  ];
+    btnContainer.innerHTML = '<span style="font-size:10px;color:var(--text-muted);margin-right:6px;line-height:28px;">Grafik:</span>' + renderOverlayButtons();
+  } else {
+    const btnContainer = document.getElementById('chartOverlayBtns');
+    if (btnContainer) btnContainer.innerHTML = '<span style="font-size:10px;color:var(--text-muted);margin-right:6px;line-height:28px;">Grafik:</span>' + renderOverlayButtons();
+  }
 
-  // Add EMA overlays
+  const datasets = [{
+    label: symbol + ' Kapanış',
+    data: chartData.prices,
+    borderColor: '#00d4aa',
+    backgroundColor: 'rgba(0,212,170,0.05)',
+    fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2,
+  }];
+
+  const padData = (arr, targetLen) => {
+    const padLen = targetLen - arr.length;
+    return padLen > 0 ? [...new Array(padLen).fill(null), ...arr] : arr;
+  };
+
+  // EMA overlays
   if (indicators?.emaHistory) {
-    const ema20 = indicators.emaHistory.map(e => e.ema20 || null);
-    const ema50 = indicators.emaHistory.map(e => e.ema50 || null);
-    if (ema20.some(v => v)) {
-      datasets.push({
-        label: 'EMA 20', data: ema20,
-        borderColor: '#ffc547', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false,
-      });
-    }
-    if (ema50.some(v => v)) {
-      datasets.push({
-        label: 'EMA 50', data: ema50,
-        borderColor: '#a78bfa', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false,
-      });
+    for (const p of [5, 10, 20, 50, 100, 200]) {
+      const key = `ema${p}`;
+      if (!_activeOverlays.has(key)) continue;
+      const cfg = OVERLAY_CONFIG[key];
+      const data = indicators.emaHistory.map(e => e[key] || null);
+      if (data.some(v => v)) {
+        datasets.push({
+          label: cfg.label, data, borderColor: cfg.color,
+          borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false,
+        });
+      }
     }
   }
 
   // Bollinger bands
-  if (indicators?.bollingerHistory && indicators.bollingerHistory.length > 0) {
-    const padLen = chartData.dates.length - indicators.bollingerHistory.length;
-    const pad = new Array(padLen).fill(null);
+  if (_activeOverlays.has('bbands') && indicators?.bollingerHistory?.length > 0) {
+    const bh = indicators.bollingerHistory;
     datasets.push({
-      label: 'BB Üst', data: [...pad, ...indicators.bollingerHistory.map(b => b.upper)],
-      borderColor: 'rgba(255,77,106,0.3)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false,
+      label: 'BB Üst', data: padData(bh.map(b => b.upper), chartData.dates.length),
+      borderColor: 'rgba(255,77,106,0.5)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false,
     });
     datasets.push({
-      label: 'BB Alt', data: [...pad, ...indicators.bollingerHistory.map(b => b.lower)],
-      borderColor: 'rgba(77,166,255,0.3)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false,
+      label: 'BB Orta', data: padData(bh.map(b => b.middle), chartData.dates.length),
+      borderColor: 'rgba(255,77,106,0.25)', borderWidth: 1, borderDash: [2,4], pointRadius: 0, fill: false,
+    });
+    datasets.push({
+      label: 'BB Alt', data: padData(bh.map(b => b.lower), chartData.dates.length),
+      borderColor: 'rgba(77,166,255,0.5)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false,
+    });
+  }
+
+  // Ichimoku cloud
+  if (_activeOverlays.has('ichimoku') && indicators?.ichimoku) {
+    const ich = indicators.ichimoku;
+    if (ich.tenkan) {
+      const tenkanLine = chartData.prices.map(() => ich.tenkan);
+      const kijunLine = chartData.prices.map(() => ich.kijun);
+      datasets.push({
+        label: 'Tenkan', data: tenkanLine,
+        borderColor: '#26a69a', borderWidth: 1, pointRadius: 0, fill: false,
+      });
+      datasets.push({
+        label: 'Kijun', data: kijunLine,
+        borderColor: '#ef5350', borderWidth: 1, pointRadius: 0, fill: false,
+      });
+    }
+  }
+
+  // VWAP
+  if (_activeOverlays.has('vwap') && indicators?.vwap?.value) {
+    datasets.push({
+      label: 'VWAP', data: chartData.prices.map(() => indicators.vwap.value),
+      borderColor: '#e040fb', borderWidth: 1, borderDash: [2,2], pointRadius: 0, fill: false,
+    });
+  }
+
+  // Parabolic SAR
+  if (_activeOverlays.has('psar') && indicators?.psar?.value) {
+    datasets.push({
+      label: 'P.SAR', data: chartData.prices.map(() => indicators.psar.value),
+      borderColor: '#ffeb3b', borderWidth: 1.5, borderDash: [1,3], pointRadius: 0, fill: false,
     });
   }
 
@@ -1903,11 +1993,20 @@ function drawPriceChart(chartData, symbol, indicators) {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { display: true, labels: { color: '#8896aa', font: { size: 11 } } },
+        legend: {
+          display: true, position: 'top',
+          labels: { color: '#8896aa', font: { size: 10 }, boxWidth: 12, padding: 8, usePointStyle: true },
+          onClick: (e, item, legend) => {
+            const idx = item.datasetIndex;
+            const meta = legend.chart.getDatasetMeta(idx);
+            meta.hidden = !meta.hidden;
+            legend.chart.update();
+          }
+        },
         tooltip: {
           backgroundColor: '#1a2234', borderColor: '#2a3548', borderWidth: 1,
           titleColor: '#e8ecf4', bodyColor: '#8896aa',
-          titleFont: { family: 'JetBrains Mono' }, bodyFont: { family: 'JetBrains Mono' },
+          titleFont: { family: 'JetBrains Mono' }, bodyFont: { family: 'JetBrains Mono', size: 11 },
         }
       },
       scales: {
