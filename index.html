@@ -885,7 +885,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 // CONFIG
 // =============================================================================
 const API_BASE = window.location.origin + '/api';
-let currentChart = null;
+let currentChart = null; // legacy compat
 let btChartInstance = null;
 
 // =============================================================================
@@ -1238,10 +1238,8 @@ async function loadStockDetail(symbol) {
       </div>
     </div>
 
-    <!-- Price Chart -->
-    <div class="chart-container mb-24 fade-in">
-      <canvas id="priceChart"></canvas>
-    </div>
+    <!-- Chart System -->
+    <div class="mb-24 fade-in" id="chartSystem"></div>
 
     <!-- Indicators Grid - Collapsible -->
     <div class="card mb-24 fade-in">
@@ -1454,10 +1452,8 @@ async function loadCommodityDetail(symbol, period) {
       </div>
     </div>
 
-    <!-- Price Chart -->
-    <div class="chart-container mb-24 fade-in">
-      <canvas id="priceChart"></canvas>
-    </div>
+    <!-- Chart System -->
+    <div class="mb-24 fade-in" id="chartSystem"></div>
 
     <!-- Indicators Grid -->
     <div class="card mb-24 fade-in">
@@ -1842,178 +1838,223 @@ function renderRecommendation(rec) {
 }
 
 // =============================================================================
-// CHARTS
+// CHARTS - Multi-panel system with toggleable indicators
 // =============================================================================
-// Chart overlay indicator system
 let _chartData = null;
 let _chartSymbol = null;
 let _chartIndicators = null;
-let _activeOverlays = new Set(['ema20', 'ema50']); // default aktif
+let _charts = {}; // {main, volume, macd, rsi, stoch}
+let _activeOverlays = new Set(['ema20', 'ema50']);
+let _activeSubCharts = new Set(['volume']);
 
-const OVERLAY_CONFIG = {
-  ema5:   { label: 'EMA 5',   color: '#ff6b6b', dash: [], group: 'ema' },
-  ema10:  { label: 'EMA 10',  color: '#ffa06b', dash: [], group: 'ema' },
-  ema20:  { label: 'EMA 20',  color: '#ffc547', dash: [], group: 'ema' },
-  ema50:  { label: 'EMA 50',  color: '#a78bfa', dash: [], group: 'ema' },
-  ema100: { label: 'EMA 100', color: '#4da6ff', dash: [], group: 'ema' },
-  ema200: { label: 'EMA 200', color: '#ff4da6', dash: [], group: 'ema' },
-  bbands: { label: 'Bollinger', color: '#ff4d6a', dash: [4,4], group: 'bb' },
-  ichimoku: { label: 'Ichimoku', color: '#26a69a', dash: [], group: 'ich' },
-  vwap:   { label: 'VWAP',    color: '#e040fb', dash: [2,2], group: 'vwap' },
-  psar:   { label: 'P.SAR',   color: '#ffeb3b', dash: [], group: 'psar' },
+const OVERLAY_DEFS = {
+  ema5:   { label: 'EMA 5',   color: '#ff6b6b', cat: 'EMA' },
+  ema10:  { label: 'EMA 10',  color: '#ffa06b', cat: 'EMA' },
+  ema20:  { label: 'EMA 20',  color: '#ffc547', cat: 'EMA' },
+  ema50:  { label: 'EMA 50',  color: '#a78bfa', cat: 'EMA' },
+  ema100: { label: 'EMA 100', color: '#4da6ff', cat: 'EMA' },
+  ema200: { label: 'EMA 200', color: '#ff4da6', cat: 'EMA' },
+  bbands: { label: 'Bollinger', color: '#ff4d6a', cat: 'Bant' },
+  ichimoku: { label: 'Ichimoku', color: '#26a69a', cat: 'Trend' },
+  vwap:   { label: 'VWAP',    color: '#e040fb',  cat: 'Hacim' },
+  psar:   { label: 'P.SAR',   color: '#ffeb3b',  cat: 'Trend' },
+};
+
+const SUBCHART_DEFS = {
+  volume:  { label: 'Hacim',      color: '#4da6ff', cat: 'Alt Grafik' },
+  macd:    { label: 'MACD',       color: '#ffc547', cat: 'Alt Grafik' },
+  rsi:     { label: 'RSI',        color: '#00e5a0', cat: 'Alt Grafik' },
+  stoch:   { label: 'Stochastic', color: '#a78bfa', cat: 'Alt Grafik' },
 };
 
 function toggleOverlay(key) {
   if (_activeOverlays.has(key)) _activeOverlays.delete(key);
   else _activeOverlays.add(key);
-  rebuildChart();
+  rebuildCharts();
 }
 
-function renderOverlayButtons() {
-  return Object.entries(OVERLAY_CONFIG).map(([key, cfg]) => {
-    const active = _activeOverlays.has(key);
-    return `<button class="btn btn-sm" onclick="toggleOverlay('${key}')" style="font-size:10px;padding:3px 8px;margin:2px;border:1px solid ${cfg.color}${active?'':'44'};background:${active ? cfg.color+'22' : 'transparent'};color:${active ? cfg.color : 'var(--text-muted)'};transition:all .2s;">${cfg.label}</button>`;
-  }).join('');
+function toggleSubChart(key) {
+  if (_activeSubCharts.has(key)) _activeSubCharts.delete(key);
+  else _activeSubCharts.add(key);
+  rebuildCharts();
 }
 
-function rebuildChart() {
+function rebuildCharts() {
   if (!_chartData || !_chartSymbol) return;
-  drawPriceChart(_chartData, _chartSymbol, _chartIndicators, true);
+  drawPriceChart(_chartData, _chartSymbol, _chartIndicators);
 }
 
-function drawPriceChart(chartData, symbol, indicators, isRebuild) {
+function renderChartToolbar() {
+  const cats = {};
+  for (const [k, v] of Object.entries(OVERLAY_DEFS)) {
+    if (!cats[v.cat]) cats[v.cat] = [];
+    cats[v.cat].push({ key: k, ...v, active: _activeOverlays.has(k), type: 'overlay' });
+  }
+  for (const [k, v] of Object.entries(SUBCHART_DEFS)) {
+    if (!cats[v.cat]) cats[v.cat] = [];
+    cats[v.cat].push({ key: k, ...v, active: _activeSubCharts.has(k), type: 'sub' });
+  }
+
+  let html = '';
+  for (const [cat, items] of Object.entries(cats)) {
+    html += `<div style="display:flex;align-items:center;gap:3px;flex-wrap:wrap;"><span style="font-size:9px;color:var(--text-muted);min-width:55px;font-weight:600;">${cat}</span>`;
+    for (const it of items) {
+      const fn = it.type === 'overlay' ? 'toggleOverlay' : 'toggleSubChart';
+      html += `<button onclick="${fn}('${it.key}')" style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid ${it.color}${it.active?'':'33'};background:${it.active ? it.color+'25' : 'transparent'};color:${it.active ? it.color : 'var(--text-muted)'};cursor:pointer;transition:all .15s;font-family:var(--font-body);">${it.label}</button>`;
+    }
+    html += '</div>';
+  }
+  return html;
+}
+
+const _cOpts = {
+  responsive: true, maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: { display: true, position: 'top', labels: { color: '#8896aa', font: { size: 9 }, boxWidth: 10, padding: 6, usePointStyle: true } },
+    tooltip: { backgroundColor: '#1a2234', borderColor: '#2a3548', borderWidth: 1, titleColor: '#e8ecf4', bodyColor: '#8896aa', titleFont: { family: 'JetBrains Mono', size: 11 }, bodyFont: { family: 'JetBrains Mono', size: 10 } },
+  },
+  scales: {
+    x: { display: false },
+    y: { grid: { color: 'rgba(42,53,72,0.3)' }, ticks: { color: '#5a6a80', font: { family: 'JetBrains Mono', size: 10 } } },
+  }
+};
+
+function drawPriceChart(chartData, symbol, indicators) {
   if (!chartData || !chartData.dates) return;
   _chartData = chartData;
   _chartSymbol = symbol;
   _chartIndicators = indicators;
 
-  if (currentChart) { currentChart.destroy(); currentChart = null; }
+  // Destroy old charts
+  Object.values(_charts).forEach(c => { try { c.destroy(); } catch(e){} });
+  _charts = {};
 
-  const ctx = document.getElementById('priceChart');
-  if (!ctx) return;
+  const container = document.getElementById('chartSystem');
+  if (!container) return;
 
-  // Render toggle buttons
-  if (!isRebuild) {
-    let btnContainer = document.getElementById('chartOverlayBtns');
-    if (!btnContainer) {
-      btnContainer = document.createElement('div');
-      btnContainer.id = 'chartOverlayBtns';
-      btnContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;margin-bottom:8px;padding:8px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);';
-      ctx.parentElement.insertBefore(btnContainer, ctx);
-    }
-    btnContainer.innerHTML = '<span style="font-size:10px;color:var(--text-muted);margin-right:6px;line-height:28px;">Grafik:</span>' + renderOverlayButtons();
-  } else {
-    const btnContainer = document.getElementById('chartOverlayBtns');
-    if (btnContainer) btnContainer.innerHTML = '<span style="font-size:10px;color:var(--text-muted);margin-right:6px;line-height:28px;">Grafik:</span>' + renderOverlayButtons();
+  const dates = chartData.dates;
+  const pad = (arr, len) => { const p = len - arr.length; return p > 0 ? [...Array(p).fill(null), ...arr] : arr; };
+
+  // Build HTML
+  let html = `<div style="background:var(--bg-card);border-radius:var(--radius);border:1px solid var(--border);overflow:hidden;">`;
+  // Toolbar
+  html += `<div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:4px;">${renderChartToolbar()}</div>`;
+  // Main chart
+  html += `<div style="height:360px;padding:8px;"><canvas id="mainChart"></canvas></div>`;
+  // Sub charts
+  const subs = [..._activeSubCharts];
+  for (const s of subs) {
+    html += `<div style="height:140px;padding:4px 8px;border-top:1px solid var(--border);"><canvas id="sub_${s}"></canvas></div>`;
   }
+  // X-axis labels (only on bottom)
+  html += `<div style="height:26px;padding:0 8px;"><canvas id="xAxisChart"></canvas></div>`;
+  html += `</div>`;
+  container.innerHTML = html;
 
-  const datasets = [{
-    label: symbol + ' Kapanış',
-    data: chartData.prices,
-    borderColor: '#00d4aa',
-    backgroundColor: 'rgba(0,212,170,0.05)',
+  // --- MAIN CHART ---
+  const mainDS = [{
+    label: symbol, data: chartData.prices,
+    borderColor: '#00d4aa', backgroundColor: 'rgba(0,212,170,0.05)',
     fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2,
   }];
-
-  const padData = (arr, targetLen) => {
-    const padLen = targetLen - arr.length;
-    return padLen > 0 ? [...new Array(padLen).fill(null), ...arr] : arr;
-  };
 
   // EMA overlays
   if (indicators?.emaHistory) {
     for (const p of [5, 10, 20, 50, 100, 200]) {
       const key = `ema${p}`;
       if (!_activeOverlays.has(key)) continue;
-      const cfg = OVERLAY_CONFIG[key];
+      const cfg = OVERLAY_DEFS[key];
       const data = indicators.emaHistory.map(e => e[key] || null);
-      if (data.some(v => v)) {
-        datasets.push({
-          label: cfg.label, data, borderColor: cfg.color,
-          borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false,
-        });
-      }
+      if (data.some(v => v)) mainDS.push({ label: cfg.label, data, borderColor: cfg.color, borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false });
     }
   }
-
-  // Bollinger bands
-  if (_activeOverlays.has('bbands') && indicators?.bollingerHistory?.length > 0) {
+  // Bollinger
+  if (_activeOverlays.has('bbands') && indicators?.bollingerHistory?.length) {
     const bh = indicators.bollingerHistory;
-    datasets.push({
-      label: 'BB Üst', data: padData(bh.map(b => b.upper), chartData.dates.length),
-      borderColor: 'rgba(255,77,106,0.5)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false,
-    });
-    datasets.push({
-      label: 'BB Orta', data: padData(bh.map(b => b.middle), chartData.dates.length),
-      borderColor: 'rgba(255,77,106,0.25)', borderWidth: 1, borderDash: [2,4], pointRadius: 0, fill: false,
-    });
-    datasets.push({
-      label: 'BB Alt', data: padData(bh.map(b => b.lower), chartData.dates.length),
-      borderColor: 'rgba(77,166,255,0.5)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false,
-    });
+    mainDS.push({ label: 'BB Üst', data: pad(bh.map(b=>b.upper), dates.length), borderColor: 'rgba(255,77,106,0.5)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: false });
+    mainDS.push({ label: 'BB Alt', data: pad(bh.map(b=>b.lower), dates.length), borderColor: 'rgba(77,166,255,0.5)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, fill: '+1', backgroundColor: 'rgba(100,100,255,0.03)' });
   }
-
-  // Ichimoku cloud
-  if (_activeOverlays.has('ichimoku') && indicators?.ichimoku) {
-    const ich = indicators.ichimoku;
-    if (ich.tenkan) {
-      const tenkanLine = chartData.prices.map(() => ich.tenkan);
-      const kijunLine = chartData.prices.map(() => ich.kijun);
-      datasets.push({
-        label: 'Tenkan', data: tenkanLine,
-        borderColor: '#26a69a', borderWidth: 1, pointRadius: 0, fill: false,
-      });
-      datasets.push({
-        label: 'Kijun', data: kijunLine,
-        borderColor: '#ef5350', borderWidth: 1, pointRadius: 0, fill: false,
-      });
-    }
+  // Ichimoku
+  if (_activeOverlays.has('ichimoku') && indicators?.ichimoku?.tenkan) {
+    mainDS.push({ label: 'Tenkan', data: dates.map(()=>indicators.ichimoku.tenkan), borderColor: '#26a69a', borderWidth: 1, pointRadius: 0, fill: false });
+    mainDS.push({ label: 'Kijun', data: dates.map(()=>indicators.ichimoku.kijun), borderColor: '#ef5350', borderWidth: 1, pointRadius: 0, fill: false });
   }
-
   // VWAP
-  if (_activeOverlays.has('vwap') && indicators?.vwap?.value) {
-    datasets.push({
-      label: 'VWAP', data: chartData.prices.map(() => indicators.vwap.value),
-      borderColor: '#e040fb', borderWidth: 1, borderDash: [2,2], pointRadius: 0, fill: false,
+  if (_activeOverlays.has('vwap') && indicators?.vwap?.value)
+    mainDS.push({ label: 'VWAP', data: dates.map(()=>indicators.vwap.value), borderColor: '#e040fb', borderWidth: 1, borderDash: [3,3], pointRadius: 0, fill: false });
+  // PSAR
+  if (_activeOverlays.has('psar') && indicators?.psar?.value)
+    mainDS.push({ label: 'P.SAR', data: dates.map(()=>indicators.psar.value), borderColor: '#ffeb3b', borderWidth: 1.5, borderDash: [1,3], pointRadius: 0, fill: false });
+
+  _charts.main = new Chart(document.getElementById('mainChart'), {
+    type: 'line', data: { labels: dates, datasets: mainDS },
+    options: { ..._cOpts, scales: { ..._cOpts.scales, x: { display: false } } }
+  });
+
+  // --- SUB CHARTS ---
+  if (_activeSubCharts.has('volume') && chartData.volumes) {
+    const volColors = chartData.prices.map((p,i) => i > 0 && p >= chartData.prices[i-1] ? 'rgba(0,229,160,0.5)' : 'rgba(255,77,106,0.5)');
+    _charts.volume = new Chart(document.getElementById('sub_volume'), {
+      type: 'bar', data: { labels: dates, datasets: [{ label: 'Hacim', data: chartData.volumes, backgroundColor: volColors, borderWidth: 0 }] },
+      options: { ..._cOpts, plugins: { ..._cOpts.plugins, legend: { display: false } }, scales: { ..._cOpts.scales, x: { display: false }, y: { ...(_cOpts.scales.y), ticks: { ..._cOpts.scales.y.ticks, callback: v => v >= 1e6 ? (v/1e6).toFixed(0)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v } } } }
     });
   }
 
-  // Parabolic SAR
-  if (_activeOverlays.has('psar') && indicators?.psar?.value) {
-    datasets.push({
-      label: 'P.SAR', data: chartData.prices.map(() => indicators.psar.value),
-      borderColor: '#ffeb3b', borderWidth: 1.5, borderDash: [1,3], pointRadius: 0, fill: false,
+  if (_activeSubCharts.has('macd') && indicators?.macdHistory?.length) {
+    const mh = indicators.macdHistory;
+    const macdData = pad(mh.map(m=>m.macd), dates.length);
+    const sigData = pad(mh.map(m=>m.signal), dates.length);
+    const histData = pad(mh.map(m=>m.histogram), dates.length);
+    const histColors = histData.map(v => v === null ? 'transparent' : (v >= 0 ? 'rgba(0,229,160,0.6)' : 'rgba(255,77,106,0.6)'));
+    _charts.macd = new Chart(document.getElementById('sub_macd'), {
+      type: 'bar',
+      data: { labels: dates, datasets: [
+        { type: 'bar', label: 'Histogram', data: histData, backgroundColor: histColors, borderWidth: 0, order: 2 },
+        { type: 'line', label: 'MACD', data: macdData, borderColor: '#ffc547', borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false, order: 1 },
+        { type: 'line', label: 'Sinyal', data: sigData, borderColor: '#ff6b6b', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false, order: 1 },
+      ]},
+      options: { ..._cOpts, scales: { ..._cOpts.scales, x: { display: false } } }
     });
   }
 
-  currentChart = new Chart(ctx, {
-    type: 'line',
-    data: { labels: chartData.dates, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: {
-          display: true, position: 'top',
-          labels: { color: '#8896aa', font: { size: 10 }, boxWidth: 12, padding: 8, usePointStyle: true },
-          onClick: (e, item, legend) => {
-            const idx = item.datasetIndex;
-            const meta = legend.chart.getDatasetMeta(idx);
-            meta.hidden = !meta.hidden;
-            legend.chart.update();
-          }
-        },
-        tooltip: {
-          backgroundColor: '#1a2234', borderColor: '#2a3548', borderWidth: 1,
-          titleColor: '#e8ecf4', bodyColor: '#8896aa',
-          titleFont: { family: 'JetBrains Mono' }, bodyFont: { family: 'JetBrains Mono', size: 11 },
-        }
-      },
-      scales: {
-        x: { grid: { color: 'rgba(42,53,72,0.3)' }, ticks: { color: '#5a6a80', maxTicksLimit: 12, font: { size: 10 } } },
-        y: { grid: { color: 'rgba(42,53,72,0.3)' }, ticks: { color: '#5a6a80', font: { family: 'JetBrains Mono', size: 11 } } },
-      }
-    }
+  if (_activeSubCharts.has('rsi') && indicators?.rsiHistory?.length) {
+    const rh = indicators.rsiHistory;
+    const rsiDates = rh.map(r => r.date);
+    const rsiVals = rh.map(r => r.value);
+    const rsiPad = pad(rsiVals, dates.length);
+    _charts.rsi = new Chart(document.getElementById('sub_rsi'), {
+      type: 'line',
+      data: { labels: dates, datasets: [
+        { label: 'RSI', data: rsiPad, borderColor: '#00e5a0', borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false },
+        { label: '70', data: dates.map(()=>70), borderColor: 'rgba(255,77,106,0.4)', borderWidth: 1, borderDash: [3,3], pointRadius: 0, fill: false },
+        { label: '30', data: dates.map(()=>30), borderColor: 'rgba(0,229,160,0.4)', borderWidth: 1, borderDash: [3,3], pointRadius: 0, fill: false },
+      ]},
+      options: { ..._cOpts, scales: { ..._cOpts.scales, x: { display: false }, y: { ..._cOpts.scales.y, min: 0, max: 100 } } }
+    });
+  }
+
+  if (_activeSubCharts.has('stoch') && indicators?.stochasticHistory?.length) {
+    const sh = indicators.stochasticHistory;
+    const kData = pad(sh.map(s=>s.k), dates.length);
+    const dData = pad(sh.map(s=>s.d), dates.length);
+    _charts.stoch = new Chart(document.getElementById('sub_stoch'), {
+      type: 'line',
+      data: { labels: dates, datasets: [
+        { label: '%K', data: kData, borderColor: '#a78bfa', borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false },
+        { label: '%D', data: dData, borderColor: '#ffa06b', borderWidth: 1, pointRadius: 0, tension: 0.3, fill: false },
+        { label: '80', data: dates.map(()=>80), borderColor: 'rgba(255,77,106,0.3)', borderWidth: 1, borderDash: [3,3], pointRadius: 0, fill: false },
+        { label: '20', data: dates.map(()=>20), borderColor: 'rgba(0,229,160,0.3)', borderWidth: 1, borderDash: [3,3], pointRadius: 0, fill: false },
+      ]},
+      options: { ..._cOpts, scales: { ..._cOpts.scales, x: { display: false }, y: { ..._cOpts.scales.y, min: 0, max: 100 } } }
+    });
+  }
+
+  // X-axis chart (invisible data, just shows dates)
+  _charts.xAxis = new Chart(document.getElementById('xAxisChart'), {
+    type: 'line', data: { labels: dates, datasets: [{ data: dates.map(()=>0), pointRadius: 0, borderWidth: 0 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: { x: { grid: { display: false }, ticks: { color: '#5a6a80', maxTicksLimit: 12, font: { size: 9 } } }, y: { display: false } } }
   });
 }
 
