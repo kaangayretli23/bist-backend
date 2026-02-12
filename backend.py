@@ -22,7 +22,11 @@ except ImportError:
     pass
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'bist.db')
+# Render.com: Ephemeral filesystem siler DB'yi her deploy'da.
+# Render Disk ekle -> /var/data mount -> env DB_PATH=/var/data/bist.db
+DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'bist.db'))
+# DB dizininin var oldugundan emin ol
+os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bist-pro-secret-' + str(hash(BASE_DIR)))
 CORS(app, supports_credentials=True)
@@ -2244,10 +2248,14 @@ def login():
 
         db = get_db()
         user = db.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-        db.close()
 
-        if not user or user['password_hash'] != hash_password(password):
-            return jsonify({'error': 'Kullanici adi veya sifre hatali'}), 401
+        if not user:
+            db.close()
+            return jsonify({'error': 'Kullanici bulunamadi. Kayit olmaniz gerekebilir.'}), 401
+
+        db.close()
+        if user['password_hash'] != hash_password(password):
+            return jsonify({'error': 'Sifre hatali'}), 401
 
         return jsonify({'success': True, 'userId': user['id'], 'username': user['username'], 'email': user['email'] or ''})
     except Exception as e:
@@ -2275,6 +2283,20 @@ def update_profile():
         return jsonify({'success': True, 'message': 'Profil guncellendi'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/auth/check')
+def check_session():
+    """localStorage oturumunun hala gecerli olup olmadigini kontrol et"""
+    uid = request.args.get('userId', '')
+    if not uid:
+        return jsonify({'valid': False})
+    try:
+        db = get_db()
+        user = db.execute("SELECT id FROM users WHERE id=?", (uid,)).fetchone()
+        db.close()
+        return jsonify({'valid': user is not None})
+    except:
+        return jsonify({'valid': False})
 
 
 # =====================================================================

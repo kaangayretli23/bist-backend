@@ -854,26 +854,39 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 </div>
 
 <!-- ═══════════ LOGIN MODAL ═══════════ -->
-<div id="loginModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:none;align-items:center;justify-content:center;">
-  <div class="card" style="width:360px;max-width:90vw;">
-    <div style="font-weight:700;font-size:16px;margin-bottom:16px;" id="authTitle">Giriş Yap</div>
-    <div style="margin-bottom:12px;">
-      <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Kullanıcı Adı</label>
-      <input id="authUsername" placeholder="kullanici_adi" style="width:100%;">
+<div id="loginModal" onclick="if(event.target===this)closeLogin()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
+  <div style="width:400px;max-width:92vw;background:var(--card-bg);border:1px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:0 24px 48px rgba(0,0,0,0.4);">
+    <!-- Header with icon -->
+    <div style="text-align:center;padding:28px 24px 0;">
+      <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#f7c948);margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:24px;">
+        <svg width="28" height="28" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </div>
+      <div style="font-weight:700;font-size:18px;color:var(--text-primary);" id="authTitle">Hesabınıza Giriş Yapın</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:4px;" id="authSubtitle">Portföy ve favorilerinize erişin</div>
     </div>
-    <div style="margin-bottom:12px;">
-      <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Şifre</label>
-      <input id="authPassword" type="password" placeholder="****" style="width:100%;">
+    <!-- Tab Switcher -->
+    <div style="display:flex;margin:20px 24px 0;background:var(--bg);border-radius:10px;padding:3px;gap:3px;">
+      <button id="tabLogin" onclick="switchAuthTab('login')" style="flex:1;padding:10px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;background:var(--accent);color:#000;">Giriş Yap</button>
+      <button id="tabRegister" onclick="switchAuthTab('register')" style="flex:1;padding:10px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;background:transparent;color:var(--text-muted);">Kayıt Ol</button>
     </div>
-    <div id="authEmailRow" style="margin-bottom:12px;display:none;">
-      <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">E-posta (opsiyonel)</label>
-      <input id="authEmail" placeholder="email@ornek.com" style="width:100%;">
-    </div>
-    <div id="authError" style="color:var(--red);font-size:12px;margin-bottom:8px;display:none;"></div>
-    <div class="flex-center gap-8">
-      <button class="btn btn-primary" onclick="doAuth()">Giriş</button>
-      <button class="btn btn-secondary" onclick="toggleAuthMode()">Kayıt Ol</button>
-      <button class="btn btn-secondary" onclick="closeLogin()">İptal</button>
+    <!-- Form -->
+    <div style="padding:20px 24px 24px;">
+      <div style="margin-bottom:14px;">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;font-weight:500;">Kullanıcı Adı</label>
+        <input id="authUsername" placeholder="ornek: ahmet123" style="width:100%;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text-primary);font-size:14px;outline:none;transition:border-color .2s;" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'" onkeydown="if(event.key==='Enter')doAuth()">
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;font-weight:500;">Şifre</label>
+        <input id="authPassword" type="password" placeholder="En az 4 karakter" style="width:100%;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text-primary);font-size:14px;outline:none;transition:border-color .2s;" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'" onkeydown="if(event.key==='Enter')doAuth()">
+      </div>
+      <div id="authEmailRow" style="margin-bottom:14px;display:none;">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;font-weight:500;">E-posta <span style="opacity:0.6">(opsiyonel)</span></label>
+        <input id="authEmail" placeholder="email@ornek.com" style="width:100%;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text-primary);font-size:14px;outline:none;transition:border-color .2s;" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'" onkeydown="if(event.key==='Enter')doAuth()">
+      </div>
+      <div id="authError" style="color:var(--red);font-size:12px;margin-bottom:10px;display:none;padding:8px 12px;background:rgba(234,57,67,0.1);border-radius:8px;"></div>
+      <div id="authSuccess" style="color:var(--green);font-size:12px;margin-bottom:10px;display:none;padding:8px 12px;background:rgba(0,229,160,0.1);border-radius:8px;"></div>
+      <button class="btn btn-primary" onclick="doAuth()" id="authSubmitBtn" style="width:100%;padding:12px;font-size:14px;font-weight:600;border-radius:10px;background:var(--accent);color:#000;border:none;cursor:pointer;margin-bottom:10px;">Giriş Yap</button>
+      <button class="btn btn-secondary" onclick="closeLogin()" style="width:100%;padding:10px;font-size:13px;border-radius:10px;background:transparent;color:var(--text-muted);border:1px solid var(--border);cursor:pointer;">İptal</button>
     </div>
   </div>
 </div>
@@ -2722,40 +2735,88 @@ let authMode = 'login';
 
 function showLogin() {
   document.getElementById('loginModal').style.display = 'flex';
-  authMode = 'login';
-  document.getElementById('authTitle').textContent = 'Giriş Yap';
-  document.getElementById('authEmailRow').style.display = 'none';
+  switchAuthTab('login');
+  document.getElementById('authUsername').value = '';
+  document.getElementById('authPassword').value = '';
+  if (document.getElementById('authEmail')) document.getElementById('authEmail').value = '';
   document.getElementById('authError').style.display = 'none';
+  document.getElementById('authSuccess').style.display = 'none';
+  setTimeout(() => document.getElementById('authUsername').focus(), 100);
 }
 
 function closeLogin() {
   document.getElementById('loginModal').style.display = 'none';
 }
 
-function toggleAuthMode() {
-  if (authMode === 'login') {
-    authMode = 'register';
-    document.getElementById('authTitle').textContent = 'Kayıt Ol';
-    document.getElementById('authEmailRow').style.display = 'block';
-  } else {
-    authMode = 'login';
-    document.getElementById('authTitle').textContent = 'Giriş Yap';
-    document.getElementById('authEmailRow').style.display = 'none';
-  }
+function switchAuthTab(mode) {
+  authMode = mode;
+  const tabLogin = document.getElementById('tabLogin');
+  const tabRegister = document.getElementById('tabRegister');
+  const emailRow = document.getElementById('authEmailRow');
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const title = document.getElementById('authTitle');
+  const subtitle = document.getElementById('authSubtitle');
+
   document.getElementById('authError').style.display = 'none';
+  document.getElementById('authSuccess').style.display = 'none';
+
+  if (mode === 'register') {
+    tabRegister.style.background = 'var(--accent)';
+    tabRegister.style.color = '#000';
+    tabLogin.style.background = 'transparent';
+    tabLogin.style.color = 'var(--text-muted)';
+    emailRow.style.display = 'block';
+    submitBtn.textContent = 'Kayıt Ol';
+    title.textContent = 'Yeni Hesap Oluşturun';
+    subtitle.textContent = 'Portföy ve favorilerinizi kaydedin';
+  } else {
+    tabLogin.style.background = 'var(--accent)';
+    tabLogin.style.color = '#000';
+    tabRegister.style.background = 'transparent';
+    tabRegister.style.color = 'var(--text-muted)';
+    emailRow.style.display = 'none';
+    submitBtn.textContent = 'Giriş Yap';
+    title.textContent = 'Hesabınıza Giriş Yapın';
+    subtitle.textContent = 'Portföy ve favorilerinize erişin';
+  }
 }
 
 async function doAuth() {
   const username = document.getElementById('authUsername').value.trim();
   const password = document.getElementById('authPassword').value;
-  const email = document.getElementById('authEmail')?.value || '';
+  const email = document.getElementById('authEmail')?.value?.trim() || '';
   const errEl = document.getElementById('authError');
+  const successEl = document.getElementById('authSuccess');
+  const submitBtn = document.getElementById('authSubmitBtn');
+
+  errEl.style.display = 'none';
+  successEl.style.display = 'none';
+
+  if (!username || username.length < 3) {
+    errEl.textContent = 'Kullanıcı adı en az 3 karakter olmalı';
+    errEl.style.display = 'block';
+    return;
+  }
+  if (!password || password.length < 4) {
+    errEl.textContent = 'Şifre en az 4 karakter olmalı';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = authMode === 'register' ? 'Kayıt yapılıyor...' : 'Giriş yapılıyor...';
 
   const endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
+  const payload = { username, password };
+  if (authMode === 'register') payload.email = email;
+
   const data = await api(endpoint, {
     method: 'POST',
-    body: JSON.stringify({ username, password, email }),
+    body: JSON.stringify(payload),
   });
+
+  submitBtn.disabled = false;
+  submitBtn.textContent = authMode === 'register' ? 'Kayıt Ol' : 'Giriş Yap';
 
   if (data.error) {
     errEl.textContent = data.error;
@@ -2765,9 +2826,19 @@ async function doAuth() {
 
   currentUser = { userId: data.userId, username: data.username, email: data.email || '' };
   localStorage.setItem('bistUser', JSON.stringify(currentUser));
-  closeLogin();
-  updateUserUI();
-  // Aktif sayfayı yenile
+
+  if (authMode === 'register') {
+    successEl.textContent = 'Hesap oluşturuldu! Giriş yapıldı.';
+    successEl.style.display = 'block';
+    setTimeout(() => { closeLogin(); updateUserUI(); refreshActivePage(); }, 800);
+  } else {
+    closeLogin();
+    updateUserUI();
+    refreshActivePage();
+  }
+}
+
+function refreshActivePage() {
   const activePage = document.querySelector('.page.active');
   if (activePage) {
     const pageId = activePage.id.replace('page-', '');
@@ -2777,10 +2848,25 @@ async function doAuth() {
   }
 }
 
+// Uygulama baslarken: localStorage'da kullanici varsa, DB'de hala var mi kontrol et
+async function validateSession() {
+  if (!currentUser) return;
+  try {
+    const data = await api('/auth/check?userId=' + currentUser.userId);
+    if (!data.valid) {
+      // DB sifirlanmis, oturum gecersiz
+      currentUser = null;
+      localStorage.removeItem('bistUser');
+      updateUserUI();
+    }
+  } catch(e) { /* sessiz hata */ }
+}
+
 function logout() {
   currentUser = null;
   localStorage.removeItem('bistUser');
   updateUserUI();
+  refreshActivePage();
 }
 
 function updateUserUI() {
@@ -2790,9 +2876,12 @@ function updateUserUI() {
   el.style.alignItems = 'center';
   el.style.gap = '8px';
   if (currentUser) {
-    el.innerHTML = `<span style="font-size:12px;color:var(--accent);font-weight:600;">👤 ${currentUser.username}</span> <button class="btn btn-sm btn-secondary" onclick="logout()" style="font-size:10px;padding:2px 8px;">Çıkış</button>`;
+    el.innerHTML = `<span style="font-size:12px;color:var(--accent);font-weight:600;">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="vertical-align:-2px;margin-right:3px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      ${currentUser.username}</span>
+      <button class="btn btn-sm btn-secondary" onclick="logout()" style="font-size:10px;padding:2px 8px;">Çıkış</button>`;
   } else {
-    el.innerHTML = `<button class="btn btn-sm btn-primary" onclick="showLogin()" style="font-size:11px;background:var(--accent);color:#000;font-weight:700;">Giriş / Kayıt</button>`;
+    el.innerHTML = `<button class="btn btn-sm btn-primary" onclick="showLogin()" style="font-size:11px;background:var(--accent);color:#000;font-weight:700;border-radius:8px;padding:6px 14px;">Giriş / Kayıt</button>`;
   }
 }
 
@@ -2803,6 +2892,7 @@ function updateUserUI() {
 document.addEventListener('DOMContentLoaded', () => {
   loadDashboard();
   updateUserUI();
+  validateSession(); // DB sifirlanmissa oturumu yeniden olustur
 });
 </script>
 </body>
