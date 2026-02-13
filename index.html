@@ -396,11 +396,15 @@ tr:hover td { background: rgba(26,34,52,0.5); }
   <button class="nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('show')">☰</button>
   <div class="nav-links">
     <button class="nav-link active" data-page="dashboard" onclick="navigate('dashboard')">Dashboard</button>
+    <button class="nav-link" data-page="signals" onclick="navigate('signals')" style="color:var(--green);font-weight:700;">Sinyaller</button>
+    <button class="nav-link" data-page="opportunities" onclick="navigate('opportunities')">Fırsatlar</button>
+    <button class="nav-link" data-page="strategies" onclick="navigate('strategies')">Stratejiler</button>
+    <button class="nav-link" data-page="dividends" onclick="navigate('dividends')">Temettü</button>
     <button class="nav-link" data-page="bist100" onclick="navigate('bist100')">BIST 100</button>
     <button class="nav-link" data-page="heatmap" onclick="navigate('heatmap')">Isı Haritası</button>
     <button class="nav-link" data-page="screener" onclick="navigate('screener')">Tarayıcı</button>
     <button class="nav-link" data-page="compare" onclick="navigate('compare')">Karşılaştır</button>
-    <button class="nav-link" data-page="report" onclick="navigate('report')">Günlük Rapor</button>
+    <button class="nav-link" data-page="report" onclick="navigate('report')">Rapor</button>
     <button class="nav-link" data-page="watchlist" onclick="navigate('watchlist')">Favoriler</button>
     <button class="nav-link" data-page="portfolio" onclick="navigate('portfolio')">Portföy</button>
     <button class="nav-link" data-page="backtest" onclick="navigate('backtest')">Backtest</button>
@@ -847,33 +851,93 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 
 <!-- ═══════════ DAILY REPORT ═══════════ -->
 <div class="page" id="page-report">
-  <div class="section-title mb-24"><span class="icon">📋</span> Günlük Piyasa Raporu</div>
+  <div class="section-title mb-24"><span class="icon">📋</span> Piyasa Raporu</div>
   <div id="reportContent">
     <div class="loading"><div class="spinner"></div>Rapor hazırlanıyor...</div>
   </div>
 </div>
 
-<!-- ═══════════ LOGIN MODAL ═══════════ -->
-<div id="loginModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:none;align-items:center;justify-content:center;">
-  <div class="card" style="width:360px;max-width:90vw;">
-    <div style="font-weight:700;font-size:16px;margin-bottom:16px;" id="authTitle">Giriş Yap</div>
-    <div style="margin-bottom:12px;">
-      <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Kullanıcı Adı</label>
-      <input id="authUsername" placeholder="kullanici_adi" style="width:100%;">
-    </div>
-    <div style="margin-bottom:12px;">
-      <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Şifre</label>
-      <input id="authPassword" type="password" placeholder="****" style="width:100%;">
-    </div>
-    <div id="authEmailRow" style="margin-bottom:12px;display:none;">
-      <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">E-posta (opsiyonel)</label>
-      <input id="authEmail" placeholder="email@ornek.com" style="width:100%;">
-    </div>
-    <div id="authError" style="color:var(--red);font-size:12px;margin-bottom:8px;display:none;"></div>
+<!-- ═══════════ SINYAL TARAMA ═══════════ -->
+<div class="page" id="page-signals">
+  <div class="section-title mb-24" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+    <span><span class="icon">🎯</span> Sinyal Tarama</span>
     <div class="flex-center gap-8">
-      <button class="btn btn-primary" onclick="doAuth()">Giriş</button>
-      <button class="btn btn-secondary" onclick="toggleAuthMode()">Kayıt Ol</button>
-      <button class="btn btn-secondary" onclick="closeLogin()">İptal</button>
+      <select id="signalTimeframe" onchange="loadSignals()" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text-primary);font-size:13px;">
+        <option value="weekly">Haftalık</option>
+        <option value="monthly">Aylık</option>
+        <option value="yearly">Yıllık</option>
+      </select>
+      <select id="signalType" onchange="loadSignals()" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text-primary);font-size:13px;">
+        <option value="all">Tümü</option>
+        <option value="buy">Sadece AL</option>
+        <option value="sell">Sadece SAT</option>
+      </select>
+    </div>
+  </div>
+  <div id="signalStats" class="grid-4 mb-24"></div>
+  <div id="signalResults">
+    <div class="loading"><div class="spinner"></div>Tüm hisseler taranıyor...</div>
+  </div>
+</div>
+
+<!-- ═══════════ FIRSAT ÖZETİ ═══════════ -->
+<div class="page" id="page-opportunities">
+  <div class="section-title mb-24"><span class="icon">💡</span> Fırsat Özeti</div>
+  <div id="oppContent">
+    <div class="loading"><div class="spinner"></div>Fırsatlar araştırılıyor...</div>
+  </div>
+</div>
+
+<!-- ═══════════ CANLI STRATEJİLER ═══════════ -->
+<div class="page" id="page-strategies">
+  <div class="section-title mb-24"><span class="icon">⚡</span> Canlı Strateji Sinyalleri</div>
+  <div id="strategyContent">
+    <div class="loading"><div class="spinner"></div>Stratejiler hesaplanıyor...</div>
+  </div>
+</div>
+
+<!-- ═══════════ TEMETTÜ TAKVİMİ ═══════════ -->
+<div class="page" id="page-dividends">
+  <div class="section-title mb-24"><span class="icon">💰</span> Temettü Takvimi</div>
+  <div id="dividendContent">
+    <div class="loading"><div class="spinner"></div>Temettü bilgileri yükleniyor...</div>
+  </div>
+</div>
+
+<!-- ═══════════ LOGIN MODAL ═══════════ -->
+<div id="loginModal" onclick="if(event.target===this)closeLogin()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
+  <div style="width:400px;max-width:92vw;background:var(--card-bg);border:1px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:0 24px 48px rgba(0,0,0,0.4);">
+    <!-- Header with icon -->
+    <div style="text-align:center;padding:28px 24px 0;">
+      <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#f7c948);margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:24px;">
+        <svg width="28" height="28" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </div>
+      <div style="font-weight:700;font-size:18px;color:var(--text-primary);" id="authTitle">Hesabınıza Giriş Yapın</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:4px;" id="authSubtitle">Portföy ve favorilerinize erişin</div>
+    </div>
+    <!-- Tab Switcher -->
+    <div style="display:flex;margin:20px 24px 0;background:var(--bg);border-radius:10px;padding:3px;gap:3px;">
+      <button id="tabLogin" onclick="switchAuthTab('login')" style="flex:1;padding:10px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;background:var(--accent);color:#000;">Giriş Yap</button>
+      <button id="tabRegister" onclick="switchAuthTab('register')" style="flex:1;padding:10px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;background:transparent;color:var(--text-muted);">Kayıt Ol</button>
+    </div>
+    <!-- Form -->
+    <div style="padding:20px 24px 24px;">
+      <div style="margin-bottom:14px;">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;font-weight:500;">Kullanıcı Adı</label>
+        <input id="authUsername" placeholder="ornek: ahmet123" style="width:100%;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text-primary);font-size:14px;outline:none;transition:border-color .2s;" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'" onkeydown="if(event.key==='Enter')doAuth()">
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;font-weight:500;">Şifre</label>
+        <input id="authPassword" type="password" placeholder="En az 4 karakter" style="width:100%;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text-primary);font-size:14px;outline:none;transition:border-color .2s;" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'" onkeydown="if(event.key==='Enter')doAuth()">
+      </div>
+      <div id="authEmailRow" style="margin-bottom:14px;display:none;">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;font-weight:500;">E-posta <span style="opacity:0.6">(opsiyonel)</span></label>
+        <input id="authEmail" placeholder="email@ornek.com" style="width:100%;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text-primary);font-size:14px;outline:none;transition:border-color .2s;" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'" onkeydown="if(event.key==='Enter')doAuth()">
+      </div>
+      <div id="authError" style="color:var(--red);font-size:12px;margin-bottom:10px;display:none;padding:8px 12px;background:rgba(234,57,67,0.1);border-radius:8px;"></div>
+      <div id="authSuccess" style="color:var(--green);font-size:12px;margin-bottom:10px;display:none;padding:8px 12px;background:rgba(0,229,160,0.1);border-radius:8px;"></div>
+      <button class="btn btn-primary" onclick="doAuth()" id="authSubmitBtn" style="width:100%;padding:12px;font-size:14px;font-weight:600;border-radius:10px;background:var(--accent);color:#000;border:none;cursor:pointer;margin-bottom:10px;">Giriş Yap</button>
+      <button class="btn btn-secondary" onclick="closeLogin()" style="width:100%;padding:10px;font-size:13px;border-radius:10px;background:transparent;color:var(--text-muted);border:1px solid var(--border);cursor:pointer;">İptal</button>
     </div>
   </div>
 </div>
@@ -918,6 +982,10 @@ function navigate(page, params) {
     case 'heatmap': loadHeatmap(); break;
     case 'compare': break;
     case 'report': loadReport(); break;
+    case 'signals': loadSignals(); break;
+    case 'opportunities': loadOpportunities(); break;
+    case 'strategies': loadStrategies(); break;
+    case 'dividends': loadDividends(); break;
   }
 }
 
@@ -2715,6 +2783,311 @@ async function loadReport() {
 
 
 // =============================================================================
+// SINYAL TARAMA
+// =============================================================================
+async function loadSignals() {
+  const tf = document.getElementById('signalTimeframe')?.value || 'weekly';
+  const type = document.getElementById('signalType')?.value || 'all';
+  const container = document.getElementById('signalResults');
+  const statsEl = document.getElementById('signalStats');
+  container.innerHTML = '<div class="loading"><div class="spinner"></div>Tüm hisseler taranıyor... (bu birkaç saniye sürebilir)</div>';
+
+  const data = await api(`/signals?timeframe=${tf}&type=${type}`);
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor, lütfen bekleyin...</div>'; return; }
+  if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
+
+  const signals = data.signals || [];
+  const buys = signals.filter(s => parseFloat(s.score) > 0);
+  const sells = signals.filter(s => parseFloat(s.score) < 0);
+  const strong_buys = signals.filter(s => s.action === 'AL');
+  const strong_sells = signals.filter(s => s.action === 'SAT');
+
+  const tfLabels = {weekly: 'Haftalık', monthly: 'Aylık', yearly: 'Yıllık'};
+
+  statsEl.innerHTML = `
+    <div class="card" style="text-align:center;border-left:3px solid var(--green);">
+      <div style="font-size:24px;font-weight:800;color:var(--green);">${strong_buys.length}</div>
+      <div style="font-size:11px;color:var(--text-muted);">Güçlü AL</div>
+    </div>
+    <div class="card" style="text-align:center;border-left:3px solid var(--accent);">
+      <div style="font-size:24px;font-weight:800;color:var(--accent);">${buys.length}</div>
+      <div style="font-size:11px;color:var(--text-muted);">Toplam AL Sinyali</div>
+    </div>
+    <div class="card" style="text-align:center;border-left:3px solid var(--red);">
+      <div style="font-size:24px;font-weight:800;color:var(--red);">${strong_sells.length}</div>
+      <div style="font-size:11px;color:var(--text-muted);">Güçlü SAT</div>
+    </div>
+    <div class="card" style="text-align:center;border-left:3px solid var(--text-muted);">
+      <div style="font-size:24px;font-weight:800;">${data.totalScanned || 0}</div>
+      <div style="font-size:11px;color:var(--text-muted);">Taranan Hisse</div>
+    </div>`;
+
+  if (!signals.length) { container.innerHTML = '<div class="card">Sinyal bulunamadı.</div>'; return; }
+
+  let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Zaman Dilimi: <b>${tfLabels[tf] || tf}</b> | ${signals.length} sinyal bulundu</div>`;
+  html += '<div class="table-wrap"><table><thead><tr>';
+  html += '<th>Hisse</th><th>Fiyat</th><th>Değişim</th><th>Sinyal</th><th>Skor</th><th>Güven</th><th>İndikatörler</th><th>RSI</th><th>MACD</th><th>Stop-Loss</th><th>Hedef</th>';
+  html += '</tr></thead><tbody>';
+
+  for (const s of signals) {
+    const score = parseFloat(s.score);
+    const actionClass = s.action === 'AL' ? 'color:var(--green);font-weight:800;' :
+                        s.action === 'SAT' ? 'color:var(--red);font-weight:800;' :
+                        s.action.includes('AL') ? 'color:var(--green);' :
+                        s.action.includes('SAT') ? 'color:var(--red);' : 'color:var(--text-muted);';
+    const barWidth = Math.min(100, Math.abs(score) / 6 * 100);
+    const barColor = score > 0 ? 'var(--green)' : 'var(--red)';
+    const macdIcon = s.macdSignal === 'buy' ? '<span style="color:var(--green)">▲ AL</span>' :
+                     s.macdSignal === 'sell' ? '<span style="color:var(--red)">▼ SAT</span>' : '<span style="color:var(--text-muted)">- Nötr</span>';
+    const rsiVal = parseFloat(s.rsi);
+    const rsiColor = rsiVal < 30 ? 'var(--green)' : rsiVal > 70 ? 'var(--red)' : 'var(--text-primary)';
+
+    html += `<tr class="stock-row" onclick="goToStock('${s.code}')">
+      <td class="td-clickable"><span class="td-mono" style="font-weight:700;">${s.code}</span><br><span style="font-size:10px;color:var(--text-muted);">${s.name}</span></td>
+      <td class="td-mono">${s.price} ₺</td>
+      <td class="td-mono ${changeClass(s.changePct)}">%${s.changePct}</td>
+      <td style="${actionClass};font-size:13px;">${s.action}</td>
+      <td><div style="display:flex;align-items:center;gap:6px;"><span class="td-mono" style="${actionClass}">${s.score}</span><div style="width:50px;height:6px;background:var(--bg);border-radius:3px;overflow:hidden;"><div style="width:${barWidth}%;height:100%;background:${barColor};border-radius:3px;"></div></div></div></td>
+      <td class="td-mono">%${s.confidence}</td>
+      <td><span style="color:var(--green)">${s.buySignals} AL</span> / <span style="color:var(--red)">${s.sellSignals} SAT</span> / ${s.totalIndicators}</td>
+      <td class="td-mono" style="color:${rsiColor};font-weight:600;">${s.rsi}</td>
+      <td>${macdIcon}</td>
+      <td class="td-mono" style="color:var(--red);font-size:11px;">${s.stopLoss} ₺</td>
+      <td class="td-mono" style="color:var(--green);font-size:11px;">${s.target} ₺</td>
+    </tr>`;
+  }
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
+}
+
+
+// =============================================================================
+// FIRSAT ÖZETİ
+// =============================================================================
+async function loadOpportunities() {
+  const container = document.getElementById('oppContent');
+  container.innerHTML = '<div class="loading"><div class="spinner"></div>Fırsatlar araştırılıyor...</div>';
+
+  const data = await api('/opportunities');
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; return; }
+  if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
+
+  const buyOpps = data.buyOpportunities || [];
+  const sellOpps = data.sellOpportunities || [];
+
+  let html = `<div class="grid-2 mb-24">
+    <div class="card" style="text-align:center;border-left:3px solid var(--green);">
+      <div style="font-size:28px;font-weight:800;color:var(--green);">${buyOpps.length}</div>
+      <div style="font-size:12px;color:var(--text-muted);">Alış Fırsatı</div>
+    </div>
+    <div class="card" style="text-align:center;border-left:3px solid var(--red);">
+      <div style="font-size:28px;font-weight:800;color:var(--red);">${sellOpps.length}</div>
+      <div style="font-size:12px;color:var(--text-muted);">Satış Sinyali</div>
+    </div>
+  </div>`;
+
+  // Alis firsatlari
+  if (buyOpps.length) {
+    html += '<div class="card mb-24"><div style="font-weight:700;font-size:15px;margin-bottom:16px;color:var(--green);">🟢 Alış Fırsatları</div>';
+    for (const opp of buyOpps) {
+      const retHtml = Object.entries(opp.returns).map(([k,v]) => {
+        const labels = {daily:'Gün',weekly:'Hafta',monthly:'Ay',yearly:'Yıl'};
+        const val = parseFloat(v);
+        return `<span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${val >= 0 ? 'rgba(0,229,160,0.1)' : 'rgba(234,57,67,0.1)'};color:${val >= 0 ? 'var(--green)' : 'var(--red)'};">${labels[k]}: %${v}</span>`;
+      }).join(' ');
+
+      html += `<div style="padding:14px 0;border-bottom:1px solid var(--border);cursor:pointer;" onclick="goToStock('${opp.code}')">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <span style="font-weight:700;font-size:14px;">${opp.code}</span>
+            <span style="color:var(--text-muted);font-size:12px;margin-left:6px;">${opp.name}</span>
+            <span style="font-weight:600;margin-left:8px;">${opp.price} ₺</span>
+            <span class="${changeClass(opp.changePct)}" style="font-size:12px;margin-left:4px;">%${opp.changePct}</span>
+          </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;">${retHtml}</div>
+        </div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:4px;">
+          ${opp.events.map(e => {
+            const icon = e.impact === 'very_positive' ? '🔥' : e.impact === 'positive' ? '🟢' : e.impact === 'negative' ? '🔴' : e.impact === 'very_negative' ? '💀' : '⚪';
+            return `<div style="font-size:12px;color:var(--text-secondary);"><span>${icon}</span> ${e.text}</div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  // Satis sinyalleri
+  if (sellOpps.length) {
+    html += '<div class="card mb-24"><div style="font-weight:700;font-size:15px;margin-bottom:16px;color:var(--red);">🔴 Satış Sinyalleri</div>';
+    for (const opp of sellOpps) {
+      html += `<div style="padding:14px 0;border-bottom:1px solid var(--border);cursor:pointer;" onclick="goToStock('${opp.code}')">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <span style="font-weight:700;font-size:14px;">${opp.code}</span>
+            <span style="color:var(--text-muted);font-size:12px;margin-left:6px;">${opp.name}</span>
+            <span style="font-weight:600;margin-left:8px;">${opp.price} ₺</span>
+            <span class="${changeClass(opp.changePct)}" style="font-size:12px;margin-left:4px;">%${opp.changePct}</span>
+          </div>
+        </div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:4px;">
+          ${opp.events.map(e => {
+            const icon = e.impact === 'very_positive' ? '🔥' : e.impact === 'positive' ? '🟢' : e.impact === 'negative' ? '🔴' : e.impact === 'very_negative' ? '💀' : '⚪';
+            return `<div style="font-size:12px;color:var(--text-secondary);"><span>${icon}</span> ${e.text}</div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  if (!buyOpps.length && !sellOpps.length) {
+    html += '<div class="card">Şu anda dikkat çekici bir fırsat bulunamadı.</div>';
+  }
+
+  container.innerHTML = html;
+}
+
+
+// =============================================================================
+// CANLI STRATEJİLER
+// =============================================================================
+async function loadStrategies() {
+  const container = document.getElementById('strategyContent');
+  container.innerHTML = '<div class="loading"><div class="spinner"></div>Stratejiler hesaplanıyor...</div>';
+
+  const data = await api('/strategies/live');
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; return; }
+  if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
+
+  const strategies = data.strategies || {};
+  const names = data.strategyNames || {};
+
+  const strategyInfo = {
+    ma_cross: { icon: '📈', desc: 'EMA 20 ve EMA 50 kesişimlerini takip eder. EMA20 yukarı keserse AL, aşağı keserse SAT sinyali verir.', color: '#4da6ff' },
+    breakout: { icon: '🚀', desc: '20 günlük en yüksek/düşük fiyat kırılımlarını tespit eder. Yeni zirve = AL, yeni dip = SAT.', color: '#ffc547' },
+    mean_reversion: { icon: '🔄', desc: 'RSI göstergesine göre aşırı alım/satım bölgelerini tespit eder. RSI<30 = AL, RSI>70 = SAT.', color: '#a78bfa' },
+  };
+
+  let html = '';
+
+  for (const [key, stocks] of Object.entries(strategies)) {
+    const info = strategyInfo[key] || {};
+    const freshSignals = stocks.filter(s => s.freshSignal);
+    const alSignals = stocks.filter(s => s.signal && (s.signal.includes('AL') || s.signal.includes('KIRILIM') && s.signal.includes('YUKARI')) && s.freshSignal);
+    const satSignals = stocks.filter(s => s.signal && (s.signal.includes('SAT') || s.signal.includes('KIRILIM') && s.signal.includes('ASAGI')) && s.freshSignal);
+
+    html += `<div class="card mb-24">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+        <span style="font-size:24px;">${info.icon || '📊'}</span>
+        <div>
+          <div style="font-weight:700;font-size:15px;">${names[key] || key}</div>
+          <div style="font-size:11px;color:var(--text-muted);">${info.desc || ''}</div>
+        </div>
+        <div style="margin-left:auto;text-align:right;">
+          <span style="background:rgba(0,229,160,0.15);color:var(--green);padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;">${freshSignals.length} aktif sinyal</span>
+        </div>
+      </div>`;
+
+    // Sadece fresh sinyalleri ve ilk 20 stock'u goster
+    const display = stocks.filter(s => s.freshSignal).concat(stocks.filter(s => !s.freshSignal)).slice(0, 25);
+
+    html += '<div class="table-wrap" style="max-height:400px;overflow-y:auto;"><table><thead><tr>';
+    if (key === 'ma_cross') html += '<th>Hisse</th><th>Fiyat</th><th>Değişim</th><th>Sinyal</th><th>EMA 20</th><th>EMA 50</th><th>Fark %</th>';
+    else if (key === 'breakout') html += '<th>Hisse</th><th>Fiyat</th><th>Değişim</th><th>Sinyal</th><th>20G Yüksek</th><th>20G Düşük</th>';
+    else html += '<th>Hisse</th><th>Fiyat</th><th>Değişim</th><th>Sinyal</th><th>RSI</th>';
+    html += '</tr></thead><tbody>';
+
+    for (const s of display) {
+      const isFresh = s.freshSignal;
+      const rowStyle = isFresh ? 'background:rgba(255,197,71,0.08);' : '';
+      const signalColor = (s.signal||'').includes('AL') || (s.signal||'').includes('YUKARI') ? 'var(--green)' :
+                          (s.signal||'').includes('SAT') || (s.signal||'').includes('ASAGI') ? 'var(--red)' : 'var(--text-muted)';
+
+      html += `<tr class="stock-row" style="${rowStyle}" onclick="goToStock('${s.code}')">
+        <td class="td-clickable td-mono" style="font-weight:${isFresh?'700':'400'};">${isFresh?'🔔 ':''}${s.code}</td>
+        <td class="td-mono">${s.price} ₺</td>
+        <td class="td-mono ${changeClass(s.changePct)}">%${s.changePct}</td>
+        <td style="color:${signalColor};font-weight:600;font-size:12px;">${s.signal || '-'}</td>`;
+
+      if (key === 'ma_cross') html += `<td class="td-mono">${s.ema20}</td><td class="td-mono">${s.ema50}</td><td class="td-mono">${s.distance}%</td>`;
+      else if (key === 'breakout') html += `<td class="td-mono">${s.high20} ₺</td><td class="td-mono">${s.low20} ₺</td>`;
+      else {
+        const rsi = parseFloat(s.rsi);
+        const rsiCol = rsi < 30 ? 'var(--green)' : rsi > 70 ? 'var(--red)' : 'var(--text-primary)';
+        html += `<td class="td-mono" style="color:${rsiCol};font-weight:600;">${s.rsi}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table></div></div>';
+  }
+
+  container.innerHTML = html;
+}
+
+
+// =============================================================================
+// TEMETTÜ TAKVİMİ
+// =============================================================================
+async function loadDividends() {
+  const container = document.getElementById('dividendContent');
+  container.innerHTML = '<div class="loading"><div class="spinner"></div>Temettü bilgileri yükleniyor... (bu biraz sürebilir)</div>';
+
+  const data = await api('/dividends');
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; return; }
+  if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
+
+  const divs = data.dividends || [];
+
+  if (!divs.length) {
+    container.innerHTML = '<div class="card">Temettü verisi bulunamadı. Veriler yüklendikten sonra tekrar deneyin.</div>';
+    return;
+  }
+
+  let html = `<div class="grid-3 mb-24">
+    <div class="card" style="text-align:center;border-left:3px solid var(--accent);">
+      <div style="font-size:24px;font-weight:800;color:var(--accent);">${divs.length}</div>
+      <div style="font-size:11px;color:var(--text-muted);">Temettü Ödeyen Hisse</div>
+    </div>
+    <div class="card" style="text-align:center;border-left:3px solid var(--green);">
+      <div style="font-size:24px;font-weight:800;color:var(--green);">%${divs.length ? divs[0].dividendYield : 0}</div>
+      <div style="font-size:11px;color:var(--text-muted);">En Yüksek Verim</div>
+    </div>
+    <div class="card" style="text-align:center;border-left:3px solid var(--text-muted);">
+      <div style="font-size:24px;font-weight:800;">${divs.length ? divs[0].code : '-'}</div>
+      <div style="font-size:11px;color:var(--text-muted);">En Yüksek Verimli Hisse</div>
+    </div>
+  </div>`;
+
+  html += '<div class="card mb-24"><div style="font-weight:700;font-size:15px;margin-bottom:16px;">Temettü Sıralaması (Verime Göre)</div>';
+  html += '<div class="table-wrap"><table><thead><tr>';
+  html += '<th>#</th><th>Hisse</th><th>Fiyat</th><th>Değişim</th><th>Temettü Verimi</th><th>Son 1 Yıl Toplam</th><th>Son Temettü</th><th>Son Tarih</th><th>Yıllık Geçmiş</th>';
+  html += '</tr></thead><tbody>';
+
+  divs.forEach((d, i) => {
+    const yieldVal = parseFloat(d.dividendYield);
+    const yieldColor = yieldVal >= 5 ? 'var(--green)' : yieldVal >= 2 ? 'var(--accent)' : 'var(--text-primary)';
+    const yearlyHtml = Object.entries(d.yearlyTotals || {}).map(([y,v]) => `<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:var(--bg);margin:1px;">${y}: ${v}₺</span>`).join('');
+
+    html += `<tr class="stock-row" onclick="goToStock('${d.code}')">
+      <td class="td-mono">${i+1}</td>
+      <td class="td-clickable"><span class="td-mono" style="font-weight:700;">${d.code}</span><br><span style="font-size:10px;color:var(--text-muted);">${d.name}</span></td>
+      <td class="td-mono">${d.price} ₺</td>
+      <td class="td-mono ${changeClass(d.changePct)}">%${d.changePct}</td>
+      <td style="color:${yieldColor};font-weight:800;font-size:14px;">%${d.dividendYield}</td>
+      <td class="td-mono">${d.totalDiv1Y} ₺</td>
+      <td class="td-mono">${d.lastDividend?.amount || '-'} ₺</td>
+      <td class="td-mono" style="font-size:11px;">${d.lastDividend?.date || '-'}</td>
+      <td style="font-size:10px;">${yearlyHtml}</td>
+    </tr>`;
+  });
+
+  html += '</tbody></table></div></div>';
+  container.innerHTML = html;
+}
+
+
+// =============================================================================
 // AUTH (LOGIN/REGISTER)
 // =============================================================================
 let currentUser = JSON.parse(localStorage.getItem('bistUser') || 'null');
@@ -2722,40 +3095,88 @@ let authMode = 'login';
 
 function showLogin() {
   document.getElementById('loginModal').style.display = 'flex';
-  authMode = 'login';
-  document.getElementById('authTitle').textContent = 'Giriş Yap';
-  document.getElementById('authEmailRow').style.display = 'none';
+  switchAuthTab('login');
+  document.getElementById('authUsername').value = '';
+  document.getElementById('authPassword').value = '';
+  if (document.getElementById('authEmail')) document.getElementById('authEmail').value = '';
   document.getElementById('authError').style.display = 'none';
+  document.getElementById('authSuccess').style.display = 'none';
+  setTimeout(() => document.getElementById('authUsername').focus(), 100);
 }
 
 function closeLogin() {
   document.getElementById('loginModal').style.display = 'none';
 }
 
-function toggleAuthMode() {
-  if (authMode === 'login') {
-    authMode = 'register';
-    document.getElementById('authTitle').textContent = 'Kayıt Ol';
-    document.getElementById('authEmailRow').style.display = 'block';
-  } else {
-    authMode = 'login';
-    document.getElementById('authTitle').textContent = 'Giriş Yap';
-    document.getElementById('authEmailRow').style.display = 'none';
-  }
+function switchAuthTab(mode) {
+  authMode = mode;
+  const tabLogin = document.getElementById('tabLogin');
+  const tabRegister = document.getElementById('tabRegister');
+  const emailRow = document.getElementById('authEmailRow');
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const title = document.getElementById('authTitle');
+  const subtitle = document.getElementById('authSubtitle');
+
   document.getElementById('authError').style.display = 'none';
+  document.getElementById('authSuccess').style.display = 'none';
+
+  if (mode === 'register') {
+    tabRegister.style.background = 'var(--accent)';
+    tabRegister.style.color = '#000';
+    tabLogin.style.background = 'transparent';
+    tabLogin.style.color = 'var(--text-muted)';
+    emailRow.style.display = 'block';
+    submitBtn.textContent = 'Kayıt Ol';
+    title.textContent = 'Yeni Hesap Oluşturun';
+    subtitle.textContent = 'Portföy ve favorilerinizi kaydedin';
+  } else {
+    tabLogin.style.background = 'var(--accent)';
+    tabLogin.style.color = '#000';
+    tabRegister.style.background = 'transparent';
+    tabRegister.style.color = 'var(--text-muted)';
+    emailRow.style.display = 'none';
+    submitBtn.textContent = 'Giriş Yap';
+    title.textContent = 'Hesabınıza Giriş Yapın';
+    subtitle.textContent = 'Portföy ve favorilerinize erişin';
+  }
 }
 
 async function doAuth() {
   const username = document.getElementById('authUsername').value.trim();
   const password = document.getElementById('authPassword').value;
-  const email = document.getElementById('authEmail')?.value || '';
+  const email = document.getElementById('authEmail')?.value?.trim() || '';
   const errEl = document.getElementById('authError');
+  const successEl = document.getElementById('authSuccess');
+  const submitBtn = document.getElementById('authSubmitBtn');
+
+  errEl.style.display = 'none';
+  successEl.style.display = 'none';
+
+  if (!username || username.length < 3) {
+    errEl.textContent = 'Kullanıcı adı en az 3 karakter olmalı';
+    errEl.style.display = 'block';
+    return;
+  }
+  if (!password || password.length < 4) {
+    errEl.textContent = 'Şifre en az 4 karakter olmalı';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = authMode === 'register' ? 'Kayıt yapılıyor...' : 'Giriş yapılıyor...';
 
   const endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
+  const payload = { username, password };
+  if (authMode === 'register') payload.email = email;
+
   const data = await api(endpoint, {
     method: 'POST',
-    body: JSON.stringify({ username, password, email }),
+    body: JSON.stringify(payload),
   });
+
+  submitBtn.disabled = false;
+  submitBtn.textContent = authMode === 'register' ? 'Kayıt Ol' : 'Giriş Yap';
 
   if (data.error) {
     errEl.textContent = data.error;
@@ -2765,9 +3186,19 @@ async function doAuth() {
 
   currentUser = { userId: data.userId, username: data.username, email: data.email || '' };
   localStorage.setItem('bistUser', JSON.stringify(currentUser));
-  closeLogin();
-  updateUserUI();
-  // Aktif sayfayı yenile
+
+  if (authMode === 'register') {
+    successEl.textContent = 'Hesap oluşturuldu! Giriş yapıldı.';
+    successEl.style.display = 'block';
+    setTimeout(() => { closeLogin(); updateUserUI(); refreshActivePage(); }, 800);
+  } else {
+    closeLogin();
+    updateUserUI();
+    refreshActivePage();
+  }
+}
+
+function refreshActivePage() {
   const activePage = document.querySelector('.page.active');
   if (activePage) {
     const pageId = activePage.id.replace('page-', '');
@@ -2777,10 +3208,25 @@ async function doAuth() {
   }
 }
 
+// Uygulama baslarken: localStorage'da kullanici varsa, DB'de hala var mi kontrol et
+async function validateSession() {
+  if (!currentUser) return;
+  try {
+    const data = await api('/auth/check?userId=' + currentUser.userId);
+    if (!data.valid) {
+      // DB sifirlanmis, oturum gecersiz
+      currentUser = null;
+      localStorage.removeItem('bistUser');
+      updateUserUI();
+    }
+  } catch(e) { /* sessiz hata */ }
+}
+
 function logout() {
   currentUser = null;
   localStorage.removeItem('bistUser');
   updateUserUI();
+  refreshActivePage();
 }
 
 function updateUserUI() {
@@ -2790,9 +3236,12 @@ function updateUserUI() {
   el.style.alignItems = 'center';
   el.style.gap = '8px';
   if (currentUser) {
-    el.innerHTML = `<span style="font-size:12px;color:var(--accent);font-weight:600;">👤 ${currentUser.username}</span> <button class="btn btn-sm btn-secondary" onclick="logout()" style="font-size:10px;padding:2px 8px;">Çıkış</button>`;
+    el.innerHTML = `<span style="font-size:12px;color:var(--accent);font-weight:600;">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="vertical-align:-2px;margin-right:3px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      ${currentUser.username}</span>
+      <button class="btn btn-sm btn-secondary" onclick="logout()" style="font-size:10px;padding:2px 8px;">Çıkış</button>`;
   } else {
-    el.innerHTML = `<button class="btn btn-sm btn-primary" onclick="showLogin()" style="font-size:11px;background:var(--accent);color:#000;font-weight:700;">Giriş / Kayıt</button>`;
+    el.innerHTML = `<button class="btn btn-sm btn-primary" onclick="showLogin()" style="font-size:11px;background:var(--accent);color:#000;font-weight:700;border-radius:8px;padding:6px 14px;">Giriş / Kayıt</button>`;
   }
 }
 
@@ -2803,6 +3252,7 @@ function updateUserUI() {
 document.addEventListener('DOMContentLoaded', () => {
   loadDashboard();
   updateUserUI();
+  validateSession(); // DB sifirlanmissa oturumu yeniden olustur
 });
 </script>
 </body>
