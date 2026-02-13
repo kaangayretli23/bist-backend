@@ -673,6 +673,7 @@ def _ensure_loader():
 def before_req():
     """Her request'te loader'in calistigini garanti et"""
     _ensure_loader()
+    _start_telegram_thread()
 
 # =====================================================================
 # INDICATORS
@@ -2200,6 +2201,621 @@ def daily_report():
             'sectorPerformance': sector_perf,
             'indices': indices,
         }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# SINYAL TARAMA (Tum hisseleri tarar, guclu AL/SAT sinyallerini bulur)
+# =====================================================================
+@app.route('/api/signals')
+def signal_scanner():
+    """Tum hisselerin sinyal taramasi - composite score ile sirali"""
+    try:
+        timeframe = request.args.get('timeframe', 'weekly')  # weekly/monthly/yearly
+        min_score = float(request.args.get('minScore', 0))
+        signal_type = request.args.get('type', 'all')  # all/buy/sell
+
+        stocks = _get_stocks()
+        if not stocks:
+            return jsonify({'success': True, 'loading': True, 'signals': [], 'message': 'Veriler yukleniyor...'})
+
+        results = []
+        for stock in stocks:
+            sym = stock['code']
+            try:
+                hist = _cget(_hist_cache, f"{sym}_1y")
+                if hist is None:
+                    hist = _fetch_hist_df(sym, '1y')
+                    if hist is not None and len(hist) >= 30:
+                        _cset(_hist_cache, f"{sym}_1y", hist)
+                    else:
+                        continue
+
+                c = hist['Close'].values.astype(float)
+                h = hist['High'].values.astype(float)
+                l = hist['Low'].values.astype(float)
+                v = hist['Volume'].values.astype(float)
+                cp = float(c[-1])
+
+                # 18 indikator hesapla
+                ind = calc_all_indicators(hist, cp)
+                summary = ind.get('summary', {})
+                buy_count = summary.get('buySignals', 0)
+                sell_count = summary.get('sellSignals', 0)
+                total_ind = summary.get('totalIndicators', 1)
+
+                # Coklu zaman dilimi onerisi
+                rec = calc_recommendation(hist, ind)
+                tf_rec = rec.get(timeframe, {})
+                action = tf_rec.get('action', 'NOTR')
+                score = float(tf_rec.get('score', 0))
+                confidence = float(tf_rec.get('confidence', 0))
+
+                # Composite score (0-100): indikator konsensus + oneri gucu
+                consensus_pct = (buy_count / total_ind * 100) if total_ind > 0 else 50
+                if score < 0:
+                    consensus_pct = 100 - consensus_pct  # SAT icin ters cevir
+                composite = min(100, (abs(score) / 12 * 60) + (consensus_pct * 0.4))
+
+                # RSI, MACD bilgisi
+                rsi_val = ind.get('rsi', {}).get('value', 50)
+                macd_type = ind.get('macd', {}).get('signalType', 'neutral')
+                macd_hist = ind.get('macd', {}).get('histogram', 0)
+
+                # Destek/Direnc
+                sr = calc_support_resistance(hist)
+                supports = sr.get('supports', [])[:2]
+                resistances = sr.get('resistances', [])[:2]
+
+                # Stop-loss ve hedef
+                stop_loss = supports[0] if supports else sf(cp * 0.95)
+                target = resistances[0] if resistances else sf(cp * 1.10)
+
+                # Filtrele
+                if signal_type == 'buy' and score <= 0:
+                    continue
+                if signal_type == 'sell' and score >= 0:
+                    continue
+                if abs(score) < min_score:
+                    continue
+
+                results.append({
+                    'code': sym,
+                    'name': BIST100_STOCKS.get(sym, sym),
+                    'price': sf(cp),
+                    'changePct': stock.get('changePct', 0),
+                    'volume': stock.get('volume', 0),
+                    'action': action,
+                    'score': sf(score),
+                    'confidence': sf(confidence),
+                    'composite': sf(composite),
+                    'buySignals': buy_count,
+                    'sellSignals': sell_count,
+                    'totalIndicators': total_ind,
+                    'rsi': sf(rsi_val),
+                    'macdSignal': macd_type,
+                    'macdHistogram': macd_hist,
+                    'stopLoss': stop_loss,
+                    'target': target,
+                    'supports': supports,
+                    'resistances': resistances,
+                    'reasons': tf_rec.get('reasons', [])[:5],
+                    'strategy': tf_rec.get('strategy', ''),
+                })
+            except Exception as e:
+                continue
+
+        # Sirala: En guclu AL sinyalleri uste
+        results.sort(key=lambda x: float(x['score']), reverse=True)
+
+        return jsonify(safe_dict({
+            'success': True,
+            'timeframe': timeframe,
+            'totalScanned': len(stocks),
+            'signalCount': len(results),
+            'signals': results,
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# FIRSAT OZETI (Gunluk/Haftalik/Aylik/Yillik)
+# =====================================================================
+@app.route('/api/opportunities')
+def opportunities():
+    """Coklu zaman dilimli firsat raporu - onemli olaylari tespit eder"""
+    try:
+        stocks = _get_stocks()
+        if not stocks:
+            return jsonify({'success': True, 'loading': True, 'message': 'Veriler yukleniyor...'})
+
+        opportunities_list = []
+        for stock in stocks:
+            sym = stock['code']
+            try:
+                hist = _cget(_hist_cache, f"{sym}_1y")
+                if hist is None:
+                    hist = _fetch_hist_df(sym, '1y')
+                    if hist is not None and len(hist) >= 30:
+                        _cset(_hist_cache, f"{sym}_1y", hist)
+                    else:
+                        continue
+
+                c = hist['Close'].values.astype(float)
+                h = hist['High'].values.astype(float)
+                l = hist['Low'].values.astype(float)
+                v = hist['Volume'].values.astype(float)
+                cp = float(c[-1])
+                n = len(c)
+
+                events = []
+                event_score = 0
+
+                # 1. RSI asiri satim/alim
+                rsi_val = calc_rsi(c).get('value', 50)
+                if rsi_val < 30:
+                    events.append({'type': 'rsi_oversold', 'text': f'RSI {sf(rsi_val)} - Asiri satim bolgesinde, toparlanma bekleniyor', 'impact': 'positive'})
+                    event_score += 3
+                elif rsi_val > 70:
+                    events.append({'type': 'rsi_overbought', 'text': f'RSI {sf(rsi_val)} - Asiri alim bolgesinde, duzeltme gelebilir', 'impact': 'negative'})
+                    event_score -= 3
+
+                # 2. MACD kesisimi
+                macd = calc_macd(c)
+                if macd.get('signalType') == 'buy':
+                    events.append({'type': 'macd_cross', 'text': 'MACD alis kesisimi - Yukari momentum basladi', 'impact': 'positive'})
+                    event_score += 2
+                elif macd.get('signalType') == 'sell':
+                    events.append({'type': 'macd_cross', 'text': 'MACD satis kesisimi - Asagi momentum basladi', 'impact': 'negative'})
+                    event_score -= 2
+
+                # 3. Altin Kesisim / Olum Kesisimi (EMA 50/200)
+                if n >= 200:
+                    ema50 = pd.Series(c).ewm(span=50).mean().values
+                    ema200 = pd.Series(c).ewm(span=200).mean().values
+                    if ema50[-1] > ema200[-1] and ema50[-2] <= ema200[-2]:
+                        events.append({'type': 'golden_cross', 'text': 'ALTIN KESISIM! EMA50 > EMA200 - Guclu uzun vadeli alis sinyali', 'impact': 'very_positive'})
+                        event_score += 5
+                    elif ema50[-1] < ema200[-1] and ema50[-2] >= ema200[-2]:
+                        events.append({'type': 'death_cross', 'text': 'OLUM KESISIMI! EMA50 < EMA200 - Guclu uzun vadeli satis sinyali', 'impact': 'very_negative'})
+                        event_score -= 5
+
+                # 4. Hacim patlamasi
+                if n >= 20:
+                    vol_avg = np.mean(v[-20:])
+                    vol_today = v[-1]
+                    if vol_avg > 0 and vol_today > vol_avg * 2:
+                        ratio = sf(vol_today / vol_avg)
+                        direction = 'yukselis' if c[-1] > c[-2] else 'dusus'
+                        impact = 'positive' if c[-1] > c[-2] else 'negative'
+                        events.append({'type': 'volume_spike', 'text': f'Hacim patlamasi ({ratio}x ortalama) + {direction} hareketi', 'impact': impact})
+                        event_score += 2 if c[-1] > c[-2] else -2
+
+                # 5. Bollinger bant kirmasi
+                bb = calc_bollinger(c, cp)
+                if bb.get('lower', 0) > 0 and cp < bb['lower']:
+                    events.append({'type': 'bb_break_lower', 'text': f'Fiyat alt Bollinger bandinin altinda ({sf(bb["lower"])}) - Toparlanma bekleniyor', 'impact': 'positive'})
+                    event_score += 2
+                elif bb.get('upper', 0) > 0 and cp > bb['upper']:
+                    events.append({'type': 'bb_break_upper', 'text': f'Fiyat ust Bollinger bandini asti ({sf(bb["upper"])}) - Asiri alim', 'impact': 'negative'})
+                    event_score -= 1
+
+                # 6. 52 haftalik dip/zirve yakinligi
+                w52 = calc_52w(hist)
+                w52_pos = w52.get('position', 50)
+                if w52_pos < 10:
+                    events.append({'type': '52w_low', 'text': f'52 haftalik dibin %{sf(w52_pos)} uzerinde - Tarihi dip bolgesi', 'impact': 'positive'})
+                    event_score += 2
+                elif w52_pos > 90:
+                    events.append({'type': '52w_high', 'text': f'52 haftalik zirveye %{sf(100-w52_pos)} mesafede', 'impact': 'neutral'})
+
+                # 7. Destek/Direnc kirmasi
+                sr = calc_support_resistance(hist)
+                if sr.get('resistances'):
+                    nearest_res = sr['resistances'][0]
+                    if cp > nearest_res * 0.99 and c[-2] < nearest_res:
+                        events.append({'type': 'resistance_break', 'text': f'Direnc kirdi ({sf(nearest_res)} TL) - Yukari kirilim', 'impact': 'positive'})
+                        event_score += 3
+                if sr.get('supports'):
+                    nearest_sup = sr['supports'][0]
+                    if cp < nearest_sup * 1.01 and c[-2] > nearest_sup:
+                        events.append({'type': 'support_break', 'text': f'Destek kirildi ({sf(nearest_sup)} TL) - Asagi kirilim', 'impact': 'negative'})
+                        event_score -= 3
+
+                # Zaman dilimi bazli getiriler
+                returns = {}
+                for label, days in [('daily', 1), ('weekly', 5), ('monthly', 22), ('yearly', 252)]:
+                    if n > days:
+                        ret = ((c[-1] - c[-1-days]) / c[-1-days]) * 100
+                        returns[label] = sf(ret)
+                    else:
+                        returns[label] = 0
+
+                if events:
+                    opportunities_list.append({
+                        'code': sym,
+                        'name': BIST100_STOCKS.get(sym, sym),
+                        'price': sf(cp),
+                        'changePct': stock.get('changePct', 0),
+                        'eventScore': event_score,
+                        'events': events,
+                        'eventCount': len(events),
+                        'returns': returns,
+                        'rsi': sf(rsi_val),
+                    })
+            except:
+                continue
+
+        # En yuksek event score'a gore sirala
+        opportunities_list.sort(key=lambda x: abs(x['eventScore']), reverse=True)
+
+        # Pozitif ve negatif firsatlari ayir
+        buy_opps = [o for o in opportunities_list if o['eventScore'] > 0]
+        sell_opps = [o for o in opportunities_list if o['eventScore'] < 0]
+
+        return jsonify(safe_dict({
+            'success': True,
+            'totalScanned': len(stocks),
+            'buyOpportunities': buy_opps[:20],
+            'sellOpportunities': sell_opps[:20],
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# CANLI STRATEJI SIMULASYONU
+# =====================================================================
+@app.route('/api/strategies/live')
+def live_strategies():
+    """3 stratejiyi tum hisselere canli uygular"""
+    try:
+        stocks = _get_stocks()
+        if not stocks:
+            return jsonify({'success': True, 'loading': True, 'message': 'Veriler yukleniyor...'})
+
+        results = {'ma_cross': [], 'breakout': [], 'mean_reversion': []}
+        strategy_names = {
+            'ma_cross': 'Hareketli Ortalama Kesisimi',
+            'breakout': 'Kirilim Stratejisi',
+            'mean_reversion': 'Ortalamaya Donus (RSI)',
+        }
+
+        for stock in stocks:
+            sym = stock['code']
+            try:
+                hist = _cget(_hist_cache, f"{sym}_1y")
+                if hist is None:
+                    hist = _fetch_hist_df(sym, '1y')
+                    if hist is not None and len(hist) >= 50:
+                        _cset(_hist_cache, f"{sym}_1y", hist)
+                    else:
+                        continue
+
+                c = hist['Close'].values.astype(float)
+                h = hist['High'].values.astype(float)
+                l = hist['Low'].values.astype(float)
+                cp = float(c[-1])
+                n = len(c)
+
+                # 1. MA Cross (EMA 20/50)
+                if n >= 50:
+                    s = pd.Series(c)
+                    ema20 = s.ewm(span=20).mean().values
+                    ema50 = s.ewm(span=50).mean().values
+                    signal = None
+                    if ema20[-1] > ema50[-1] and ema20[-2] <= ema50[-2]:
+                        signal = 'AL'
+                    elif ema20[-1] < ema50[-1] and ema20[-2] >= ema50[-2]:
+                        signal = 'SAT'
+                    elif ema20[-1] > ema50[-1]:
+                        signal = 'ALIS POZISYONUNDA'
+                    elif ema20[-1] < ema50[-1]:
+                        signal = 'SATIS POZISYONUNDA'
+
+                    # Ortalamalar arasi mesafe (trend gucu)
+                    distance = sf(((ema20[-1] - ema50[-1]) / ema50[-1]) * 100)
+
+                    results['ma_cross'].append({
+                        'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
+                        'price': sf(cp), 'changePct': stock.get('changePct', 0),
+                        'signal': signal,
+                        'ema20': sf(ema20[-1]), 'ema50': sf(ema50[-1]),
+                        'distance': distance,
+                        'freshSignal': signal in ('AL', 'SAT'),
+                    })
+
+                # 2. Breakout (20 gunluk)
+                if n >= 20:
+                    high_20 = float(np.max(h[-20:]))
+                    low_20 = float(np.min(l[-20:]))
+                    signal = None
+                    if cp >= high_20 * 0.99:
+                        signal = 'YUKARI KIRILIM'
+                    elif cp <= low_20 * 1.01:
+                        signal = 'ASAGI KIRILIM'
+                    else:
+                        pos = ((cp - low_20) / (high_20 - low_20) * 100) if high_20 != low_20 else 50
+                        signal = f'BANT ICINDE (%{sf(pos)})'
+
+                    results['breakout'].append({
+                        'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
+                        'price': sf(cp), 'changePct': stock.get('changePct', 0),
+                        'signal': signal,
+                        'high20': sf(high_20), 'low20': sf(low_20),
+                        'freshSignal': 'KIRILIM' in (signal or ''),
+                    })
+
+                # 3. Mean Reversion (RSI)
+                if n >= 15:
+                    rsi = calc_rsi(c).get('value', 50)
+                    signal = None
+                    if rsi < 30:
+                        signal = 'ASIRI SATIM → AL'
+                    elif rsi < 40:
+                        signal = 'SATIM BOLGESI → ALIS FIRSATI'
+                    elif rsi > 70:
+                        signal = 'ASIRI ALIM → SAT'
+                    elif rsi > 60:
+                        signal = 'ALIM BOLGESI → DIKKAT'
+                    else:
+                        signal = 'NOTR BOLGE'
+
+                    results['mean_reversion'].append({
+                        'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
+                        'price': sf(cp), 'changePct': stock.get('changePct', 0),
+                        'signal': signal,
+                        'rsi': sf(rsi),
+                        'freshSignal': rsi < 30 or rsi > 70,
+                    })
+            except:
+                continue
+
+        # Her strateji icinde freshSignal olanlari uste al
+        for key in results:
+            results[key].sort(key=lambda x: (not x.get('freshSignal', False), -abs(x.get('changePct', 0))))
+
+        return jsonify(safe_dict({
+            'success': True,
+            'strategies': results,
+            'strategyNames': strategy_names,
+            'totalStocks': len(stocks),
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# TEMETTU TAKVIMLERI
+# =====================================================================
+@app.route('/api/dividends')
+def dividend_calendar():
+    """BIST hisselerinin temettu bilgileri (yfinance dividends)"""
+    try:
+        stocks = _get_stocks()
+        if not stocks:
+            return jsonify({'success': True, 'loading': True, 'dividends': [], 'message': 'Veriler yukleniyor...'})
+
+        dividends_list = []
+        for stock in stocks:
+            sym = stock['code']
+            try:
+                ticker_sym = sym + '.IS'
+                hist = _cget(_hist_cache, f"{sym}_1y")
+                if hist is None:
+                    hist = _fetch_hist_df(sym, '2y')
+                    if hist is not None and len(hist) >= 10:
+                        _cset(_hist_cache, f"{sym}_1y", hist)
+
+                # yfinance Ticker ile temettu bilgisi
+                if YF_OK:
+                    tkr = yf.Ticker(ticker_sym)
+                    divs = tkr.dividends
+                    if divs is not None and len(divs) > 0:
+                        cp = stock.get('price', 0)
+                        # Son 3 yilin temettuleri
+                        recent_divs = []
+                        total_div_1y = 0
+                        one_year_ago = datetime.now() - timedelta(days=365)
+                        for dt, amt in divs.items():
+                            div_date = dt.to_pydatetime().replace(tzinfo=None) if hasattr(dt, 'to_pydatetime') else dt
+                            recent_divs.append({
+                                'date': div_date.strftime('%Y-%m-%d'),
+                                'amount': sf(float(amt)),
+                                'year': div_date.year,
+                            })
+                            if div_date >= one_year_ago:
+                                total_div_1y += float(amt)
+
+                        if recent_divs:
+                            # Temettu verimi
+                            div_yield = sf((total_div_1y / cp * 100) if cp > 0 else 0)
+                            # Son temettu
+                            last_div = recent_divs[-1]
+
+                            # Yillik temettu ozeti
+                            yearly_divs = {}
+                            for d in recent_divs:
+                                yr = d['year']
+                                yearly_divs[yr] = yearly_divs.get(yr, 0) + float(d['amount'])
+
+                            dividends_list.append({
+                                'code': sym,
+                                'name': BIST100_STOCKS.get(sym, sym),
+                                'price': sf(cp),
+                                'lastDividend': last_div,
+                                'dividendYield': div_yield,
+                                'totalDiv1Y': sf(total_div_1y),
+                                'history': recent_divs[-10:],  # Son 10 temettu
+                                'yearlyTotals': {str(k): sf(v) for k, v in sorted(yearly_divs.items())},
+                                'changePct': stock.get('changePct', 0),
+                            })
+            except:
+                continue
+
+        # Temettu verimine gore sirala
+        dividends_list.sort(key=lambda x: float(x.get('dividendYield', 0)), reverse=True)
+
+        return jsonify(safe_dict({
+            'success': True,
+            'count': len(dividends_list),
+            'dividends': dividends_list,
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =====================================================================
+# TELEGRAM OTOMATIK BILDIRIM
+# =====================================================================
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+
+def send_telegram(message):
+    """Telegram mesaji gonder"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    try:
+        import requests as req
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        req.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'HTML'}, timeout=10)
+        return True
+    except:
+        return False
+
+def _auto_signal_check():
+    """Arka planda guclu sinyalleri tespit edip Telegram bildirim gonder"""
+    while True:
+        try:
+            time.sleep(600)  # 10dk arayla kontrol
+            if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+                continue
+
+            stocks = _get_stocks()
+            if not stocks:
+                continue
+
+            alerts = []
+            for stock in stocks:
+                sym = stock['code']
+                try:
+                    hist = _cget(_hist_cache, f"{sym}_1y")
+                    if hist is None:
+                        continue
+                    c = hist['Close'].values.astype(float)
+                    h = hist['High'].values.astype(float)
+                    l = hist['Low'].values.astype(float)
+                    cp = float(c[-1])
+                    n = len(c)
+
+                    # Guclu sinyaller
+                    rsi = calc_rsi(c).get('value', 50)
+                    macd = calc_macd(c)
+
+                    # Altin kesisim
+                    if n >= 200:
+                        ema50 = pd.Series(c).ewm(span=50).mean().values
+                        ema200 = pd.Series(c).ewm(span=200).mean().values
+                        if ema50[-1] > ema200[-1] and ema50[-2] <= ema200[-2]:
+                            alerts.append(f"🟢 <b>ALTIN KESISIM</b>: {sym} ({sf(cp)} TL) - EMA50 > EMA200")
+                        elif ema50[-1] < ema200[-1] and ema50[-2] >= ema200[-2]:
+                            alerts.append(f"🔴 <b>OLUM KESISIMI</b>: {sym} ({sf(cp)} TL) - EMA50 < EMA200")
+
+                    # RSI asiri bolgeler
+                    if rsi < 25:
+                        alerts.append(f"🟢 <b>ASIRI SATIM</b>: {sym} ({sf(cp)} TL) RSI={sf(rsi)}")
+                    elif rsi > 80:
+                        alerts.append(f"🔴 <b>ASIRI ALIM</b>: {sym} ({sf(cp)} TL) RSI={sf(rsi)}")
+
+                    # MACD taze kesisim
+                    if macd.get('signalType') == 'buy' and abs(macd.get('histogram', 0)) < 0.5:
+                        alerts.append(f"🟢 <b>MACD AL</b>: {sym} ({sf(cp)} TL)")
+                except:
+                    continue
+
+            if alerts:
+                header = f"📊 <b>BIST Sinyal Raporu</b> ({datetime.now().strftime('%H:%M')})\n\n"
+                msg = header + '\n'.join(alerts[:15])  # Max 15 sinyal
+                send_telegram(msg)
+
+        except:
+            continue
+
+# Telegram bildirim thread'ini baslat
+_telegram_thread_started = False
+def _start_telegram_thread():
+    global _telegram_thread_started
+    if _telegram_thread_started:
+        return
+    _telegram_thread_started = True
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        t = threading.Thread(target=_auto_signal_check, daemon=True)
+        t.start()
+        print("[TELEGRAM] Otomatik sinyal bildirimi aktif")
+
+@app.route('/api/telegram/test')
+def test_telegram():
+    """Telegram baglantisini test et"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return jsonify({'success': False, 'error': 'TELEGRAM_BOT_TOKEN ve TELEGRAM_CHAT_ID env degiskenleri gerekli',
+                        'setup': 'Render Dashboard > Environment Variables:\n1. TELEGRAM_BOT_TOKEN = @BotFather\'dan alinan token\n2. TELEGRAM_CHAT_ID = @userinfobot\'tan alinan chat ID'})
+    ok = send_telegram("✅ BIST Pro Telegram bildirimi calisiyor!")
+    return jsonify({'success': ok, 'message': 'Test mesaji gonderildi' if ok else 'Gonderilemedi'})
+
+@app.route('/api/telegram/send-report', methods=['POST'])
+def send_telegram_report():
+    """Manuel sinyal raporu gonder"""
+    try:
+        stocks = _get_stocks()
+        if not stocks:
+            return jsonify({'error': 'Veriler henuz yuklenmedi'}), 400
+
+        strong_buys = []
+        strong_sells = []
+        for stock in stocks:
+            sym = stock['code']
+            try:
+                hist = _cget(_hist_cache, f"{sym}_1y")
+                if hist is None:
+                    continue
+                c = hist['Close'].values.astype(float)
+                cp = float(c[-1])
+                ind = calc_all_indicators(hist, cp)
+                summary = ind.get('summary', {})
+                bc = summary.get('buySignals', 0)
+                sc = summary.get('sellSignals', 0)
+                total = summary.get('totalIndicators', 1)
+
+                if bc >= total * 0.6:
+                    strong_buys.append((sym, sf(cp), bc, total, stock.get('changePct', 0)))
+                elif sc >= total * 0.6:
+                    strong_sells.append((sym, sf(cp), sc, total, stock.get('changePct', 0)))
+            except:
+                continue
+
+        msg = f"📊 <b>BIST Gunluk Sinyal Raporu</b>\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+
+        if strong_buys:
+            msg += "🟢 <b>GUCLU ALIS SINYALLERI:</b>\n"
+            for sym, price, bc, total, chg in sorted(strong_buys, key=lambda x: -x[2]):
+                msg += f"  • {sym}: {price} TL (%{chg}) - {bc}/{total} AL\n"
+
+        if strong_sells:
+            msg += "\n🔴 <b>GUCLU SATIS SINYALLERI:</b>\n"
+            for sym, price, sc, total, chg in sorted(strong_sells, key=lambda x: -x[2]):
+                msg += f"  • {sym}: {price} TL (%{chg}) - {sc}/{total} SAT\n"
+
+        if not strong_buys and not strong_sells:
+            msg += "Guclu sinyal bulunamadi. Piyasa notr gorunuyor."
+
+        ok = send_telegram(msg)
+        return jsonify({'success': ok, 'message': msg})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
