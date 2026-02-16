@@ -264,7 +264,7 @@ def _fetch_isyatirim_df(symbol, days=365):
         start_date = end_date - timedelta(days=days)
         sd = start_date.strftime('%d-%m-%Y')
         ed = end_date.strftime('%d-%m-%Y')
-        url = f"{IS_YATIRIM_BASE}?hisse={symbol}&startdate={sd}&enddate={ed}.json"
+        url = f"{IS_YATIRIM_BASE}?hisse={symbol}&startdate={sd}&enddate={ed}"
 
         print(f"  [ISYATIRIM] {symbol} {days}d cekiliyor...")
         resp = None
