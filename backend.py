@@ -205,6 +205,7 @@ _hist_cache = {}
 _loader_started = False
 _status = {'phase':'idle','loaded':0,'total':0,'lastRun':None,'error':''}
 CACHE_TTL = 600
+CACHE_STALE_TTL = 1800  # Stale data served up to 30 min (prevents stocks from disappearing on fetch failure)
 
 def _cget(store, key):
     with _lock:
@@ -217,18 +218,28 @@ def _cset(store, key, data):
     with _lock:
         store[key] = {'data': data, 'ts': time.time()}
 
+def _ctouch(store, key):
+    """Refresh timestamp of existing cache entry (keeps stale data alive on fetch failure)"""
+    with _lock:
+        if key in store:
+            store[key]['ts'] = time.time()
+            return True
+    return False
+
 def _get_stocks(symbols=None):
     with _lock:
+        now = time.time()
         if symbols:
             return [_stock_cache[s]['data'] for s in symbols
-                    if s in _stock_cache and time.time()-_stock_cache[s]['ts']<CACHE_TTL]
+                    if s in _stock_cache and now - _stock_cache[s]['ts'] < CACHE_STALE_TTL]
         return [v['data'] for v in _stock_cache.values()
-                if time.time()-v['ts']<CACHE_TTL]
+                if now - v['ts'] < CACHE_STALE_TTL]
 
 def _get_indices():
     with _lock:
+        now = time.time()
         return {k:v['data'] for k,v in _index_cache.items()
-                if time.time()-v['ts']<CACHE_TTL}
+                if now - v['ts'] < CACHE_STALE_TTL}
 
 
 # =====================================================================
@@ -352,7 +363,7 @@ def _fetch_isyatirim_df(symbol, days=365):
 def _fetch_isyatirim_quick(symbol):
     """Is Yatirim'dan son fiyat bilgisi (quick - dashboard icin)"""
     try:
-        df = _fetch_isyatirim_df(symbol, days=7)
+        df = _fetch_isyatirim_df(symbol, days=14)
         if df is None or len(df) < 2:
             return None
         cur = float(df['Close'].iloc[-1])
@@ -370,7 +381,7 @@ def _fetch_isyatirim_quick(symbol):
 
 
 # ---- YAHOO HTTP API (YEDEK) ----
-def _fetch_yahoo_http(symbol, period1_days=7):
+def _fetch_yahoo_http(symbol, period1_days=14):
     """Yahoo Finance v8 chart API - yedek kaynak"""
     try:
         now = int(time.time())
@@ -600,9 +611,11 @@ def _background_loop():
                         })
                     else:
                         fail_count += 1; fail_list.append(sym)
+                        _ctouch(_stock_cache, sym)  # Keep stale data alive
                         print(f"  [SKIP] {sym}: prev <= 0 (prev={prev})")
                 else:
                     fail_count += 1; fail_list.append(sym)
+                    _ctouch(_stock_cache, sym)  # Keep stale data alive
                 _status['loaded'] = i + 1
                 if (i + 1) % 10 == 0:
                     print(f"  [BIST30] {i+1}/{len(BIST30)}, cache={len(_stock_cache)}, fail={fail_count}")
@@ -611,6 +624,9 @@ def _background_loop():
             print(f"[LOADER] BIST30: {len(_stock_cache)} hisse cache'de, {fail_count} basarisiz")
             if fail_list:
                 print(f"[LOADER] BIST30 basarisiz: {fail_list}")
+
+            # Cooldown between phases to avoid rate limiting
+            time.sleep(3)
 
             # === FAZE 3: Kalan BIST100 hisseleri ===
             # Cache key'i olsa bile TTL dolmussa yeniden cek
@@ -639,15 +655,42 @@ def _background_loop():
                             })
                         else:
                             phase3_fail += 1; phase3_fail_list.append(sym)
+                            _ctouch(_stock_cache, sym)  # Keep stale data alive
                             print(f"  [SKIP] {sym}: prev <= 0 (prev={prev})")
                     else:
                         phase3_fail += 1; phase3_fail_list.append(sym)
+                        _ctouch(_stock_cache, sym)  # Keep stale data alive
                     if (i + 1) % 10 == 0:
                         print(f"  [BIST100] {i+1}/{len(remaining)}, toplam cache={len(_stock_cache)}, fail={phase3_fail}")
                     time.sleep(0.8)
                 print(f"[LOADER] BIST100 kalan: {phase3_fail} basarisiz")
                 if phase3_fail_list:
                     print(f"[LOADER] BIST100 basarisiz: {phase3_fail_list}")
+
+            # === FAZE 4: Retry failed stocks from both phases ===
+            all_failed = list(set(fail_list + (phase3_fail_list if remaining else [])))
+            if all_failed:
+                print(f"\n[LOADER] ====== FAZE 4: {len(all_failed)} basarisiz hisse yeniden deneniyor ======")
+                time.sleep(5)  # Cooldown before retry
+                retry_ok = 0
+                for sym in all_failed:
+                    data = _fetch_stock_data(sym, retry_count=3)
+                    if data:
+                        cur, prev = sf(data['close']), sf(data['prev'])
+                        if prev > 0:
+                            ch = sf(cur - prev); o = sf(data.get('open', cur))
+                            _cset(_stock_cache, sym, {
+                                'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
+                                'price': cur, 'prevClose': prev,
+                                'change': ch, 'changePct': sf(ch / prev * 100),
+                                'volume': si(data.get('volume', 0)),
+                                'open': o, 'high': sf(data.get('high', cur)),
+                                'low': sf(data.get('low', cur)),
+                                'gap': sf(o - prev), 'gapPct': sf((o - prev) / prev * 100),
+                            })
+                            retry_ok += 1
+                    time.sleep(1.2)  # More conservative delay for retries
+                print(f"[LOADER] FAZE 4: {retry_ok}/{len(all_failed)} kurtarildi")
 
             _status['phase'] = 'done'
             _status['lastRun'] = datetime.now().isoformat()
@@ -1345,36 +1388,50 @@ def prepare_chart_data(hist):
 # =====================================================================
 @app.route('/api/health')
 def health():
+    now = time.time()
+    with _lock:
+        fresh = [k for k, v in _stock_cache.items() if now - v['ts'] < CACHE_TTL]
+        stale = [k for k, v in _stock_cache.items() if CACHE_TTL <= now - v['ts'] < CACHE_STALE_TTL]
     return jsonify({
-        'status': 'ok', 'version': '4.1.0', 'yf': YF_OK,
+        'status': 'ok', 'version': '4.2.0', 'yf': YF_OK,
         'time': datetime.now().isoformat(),
         'loader': _status,
         'loaderStarted': _loader_started,
         'stockCache': len(_stock_cache),
+        'stockCacheFresh': len(fresh),
+        'stockCacheStale': len(stale),
         'indexCache': len(_index_cache),
         'cachedStocks': list(_stock_cache.keys()),
         'cachedIndices': list(_index_cache.keys()),
+        'totalDefined': len(BIST100_STOCKS),
+        'missingStocks': [s for s in BIST100_STOCKS.keys() if s not in _stock_cache],
     })
 
 @app.route('/api/debug')
 def debug():
     """Detayli debug - Render loglarinda ne olduğunu goster"""
+    now = time.time()
     stock_details = {}
     with _lock:
         for k, v in _stock_cache.items():
-            age = round(time.time() - v['ts'], 1)
-            stock_details[k] = {'price': v['data']['price'], 'age_sec': age}
+            age = round(now - v['ts'], 1)
+            status = 'fresh' if age < CACHE_TTL else ('stale' if age < CACHE_STALE_TTL else 'expired')
+            stock_details[k] = {'price': v['data']['price'], 'age_sec': age, 'status': status}
     index_details = {}
     with _lock:
         for k, v in _index_cache.items():
-            age = round(time.time() - v['ts'], 1)
+            age = round(now - v['ts'], 1)
             index_details[k] = {'value': v['data']['value'], 'age_sec': age}
+    missing = [s for s in BIST100_STOCKS.keys() if s not in _stock_cache]
     return jsonify({
         'loaderStarted': _loader_started,
         'status': _status,
         'stockCache': stock_details,
         'indexCache': index_details,
         'totalStocks': len(stock_details),
+        'totalDefined': len(BIST100_STOCKS),
+        'missingStocks': missing,
+        'totalMissing': len(missing),
         'totalIndices': len(index_details),
         'yfinance': YF_OK,
         'time': datetime.now().isoformat(),
