@@ -7,6 +7,7 @@ SQLite veritabani, kullanici sistemi, backtest, KAP haberleri
 from flask import Flask, jsonify, request, send_from_directory, make_response, session
 from flask_cors import CORS
 import traceback, os, time, threading, json, hashlib, sqlite3, uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 try:
@@ -363,7 +364,7 @@ def _fetch_isyatirim_df(symbol, days=365):
 def _fetch_isyatirim_quick(symbol):
     """Is Yatirim'dan son fiyat bilgisi (quick - dashboard icin)"""
     try:
-        df = _fetch_isyatirim_df(symbol, days=14)
+        df = _fetch_isyatirim_df(symbol, days=5)
         if df is None or len(df) < 2:
             return None
         cur = float(df['Close'].iloc[-1])
@@ -559,142 +560,118 @@ def _fetch_index_data(key, tsym, name):
 
 
 # =====================================================================
-# BACKGROUND LOADER
+# BACKGROUND LOADER (paralel - ThreadPoolExecutor)
 # =====================================================================
+PARALLEL_WORKERS = 6  # Ayni anda 6 hisse cek (Is Yatirim rate limit'e dikkat)
+
+def _process_stock(sym, retry_count=2):
+    """Tek hisseyi cek ve cache formatinda dondur (thread-safe)"""
+    try:
+        data = _fetch_stock_data(sym, retry_count=retry_count)
+        if data:
+            cur, prev = sf(data['close']), sf(data['prev'])
+            if prev > 0:
+                ch = sf(cur - prev); o = sf(data.get('open', cur))
+                return sym, {
+                    'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
+                    'price': cur, 'prevClose': prev,
+                    'change': ch, 'changePct': sf(ch / prev * 100),
+                    'volume': si(data.get('volume', 0)),
+                    'open': o, 'high': sf(data.get('high', cur)),
+                    'low': sf(data.get('low', cur)),
+                    'gap': sf(o - prev), 'gapPct': sf((o - prev) / prev * 100),
+                }
+    except Exception as e:
+        print(f"  [WORKER] {sym} hata: {e}")
+    return sym, None
+
+def _fetch_stocks_parallel(symbols, label="STOCKS", retry_count=2):
+    """Hisse listesini paralel cek, basarisizlari dondur"""
+    ok_count = 0
+    fail_list = []
+    total = len(symbols)
+
+    with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+        futures = {executor.submit(_process_stock, sym, retry_count): sym for sym in symbols}
+        done_count = 0
+        for future in as_completed(futures):
+            sym, result = future.result()
+            done_count += 1
+            if result:
+                _cset(_stock_cache, sym, result)
+                ok_count += 1
+            else:
+                fail_list.append(sym)
+                _ctouch(_stock_cache, sym)  # Keep stale data alive
+            _status['loaded'] = _status.get('loaded', 0) + 1
+            if done_count % 20 == 0 or done_count == total:
+                print(f"  [{label}] {done_count}/{total}, cache={len(_stock_cache)}, fail={len(fail_list)}")
+
+    print(f"[LOADER] {label}: {ok_count} OK, {len(fail_list)} basarisiz")
+    if fail_list:
+        print(f"[LOADER] {label} basarisiz: {fail_list}")
+    return fail_list
+
 def _background_loop():
-    print(f"[LOADER] Thread basliyor, YF={YF_OK}")
+    print(f"[LOADER] Thread basliyor, YF={YF_OK}, workers={PARALLEL_WORKERS}")
     time.sleep(3)
 
     while True:
+        t0 = time.time()
         try:
-            # === FAZE 1: Endeksler ===
+            # === FAZE 1: Endeksler (paralel) ===
             _status['phase'] = 'indices'
             _status['error'] = ''
             print(f"\n[LOADER] ====== FAZE 1: Endeksler ======")
 
-            for key, (tsym, name) in INDEX_TICKERS.items():
+            def _fetch_one_index(item):
+                key, (tsym, name) = item
                 data = _fetch_index_data(key, tsym, name)
-                if data:
-                    cur, prev = sf(data['close'], 4), sf(data['prev'], 4)
-                    _cset(_index_cache, key, {
-                        'name': name, 'value': cur,
-                        'change': sf(cur - prev, 4),
-                        'changePct': sf((cur - prev) / prev * 100 if prev else 0),
-                        'volume': si(data.get('volume', 0)),
-                    })
-                time.sleep(0.5)
+                return key, tsym, name, data
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                for key, tsym, name, data in executor.map(_fetch_one_index, INDEX_TICKERS.items()):
+                    if data:
+                        cur, prev = sf(data['close'], 4), sf(data['prev'], 4)
+                        _cset(_index_cache, key, {
+                            'name': name, 'value': cur,
+                            'change': sf(cur - prev, 4),
+                            'changePct': sf((cur - prev) / prev * 100 if prev else 0),
+                            'volume': si(data.get('volume', 0)),
+                        })
 
             print(f"[LOADER] Endeksler: {len(_index_cache)}/{len(INDEX_TICKERS)}")
 
-            # === FAZE 2: BIST30 hisseleri ===
+            # === FAZE 2: BIST30 hisseleri (paralel) ===
             _status['phase'] = 'stocks'
             _status['total'] = len(BIST100_STOCKS)
             _status['loaded'] = 0
-            fail_count = 0
-            fail_list = []
-            print(f"\n[LOADER] ====== FAZE 2: BIST30 ({len(BIST30)} hisse) ======")
+            print(f"\n[LOADER] ====== FAZE 2: BIST30 ({len(BIST30)} hisse) [paralel x{PARALLEL_WORKERS}] ======")
 
-            for i, sym in enumerate(BIST30):
-                data = _fetch_stock_data(sym)
-                if data:
-                    cur, prev = sf(data['close']), sf(data['prev'])
-                    if prev > 0:
-                        ch = sf(cur - prev); o = sf(data.get('open', cur))
-                        _cset(_stock_cache, sym, {
-                            'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
-                            'price': cur, 'prevClose': prev,
-                            'change': ch, 'changePct': sf(ch / prev * 100),
-                            'volume': si(data.get('volume', 0)),
-                            'open': o, 'high': sf(data.get('high', cur)),
-                            'low': sf(data.get('low', cur)),
-                            'gap': sf(o - prev), 'gapPct': sf((o - prev) / prev * 100),
-                        })
-                    else:
-                        fail_count += 1; fail_list.append(sym)
-                        _ctouch(_stock_cache, sym)  # Keep stale data alive
-                        print(f"  [SKIP] {sym}: prev <= 0 (prev={prev})")
-                else:
-                    fail_count += 1; fail_list.append(sym)
-                    _ctouch(_stock_cache, sym)  # Keep stale data alive
-                _status['loaded'] = i + 1
-                if (i + 1) % 10 == 0:
-                    print(f"  [BIST30] {i+1}/{len(BIST30)}, cache={len(_stock_cache)}, fail={fail_count}")
-                time.sleep(0.8)
+            bist30_fail = _fetch_stocks_parallel(BIST30, label="BIST30")
 
-            print(f"[LOADER] BIST30: {len(_stock_cache)} hisse cache'de, {fail_count} basarisiz")
-            if fail_list:
-                print(f"[LOADER] BIST30 basarisiz: {fail_list}")
-
-            # Cooldown between phases to avoid rate limiting
-            time.sleep(3)
-
-            # === FAZE 3: Kalan BIST100 hisseleri ===
-            # Cache key'i olsa bile TTL dolmussa yeniden cek
+            # === FAZE 3: Kalan BIST100 hisseleri (paralel) ===
             with _lock:
                 cached_and_valid = {s for s in BIST100_STOCKS.keys()
                                     if s in _stock_cache and time.time() - _stock_cache[s]['ts'] < CACHE_TTL}
             remaining = [s for s in BIST100_STOCKS.keys() if s not in cached_and_valid]
+            phase3_fail = []
             if remaining:
-                print(f"\n[LOADER] ====== FAZE 3: {len(remaining)} kalan hisse ======")
-                phase3_fail = 0
-                phase3_fail_list = []
-                for i, sym in enumerate(remaining):
-                    data = _fetch_stock_data(sym)
-                    if data:
-                        cur, prev = sf(data['close']), sf(data['prev'])
-                        if prev > 0:
-                            ch = sf(cur - prev); o = sf(data.get('open', cur))
-                            _cset(_stock_cache, sym, {
-                                'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
-                                'price': cur, 'prevClose': prev,
-                                'change': ch, 'changePct': sf(ch / prev * 100),
-                                'volume': si(data.get('volume', 0)),
-                                'open': o, 'high': sf(data.get('high', cur)),
-                                'low': sf(data.get('low', cur)),
-                                'gap': sf(o - prev), 'gapPct': sf((o - prev) / prev * 100),
-                            })
-                        else:
-                            phase3_fail += 1; phase3_fail_list.append(sym)
-                            _ctouch(_stock_cache, sym)  # Keep stale data alive
-                            print(f"  [SKIP] {sym}: prev <= 0 (prev={prev})")
-                    else:
-                        phase3_fail += 1; phase3_fail_list.append(sym)
-                        _ctouch(_stock_cache, sym)  # Keep stale data alive
-                    if (i + 1) % 10 == 0:
-                        print(f"  [BIST100] {i+1}/{len(remaining)}, toplam cache={len(_stock_cache)}, fail={phase3_fail}")
-                    time.sleep(0.8)
-                print(f"[LOADER] BIST100 kalan: {phase3_fail} basarisiz")
-                if phase3_fail_list:
-                    print(f"[LOADER] BIST100 basarisiz: {phase3_fail_list}")
+                print(f"\n[LOADER] ====== FAZE 3: {len(remaining)} kalan hisse [paralel x{PARALLEL_WORKERS}] ======")
+                phase3_fail = _fetch_stocks_parallel(remaining, label="BIST100")
 
-            # === FAZE 4: Retry failed stocks from both phases ===
-            all_failed = list(set(fail_list + (phase3_fail_list if remaining else [])))
+            # === FAZE 4: Retry failed stocks (paralel, daha az worker) ===
+            all_failed = list(set(bist30_fail + phase3_fail))
             if all_failed:
                 print(f"\n[LOADER] ====== FAZE 4: {len(all_failed)} basarisiz hisse yeniden deneniyor ======")
-                time.sleep(5)  # Cooldown before retry
-                retry_ok = 0
-                for sym in all_failed:
-                    data = _fetch_stock_data(sym, retry_count=3)
-                    if data:
-                        cur, prev = sf(data['close']), sf(data['prev'])
-                        if prev > 0:
-                            ch = sf(cur - prev); o = sf(data.get('open', cur))
-                            _cset(_stock_cache, sym, {
-                                'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
-                                'price': cur, 'prevClose': prev,
-                                'change': ch, 'changePct': sf(ch / prev * 100),
-                                'volume': si(data.get('volume', 0)),
-                                'open': o, 'high': sf(data.get('high', cur)),
-                                'low': sf(data.get('low', cur)),
-                                'gap': sf(o - prev), 'gapPct': sf((o - prev) / prev * 100),
-                            })
-                            retry_ok += 1
-                    time.sleep(1.2)  # More conservative delay for retries
-                print(f"[LOADER] FAZE 4: {retry_ok}/{len(all_failed)} kurtarildi")
+                time.sleep(3)
+                retry_fail = _fetch_stocks_parallel(all_failed, label="RETRY", retry_count=3)
+                print(f"[LOADER] FAZE 4: {len(all_failed) - len(retry_fail)}/{len(all_failed)} kurtarildi")
 
+            elapsed = round(time.time() - t0, 1)
             _status['phase'] = 'done'
             _status['lastRun'] = datetime.now().isoformat()
-            print(f"\n[LOADER] ====== SONUC: {len(_stock_cache)} hisse, {len(_index_cache)} endeks ======\n")
+            print(f"\n[LOADER] ====== SONUC: {len(_stock_cache)} hisse, {len(_index_cache)} endeks ({elapsed}s) ======\n")
 
         except Exception as e:
             print(f"[LOADER] FATAL: {e}")
