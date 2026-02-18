@@ -2793,7 +2793,7 @@ async function loadSignals() {
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Tüm hisseler taranıyor... (bu birkaç saniye sürebilir)</div>';
 
   const data = await api(`/signals?timeframe=${tf}&type=${type}`);
-  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor, lütfen bekleyin...</div>'; return; }
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor, lütfen bekleyin...</div>'; setTimeout(loadSignals, 5000); return; }
   if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
 
   const signals = data.signals || [];
@@ -2869,7 +2869,7 @@ async function loadOpportunities() {
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Fırsatlar araştırılıyor...</div>';
 
   const data = await api('/opportunities');
-  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; return; }
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; setTimeout(loadOpportunities, 5000); return; }
   if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
 
   const buyOpps = data.buyOpportunities || [];
@@ -2957,7 +2957,7 @@ async function loadStrategies() {
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Stratejiler hesaplanıyor...</div>';
 
   const data = await api('/strategies/live');
-  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; return; }
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; setTimeout(loadStrategies, 5000); return; }
   if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
 
   const strategies = data.strategies || {};
@@ -3034,7 +3034,7 @@ async function loadDividends() {
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Temettü bilgileri yükleniyor... (bu biraz sürebilir)</div>';
 
   const data = await api('/dividends');
-  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; return; }
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; setTimeout(loadDividends, 5000); return; }
   if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
 
   const divs = data.dividends || [];
