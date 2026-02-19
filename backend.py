@@ -673,6 +673,9 @@ def _background_loop():
             _status['lastRun'] = datetime.now().isoformat()
             print(f"\n[LOADER] ====== SONUC: {len(_stock_cache)} hisse, {len(_index_cache)} endeks ({elapsed}s) ======\n")
 
+            # === FAZE 5: Tarihsel veri on-yukleme (sinyaller/firsatlar icin) ===
+            _preload_hist_data()
+
         except Exception as e:
             print(f"[LOADER] FATAL: {e}")
             traceback.print_exc()
@@ -680,6 +683,46 @@ def _background_loop():
             _status['error'] = str(e)
 
         time.sleep(300)
+
+
+def _preload_one_hist(sym):
+    """Tek hisse icin tarihsel veriyi cek ve cache'le"""
+    try:
+        cached = _cget(_hist_cache, f"{sym}_1y")
+        if cached is not None:
+            return sym, True
+        df = _fetch_hist_df(sym, '1y')
+        if df is not None and len(df) >= 30:
+            _cset(_hist_cache, f"{sym}_1y", df)
+            return sym, True
+    except Exception as e:
+        print(f"  [HIST] {sym}: {e}")
+    return sym, False
+
+def _preload_hist_data():
+    """Tum hisselerin tarihsel verisini paralel on-yukle"""
+    symbols = list(BIST100_STOCKS.keys())
+    # Sadece cache'de olmayanlari cek
+    to_fetch = [s for s in symbols if _cget(_hist_cache, f"{s}_1y") is None]
+    if not to_fetch:
+        print(f"[HIST-PRELOAD] Tum {len(symbols)} hisse zaten cache'de")
+        return
+
+    print(f"\n[HIST-PRELOAD] ====== {len(to_fetch)} hisse icin tarihsel veri cekilecek [paralel x{PARALLEL_WORKERS}] ======")
+    t0 = time.time()
+    ok = 0
+    with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+        futures = {executor.submit(_preload_one_hist, sym): sym for sym in to_fetch}
+        done = 0
+        for future in as_completed(futures):
+            sym, success = future.result()
+            done += 1
+            if success:
+                ok += 1
+            if done % 30 == 0 or done == len(to_fetch):
+                print(f"  [HIST-PRELOAD] {done}/{len(to_fetch)}, OK={ok}")
+    elapsed = round(time.time() - t0, 1)
+    print(f"[HIST-PRELOAD] Tamamlandi: {ok}/{len(to_fetch)} ({elapsed}s)\n")
 
 def _ensure_loader():
     global _loader_started
@@ -2254,17 +2297,20 @@ def signal_scanner():
         if not stocks:
             return jsonify({'success': True, 'loading': True, 'signals': [], 'message': 'Veriler yukleniyor...'})
 
+        # Eksik tarihsel verileri paralel cek
+        missing_syms = [s['code'] for s in stocks if _cget(_hist_cache, f"{s['code']}_1y") is None]
+        if missing_syms:
+            print(f"[SIGNALS] {len(missing_syms)} hisse icin tarihsel veri paralel cekilecek")
+            with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+                list(executor.map(_preload_one_hist, missing_syms))
+
         results = []
         for stock in stocks:
             sym = stock['code']
             try:
                 hist = _cget(_hist_cache, f"{sym}_1y")
                 if hist is None:
-                    hist = _fetch_hist_df(sym, '1y')
-                    if hist is not None and len(hist) >= 30:
-                        _cset(_hist_cache, f"{sym}_1y", hist)
-                    else:
-                        continue
+                    continue
 
                 c = hist['Close'].values.astype(float)
                 h = hist['High'].values.astype(float)
@@ -2366,17 +2412,20 @@ def opportunities():
         if not stocks:
             return jsonify({'success': True, 'loading': True, 'message': 'Veriler yukleniyor...'})
 
+        # Eksik tarihsel verileri paralel cek
+        missing_syms = [s['code'] for s in stocks if _cget(_hist_cache, f"{s['code']}_1y") is None]
+        if missing_syms:
+            print(f"[OPPORTUNITIES] {len(missing_syms)} hisse icin tarihsel veri paralel cekilecek")
+            with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+                list(executor.map(_preload_one_hist, missing_syms))
+
         opportunities_list = []
         for stock in stocks:
             sym = stock['code']
             try:
                 hist = _cget(_hist_cache, f"{sym}_1y")
                 if hist is None:
-                    hist = _fetch_hist_df(sym, '1y')
-                    if hist is not None and len(hist) >= 30:
-                        _cset(_hist_cache, f"{sym}_1y", hist)
-                    else:
-                        continue
+                    continue
 
                 c = hist['Close'].values.astype(float)
                 h = hist['High'].values.astype(float)
@@ -2519,16 +2568,19 @@ def live_strategies():
             'mean_reversion': 'Ortalamaya Donus (RSI)',
         }
 
+        # Eksik tarihsel verileri paralel cek
+        missing_syms = [s['code'] for s in stocks if _cget(_hist_cache, f"{s['code']}_1y") is None]
+        if missing_syms:
+            print(f"[STRATEGIES] {len(missing_syms)} hisse icin tarihsel veri paralel cekilecek")
+            with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+                list(executor.map(_preload_one_hist, missing_syms))
+
         for stock in stocks:
             sym = stock['code']
             try:
                 hist = _cget(_hist_cache, f"{sym}_1y")
                 if hist is None:
-                    hist = _fetch_hist_df(sym, '1y')
-                    if hist is not None and len(hist) >= 50:
-                        _cset(_hist_cache, f"{sym}_1y", hist)
-                    else:
-                        continue
+                    continue
 
                 c = hist['Close'].values.astype(float)
                 h = hist['High'].values.astype(float)
@@ -2635,16 +2687,19 @@ def dividend_calendar():
         if not stocks:
             return jsonify({'success': True, 'loading': True, 'dividends': [], 'message': 'Veriler yukleniyor...'})
 
+        # Eksik tarihsel verileri paralel cek
+        missing_syms = [s['code'] for s in stocks if _cget(_hist_cache, f"{s['code']}_1y") is None]
+        if missing_syms:
+            print(f"[DIVIDENDS] {len(missing_syms)} hisse icin tarihsel veri paralel cekilecek")
+            with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+                list(executor.map(_preload_one_hist, missing_syms))
+
         dividends_list = []
         for stock in stocks:
             sym = stock['code']
             try:
                 ticker_sym = sym + '.IS'
                 hist = _cget(_hist_cache, f"{sym}_1y")
-                if hist is None:
-                    hist = _fetch_hist_df(sym, '2y')
-                    if hist is not None and len(hist) >= 10:
-                        _cset(_hist_cache, f"{sym}_1y", hist)
 
                 # yfinance Ticker ile temettu bilgisi
                 if YF_OK:

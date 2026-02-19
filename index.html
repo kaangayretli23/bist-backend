@@ -1002,10 +1002,15 @@ function goToCommodity(symbol) {
 // =============================================================================
 async function api(path, options = {}) {
   try {
+    const controller = new AbortController();
+    const timeoutMs = path.includes('/signals') || path.includes('/opportunities') || path.includes('/strategies') || path.includes('/dividends') ? 120000 : 30000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(API_BASE + path, {
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       ...options,
     });
+    clearTimeout(timer);
     const text = await res.text();
     try {
       return JSON.parse(text);
@@ -1015,6 +1020,7 @@ async function api(path, options = {}) {
     }
   } catch(e) {
     console.error('API Error:', path, e);
+    if (e.name === 'AbortError') return { error: 'Sunucu yanıt süresini aştı. Veriler arka planda hazırlanıyor, lütfen biraz bekleyip tekrar deneyin.' };
     return { error: e.message };
   }
 }
@@ -1068,14 +1074,33 @@ document.addEventListener('click', e => {
 });
 
 // =============================================================================
-// DASHBOARD
+// DASHBOARD (page-level cache: sayfa gecisleri icin)
 // =============================================================================
+const _pageCache = {};
+const PAGE_CACHE_TTL = 30000; // 30 saniye
+
+function _getCached(key) {
+  const c = _pageCache[key];
+  if (c && Date.now() - c.ts < PAGE_CACHE_TTL) return c.data;
+  return null;
+}
+function _setCache(key, data) {
+  _pageCache[key] = { data, ts: Date.now() };
+}
+
 async function loadDashboard() {
   // Indices
   loadIndices();
-  // Dashboard data
+
+  // Onceki veri varsa hemen render et, arka planda guncelle
+  const cached = _getCached('dashboard');
+  if (cached && cached.allStocks && cached.allStocks.length > 0) {
+    renderDashboard(cached);
+  }
+
   const data = await api('/dashboard');
   if (data.error && !data.success) {
+    if (cached) return; // Cache varsa hatada eskiyi goster
     document.getElementById('indicesCards').innerHTML = `
       <div class="index-card" style="grid-column:1/-1;text-align:center;">
         <div style="color:var(--yellow);margin-bottom:8px;">⚠️ Veri yüklenirken sorun oluştu</div>
@@ -1086,6 +1111,7 @@ async function loadDashboard() {
   }
 
   if (data.loading || (data.allStocks && data.allStocks.length === 0)) {
+    if (cached) return; // Cache varsa loading durumunda eskiyi koru
     document.getElementById('indicesCards').innerHTML = `
       <div class="index-card" style="grid-column:1/-1;text-align:center;">
         <div class="spinner" style="margin:0 auto 12px;"></div>
@@ -1097,6 +1123,12 @@ async function loadDashboard() {
     setTimeout(() => loadDashboard(), 10000);
     return;
   }
+
+  _setCache('dashboard', data);
+  renderDashboard(data);
+}
+
+function renderDashboard(data) {
 
   // Breadth
   const mb = data.marketBreadth || {};
@@ -2793,8 +2825,8 @@ async function loadSignals() {
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Tüm hisseler taranıyor... (bu birkaç saniye sürebilir)</div>';
 
   const data = await api(`/signals?timeframe=${tf}&type=${type}`);
-  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor, lütfen bekleyin...</div>'; setTimeout(loadSignals, 5000); return; }
-  if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler arka planda hazırlanıyor, otomatik yenilenecek...</div>'; setTimeout(loadSignals, 8000); return; }
+  if (data.error) { container.innerHTML = `<div class="card" style="text-align:center;"><div style="margin-bottom:12px;">${data.error}</div><button class="btn btn-primary btn-sm" onclick="loadSignals()">Tekrar Dene</button></div>`; return; }
 
   const signals = data.signals || [];
   const buys = signals.filter(s => parseFloat(s.score) > 0);
@@ -2869,8 +2901,8 @@ async function loadOpportunities() {
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Fırsatlar araştırılıyor...</div>';
 
   const data = await api('/opportunities');
-  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler yükleniyor...</div>'; setTimeout(loadOpportunities, 5000); return; }
-  if (data.error) { container.innerHTML = `<div class="card">${data.error}</div>`; return; }
+  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler arka planda hazırlanıyor, otomatik yenilenecek...</div>'; setTimeout(loadOpportunities, 8000); return; }
+  if (data.error) { container.innerHTML = `<div class="card" style="text-align:center;"><div style="margin-bottom:12px;">${data.error}</div><button class="btn btn-primary btn-sm" onclick="loadOpportunities()">Tekrar Dene</button></div>`; return; }
 
   const buyOpps = data.buyOpportunities || [];
   const sellOpps = data.sellOpportunities || [];

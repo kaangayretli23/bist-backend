@@ -3,7 +3,7 @@ services:
     name: bist-backend
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn backend:app
+    startCommand: gunicorn backend:app --timeout 120 --workers 1 --threads 4
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
