@@ -1256,7 +1256,8 @@ async function loadSectors(selectId) {
 // =============================================================================
 // STOCK DETAIL
 // =============================================================================
-async function loadStockDetail(symbol) {
+async function loadStockDetail(symbol, period) {
+  period = period || '1y';
   const container = document.getElementById('stockDetailContent');
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Hisse verisi yükleniyor...</div>';
 
@@ -1264,7 +1265,7 @@ async function loadStockDetail(symbol) {
   document.querySelectorAll('.nav-link').forEach(n => n.classList.remove('active'));
 
   const [stockData, eventsData] = await Promise.all([
-    api('/stock/' + symbol + '?period=1y'),
+    api('/stock/' + symbol + '?period=' + period),
     api('/stock/' + symbol + '/events')
   ]);
 
@@ -1274,8 +1275,8 @@ async function loadStockDetail(symbol) {
   }
 
   if (stockData.loading && (!stockData.indicators || Object.keys(stockData.indicators).length === 0)) {
-    container.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto 16px;"></div><div style="color:var(--yellow);">⏳ ${stockData.message || 'Veri yükleniyor...'}</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">İlk yükleme birkaç saniye sürebilir.</div><button class="btn btn-primary btn-sm" onclick="loadStockDetail('${symbol}')" style="margin-top:12px;">Yenile</button></div>`;
-    setTimeout(() => loadStockDetail(symbol), 5000);
+    container.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto 16px;"></div><div style="color:var(--yellow);">⏳ ${stockData.message || 'Veri yükleniyor...'}</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">İlk yükleme birkaç saniye sürebilir.</div><button class="btn btn-primary btn-sm" onclick="loadStockDetail('${symbol}','${period}')" style="margin-top:12px;">Yenile</button></div>`;
+    setTimeout(() => loadStockDetail(symbol, period), 5000);
     return;
   }
 
@@ -1427,6 +1428,89 @@ async function loadStockDetail(symbol) {
       </div>
     </div>
 
+    <!-- Piyasa Rejimi -->
+    ${s.marketRegime ? `
+    <div class="card mb-24 fade-in">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:15px;">Piyasa Rejimi</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+        ${renderMarketRegime(s.marketRegime)}
+      </div>
+    </div>` : ''}
+
+    <!-- Mum Formasyonlari -->
+    <div class="card mb-24 fade-in">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:15px;">Mum Formasyonları</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+        ${renderCandlestickPatterns(ind.candlestick)}
+      </div>
+    </div>
+
+    <!-- ML Guven Skoru -->
+    ${s.mlConfidence ? `
+    <div class="card mb-24 fade-in">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:15px;">ML Güven Analizi</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:2000px;padding-top:8px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">Yapay zeka destekli çoklu faktör analizi ile sinyal güvenilirliği</div>
+        ${renderMLConfidence(s.mlConfidence)}
+      </div>
+    </div>` : ''}
+
+    <!-- Sinyal Performansi -->
+    ${s.signalBacktest ? `
+    <div class="card mb-24 fade-in">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:15px;">Sinyal Performansı (Backtest)</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:2000px;padding-top:8px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">Geçmiş 1 yılda üretilen sinyallerin gerçek performansı</div>
+        ${renderSignalBacktest(s.signalBacktest)}
+      </div>
+    </div>` : ''}
+
+    <!-- Dinamik Esikler -->
+    ${ind.dynamicThresholds ? `
+    <div class="card mb-24 fade-in">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:15px;">Dinamik Eşikler</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:1000px;padding-top:8px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">Bu hissenin tarihsel dağılımına göre hesaplanan adaptif eşik değerleri</div>
+        <div class="grid-4" style="gap:8px;">
+          <div style="text-align:center;padding:10px;border-radius:8px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);">
+            <div style="font-size:10px;color:var(--green);font-weight:700;">RSI Aşırı Satım</div>
+            <div style="font-size:18px;font-weight:800;color:var(--green);">${ind.dynamicThresholds.rsi_oversold}</div>
+            <div style="font-size:10px;color:var(--text-muted);">Standart: 30</div>
+          </div>
+          <div style="text-align:center;padding:10px;border-radius:8px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);">
+            <div style="font-size:10px;color:var(--red);font-weight:700;">RSI Aşırı Alım</div>
+            <div style="font-size:18px;font-weight:800;color:var(--red);">${ind.dynamicThresholds.rsi_overbought}</div>
+            <div style="font-size:10px;color:var(--text-muted);">Standart: 70</div>
+          </div>
+          <div style="text-align:center;padding:10px;border-radius:8px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);">
+            <div style="font-size:10px;color:var(--accent);font-weight:700;">Bollinger Std</div>
+            <div style="font-size:18px;font-weight:800;color:var(--accent);">${ind.dynamicThresholds.bb_std}</div>
+            <div style="font-size:10px;color:var(--text-muted);">Standart: 2.0</div>
+          </div>
+          <div style="text-align:center;padding:10px;border-radius:8px;background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.2);">
+            <div style="font-size:10px;color:var(--yellow);font-weight:700;">Hacim Spike</div>
+            <div style="font-size:18px;font-weight:800;color:var(--yellow);">${ind.dynamicThresholds.vol_spike}x</div>
+            <div style="font-size:10px;color:var(--text-muted);">Standart: 2.0x</div>
+          </div>
+        </div>
+      </div>
+    </div>` : ''}
+
     <!-- Events -->
     ${events.dividends && events.dividends.length > 0 ? `
     <div class="card mb-24 fade-in">
@@ -1450,26 +1534,7 @@ async function loadStockDetail(symbol) {
 }
 
 function loadStockPeriod(symbol, period) {
-  const container = document.getElementById('stockDetailContent');
-  container.innerHTML = '<div class="loading"><div class="spinner"></div>Yükleniyor...</div>';
-  api('/stock/' + symbol + '?period=' + period).then(data => {
-    if (!data.error) loadStockDetail(symbol);
-  });
-  // Simpler: just reload
-  setTimeout(() => loadStockDetailWithPeriod(symbol, period), 100);
-}
-
-async function loadStockDetailWithPeriod(symbol, period) {
-  const container = document.getElementById('stockDetailContent');
-  container.innerHTML = '<div class="loading"><div class="spinner"></div>Yükleniyor...</div>';
-  // Re-fetch with different period
-  const stockData = await api('/stock/' + symbol + '?period=' + period);
-  if (stockData.error) {
-    container.innerHTML = `<div class="empty-state"><div class="icon">❌</div><div>${stockData.error}</div></div>`;
-    return;
-  }
-  // Rebuild (reuse loadStockDetail flow by temporarily overriding)
-  navigate('stock', { symbol });
+  loadStockDetail(symbol, period);
 }
 
 // =============================================================================
@@ -1935,6 +2000,116 @@ function renderRecommendation(rec) {
     html += '</div>';
   });
   return html;
+}
+
+// =============================================================================
+// NEW FEATURE RENDERERS (v7.0)
+// =============================================================================
+function renderCandlestickPatterns(candle) {
+  if (!candle || !candle.patterns || !candle.patterns.length) return '<div style="font-size:12px;color:var(--text-muted);">Aktif mum formasyonu tespit edilmedi</div>';
+  return candle.patterns.map(p => {
+    const color = p.type === 'bullish' ? 'var(--green)' : (p.type === 'bearish' ? 'var(--red)' : 'var(--text-muted)');
+    const icon = p.type === 'bullish' ? '🟢' : (p.type === 'bearish' ? '🔴' : '⚪');
+    const stars = '★'.repeat(p.strength) + '☆'.repeat(5 - p.strength);
+    return `<div style="padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:rgba(${p.type === 'bullish' ? '16,185,129' : (p.type === 'bearish' ? '239,68,68' : '156,163,175')},0.05);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:700;color:${color};">${icon} ${p.name}</span>
+        <span style="font-size:11px;color:var(--yellow);">${stars}</span>
+      </div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">${p.description}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderMLConfidence(mlConf) {
+  if (!mlConf) return '';
+  let html = '';
+  [['weekly','Haftalık'],['monthly','Aylık'],['yearly','Yıllık']].forEach(([key, label]) => {
+    const m = mlConf[key];
+    if (!m || !m.factors?.length) return;
+    const gradeColor = {'A':'var(--green)','B':'#4CAF50','C':'var(--yellow)','D':'var(--red)','F':'#ff0000'}[m.grade] || 'var(--text-muted)';
+    html += `<div style="padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <span style="font-weight:700;font-size:13px;">${label}</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:24px;font-weight:900;color:${gradeColor};">${m.grade}</span>
+          <span style="font-size:13px;color:var(--text-muted);">%${m.confidence}</span>
+        </div>
+      </div>
+      <div style="height:6px;background:var(--border);border-radius:3px;margin-bottom:10px;overflow:hidden;">
+        <div style="width:${m.confidence}%;height:100%;background:${gradeColor};border-radius:3px;"></div>
+      </div>`;
+    m.factors.forEach(f => {
+      const pct = f.max > 0 ? (f.score / f.max * 100) : 0;
+      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:11px;">
+        <span style="width:140px;color:var(--text-secondary);">${f.name}</span>
+        <div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;background:var(--accent);border-radius:2px;"></div>
+        </div>
+        <span style="width:50px;text-align:right;color:var(--text-muted);">${f.score}/${f.max}</span>
+      </div>`;
+    });
+    html += '</div>';
+  });
+  return html || '<div style="font-size:12px;color:var(--text-muted);">ML guven analizi mevcut degil</div>';
+}
+
+function renderMarketRegime(regime) {
+  if (!regime || regime.regime === 'unknown') return '';
+  const regimeColors = {
+    'strong_bull': 'var(--green)', 'bull': '#4CAF50',
+    'strong_bear': 'var(--red)', 'bear': '#FF9800',
+    'sideways': 'var(--yellow)',
+  };
+  const regimeEmoji = {
+    'strong_bull': '🐂🐂', 'bull': '🐂',
+    'strong_bear': '🐻🐻', 'bear': '🐻',
+    'sideways': '↔️',
+  };
+  const color = regimeColors[regime.regime] || 'var(--text-muted)';
+  const emoji = regimeEmoji[regime.regime] || '❓';
+  return `<div style="padding:12px;border:2px solid ${color};border-radius:10px;background:rgba(${regime.regime.includes('bull') ? '16,185,129' : (regime.regime.includes('bear') ? '239,68,68' : '234,179,8')},0.05);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <span style="font-weight:800;font-size:15px;color:${color};">${emoji} ${regime.description}</span>
+      <span style="font-size:12px;color:var(--text-muted);">Guc: %${regime.strength}</span>
+    </div>
+    <div style="height:6px;background:var(--border);border-radius:3px;margin-bottom:8px;overflow:hidden;">
+      <div style="width:${regime.strength}%;height:100%;background:${color};border-radius:3px;"></div>
+    </div>
+    ${regime.reasons ? '<div style="font-size:11px;color:var(--text-secondary);line-height:1.6;">' + regime.reasons.slice(0,4).map(r => '• ' + r).join('<br>') + '</div>' : ''}
+  </div>`;
+}
+
+function renderSignalBacktest(bt) {
+  if (!bt || bt.totalSignals === 0) return '<div style="font-size:12px;color:var(--text-muted);">Yeterli gecmis sinyal bulunamadi</div>';
+  const overall = bt.overall || {};
+  const buy = bt.buySignals || {};
+  const sell = bt.sellSignals || {};
+  const winColor = (rate) => rate >= 60 ? 'var(--green)' : (rate >= 45 ? 'var(--yellow)' : 'var(--red)');
+  return `<div style="margin-bottom:12px;">
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:100px;padding:10px;border-radius:8px;background:rgba(99,102,241,0.1);text-align:center;">
+        <div style="font-size:20px;font-weight:800;color:var(--accent);">${bt.totalSignals}</div>
+        <div style="font-size:10px;color:var(--text-muted);">Toplam Sinyal</div>
+      </div>
+      <div style="flex:1;min-width:100px;padding:10px;border-radius:8px;background:rgba(16,185,129,0.1);text-align:center;">
+        <div style="font-size:20px;font-weight:800;color:${winColor(overall.winRate10d)};">%${overall.winRate10d}</div>
+        <div style="font-size:10px;color:var(--text-muted);">10G Basari</div>
+      </div>
+      <div style="flex:1;min-width:100px;padding:10px;border-radius:8px;background:rgba(234,179,8,0.1);text-align:center;">
+        <div style="font-size:20px;font-weight:800;color:${overall.avgRet10d >= 0 ? 'var(--green)' : 'var(--red)'};">%${overall.avgRet10d}</div>
+        <div style="font-size:10px;color:var(--text-muted);">10G Ort. Getiri</div>
+      </div>
+    </div>
+    <table style="width:100%;font-size:12px;">
+      <thead><tr style="color:var(--text-muted);"><th></th><th>Sayi</th><th>5G Basari</th><th>10G Basari</th><th>20G Basari</th><th>10G Getiri</th></tr></thead>
+      <tbody>
+        <tr><td style="color:var(--green);font-weight:600;">Alis</td><td>${buy.count||0}</td><td style="color:${winColor(buy.winRate5d)};">%${buy.winRate5d||0}</td><td style="color:${winColor(buy.winRate10d)};">%${buy.winRate10d||0}</td><td style="color:${winColor(buy.winRate20d)};">%${buy.winRate20d||0}</td><td>${buy.avgRet10d||0}%</td></tr>
+        <tr><td style="color:var(--red);font-weight:600;">Satis</td><td>${sell.count||0}</td><td style="color:${winColor(sell.winRate5d)};">%${sell.winRate5d||0}</td><td style="color:${winColor(sell.winRate10d)};">%${sell.winRate10d||0}</td><td style="color:${winColor(sell.winRate20d)};">%${sell.winRate20d||0}</td><td>${sell.avgRet10d||0}%</td></tr>
+      </tbody>
+    </table>
+    ${bt.byReason ? '<div style="margin-top:10px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);padding-top:8px;"><b>Sinyal Tiplerine Gore:</b><br>' + Object.entries(bt.byReason).map(([k,v]) => `• ${k}: ${v.count} sinyal, %${v.winRate10d} basari`).join('<br>') + '</div>' : ''}
+  </div>`;
 }
 
 // =============================================================================
@@ -2856,9 +3031,15 @@ async function loadSignals() {
 
   if (!signals.length) { container.innerHTML = '<div class="card">Sinyal bulunamadı.</div>'; return; }
 
-  let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Zaman Dilimi: <b>${tfLabels[tf] || tf}</b> | ${signals.length} sinyal bulundu</div>`;
+  // Market regime banner
+  if (data.marketRegime) {
+    html = renderMarketRegime(data.marketRegime);
+    html += `<div style="margin-top:12px;font-size:12px;color:var(--text-muted);margin-bottom:12px;">Zaman Dilimi: <b>${tfLabels[tf] || tf}</b> | ${signals.length} sinyal bulundu</div>`;
+  } else {
+    html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Zaman Dilimi: <b>${tfLabels[tf] || tf}</b> | ${signals.length} sinyal bulundu</div>`;
+  }
   html += '<div class="table-wrap"><table><thead><tr>';
-  html += '<th>Hisse</th><th>Fiyat</th><th>Değişim</th><th>Sinyal</th><th>Skor</th><th>Güven</th><th>İndikatörler</th><th>RSI</th><th>MACD</th><th>Stop-Loss</th><th>Hedef</th>';
+  html += '<th>Hisse</th><th>Fiyat</th><th>Değişim</th><th>Sinyal</th><th>Skor</th><th>ML</th><th>İndikatörler</th><th>RSI</th><th>MACD</th><th>Formasyonlar</th><th>Hedef</th>';
   html += '</tr></thead><tbody>';
 
   for (const s of signals) {
@@ -2874,17 +3055,25 @@ async function loadSignals() {
     const rsiVal = parseFloat(s.rsi);
     const rsiColor = rsiVal < 30 ? 'var(--green)' : rsiVal > 70 ? 'var(--red)' : 'var(--text-primary)';
 
+    const mlGrade = s.mlGrade || 'C';
+    const mlConf = s.mlConfidence || 50;
+    const mlColor = {'A':'var(--green)','B':'#4CAF50','C':'var(--yellow)','D':'var(--red)','F':'#ff0000'}[mlGrade] || 'var(--text-muted)';
+    const candleInfo = (s.candlestickPatterns || []).map(p => {
+      const ci = p.type === 'bullish' ? '🟢' : (p.type === 'bearish' ? '🔴' : '⚪');
+      return ci + p.name.split('(')[0].trim();
+    }).join('<br>') || '-';
+
     html += `<tr class="stock-row" onclick="goToStock('${s.code}')">
       <td class="td-clickable"><span class="td-mono" style="font-weight:700;">${s.code}</span><br><span style="font-size:10px;color:var(--text-muted);">${s.name}</span></td>
       <td class="td-mono">${s.price} ₺</td>
       <td class="td-mono ${changeClass(s.changePct)}">%${s.changePct}</td>
       <td style="${actionClass};font-size:13px;">${s.action}</td>
       <td><div style="display:flex;align-items:center;gap:6px;"><span class="td-mono" style="${actionClass}">${s.score}</span><div style="width:50px;height:6px;background:var(--bg);border-radius:3px;overflow:hidden;"><div style="width:${barWidth}%;height:100%;background:${barColor};border-radius:3px;"></div></div></div></td>
-      <td class="td-mono">%${s.confidence}</td>
+      <td style="text-align:center;"><span style="font-size:16px;font-weight:900;color:${mlColor};">${mlGrade}</span><br><span style="font-size:10px;color:var(--text-muted);">%${mlConf}</span></td>
       <td><span style="color:var(--green)">${s.buySignals} AL</span> / <span style="color:var(--red)">${s.sellSignals} SAT</span> / ${s.totalIndicators}</td>
       <td class="td-mono" style="color:${rsiColor};font-weight:600;">${s.rsi}</td>
       <td>${macdIcon}</td>
-      <td class="td-mono" style="color:var(--red);font-size:11px;">${s.stopLoss} ₺</td>
+      <td style="font-size:10px;">${candleInfo}</td>
       <td class="td-mono" style="color:var(--green);font-size:11px;">${s.target} ₺</td>
     </tr>`;
   }
@@ -2907,7 +3096,12 @@ async function loadOpportunities() {
   const buyOpps = data.buyOpportunities || [];
   const sellOpps = data.sellOpportunities || [];
 
-  let html = `<div class="grid-2 mb-24">
+  let html = '';
+  // Market regime banner
+  if (data.marketRegime) {
+    html += `<div class="mb-24">${renderMarketRegime(data.marketRegime)}</div>`;
+  }
+  html += `<div class="grid-2 mb-24">
     <div class="card" style="text-align:center;border-left:3px solid var(--green);">
       <div style="font-size:28px;font-weight:800;color:var(--green);">${buyOpps.length}</div>
       <div style="font-size:12px;color:var(--text-muted);">Alış Fırsatı</div>
