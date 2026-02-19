@@ -207,11 +207,20 @@ _loader_started = False
 _status = {'phase':'idle','loaded':0,'total':0,'lastRun':None,'error':''}
 CACHE_TTL = 600
 CACHE_STALE_TTL = 1800  # Stale data served up to 30 min (prevents stocks from disappearing on fetch failure)
+HIST_CACHE_TTL = 3600   # Tarihsel veri 1 saat gecerli (gun ici degismez)
 
 def _cget(store, key):
     with _lock:
         item = store.get(key)
         if item and time.time() - item['ts'] < CACHE_TTL:
+            return item['data']
+    return None
+
+def _cget_hist(key):
+    """Tarihsel veri icin uzun TTL'li cache okuma"""
+    with _lock:
+        item = _hist_cache.get(key)
+        if item and time.time() - item['ts'] < HIST_CACHE_TTL:
             return item['data']
     return None
 
@@ -688,7 +697,7 @@ def _background_loop():
 def _preload_one_hist(sym):
     """Tek hisse icin tarihsel veriyi cek ve cache'le"""
     try:
-        cached = _cget(_hist_cache, f"{sym}_1y")
+        cached = _cget_hist(f"{sym}_1y")
         if cached is not None:
             return sym, True
         df = _fetch_hist_df(sym, '1y')
@@ -703,7 +712,7 @@ def _preload_hist_data():
     """Tum hisselerin tarihsel verisini paralel on-yukle"""
     symbols = list(BIST100_STOCKS.keys())
     # Sadece cache'de olmayanlari cek
-    to_fetch = [s for s in symbols if _cget(_hist_cache, f"{s}_1y") is None]
+    to_fetch = [s for s in symbols if _cget_hist(f"{s}_1y") is None]
     if not to_fetch:
         print(f"[HIST-PRELOAD] Tum {len(symbols)} hisse zaten cache'de")
         return
@@ -1412,6 +1421,7 @@ def health():
     with _lock:
         fresh = [k for k, v in _stock_cache.items() if now - v['ts'] < CACHE_TTL]
         stale = [k for k, v in _stock_cache.items() if CACHE_TTL <= now - v['ts'] < CACHE_STALE_TTL]
+    hist_ready = sum(1 for s in BIST100_STOCKS if _cget_hist(f"{s}_1y") is not None)
     return jsonify({
         'status': 'ok', 'version': '4.2.0', 'yf': YF_OK,
         'time': datetime.now().isoformat(),
@@ -1421,6 +1431,8 @@ def health():
         'stockCacheFresh': len(fresh),
         'stockCacheStale': len(stale),
         'indexCache': len(_index_cache),
+        'histCache': hist_ready,
+        'histCacheTotal': len(_hist_cache),
         'cachedStocks': list(_stock_cache.keys()),
         'cachedIndices': list(_index_cache.keys()),
         'totalDefined': len(BIST100_STOCKS),
@@ -1544,7 +1556,7 @@ def stock_detail(symbol):
         symbol=symbol.upper(); period=request.args.get('period','1y')
 
         # 1. Once hist cache'e bak
-        hist=_cget(_hist_cache, f"{symbol}_{period}")
+        hist=_cget_hist(f"{symbol}_{period}")
 
         # 2. Cache'de yoksa SENKRON cek (birlesik fetcher)
         if hist is None:
@@ -1628,7 +1640,7 @@ def commodity_detail(symbol):
 
         # Hist cache key
         cache_key = f"COMMODITY_{symbol}_{period}"
-        hist = _cget(_hist_cache, cache_key)
+        hist = _cget_hist(cache_key)
 
         if hist is None:
             print(f"[COMMODITY] {symbol} ({yahoo_sym}) {period} cekiliyor...")
@@ -1805,7 +1817,7 @@ def compare():
                 continue
 
             # Indicator hesapla
-            hist = _cget(_hist_cache, f"{sym}_1y")
+            hist = _cget_hist(f"{sym}_1y")
             indicators = {}
             if hist is not None and len(hist) >= 14:
                 c = hist['Close'].values.astype(float)
@@ -2297,18 +2309,16 @@ def signal_scanner():
         if not stocks:
             return jsonify({'success': True, 'loading': True, 'signals': [], 'message': 'Veriler yukleniyor...'})
 
-        # Eksik tarihsel verileri paralel cek
-        missing_syms = [s['code'] for s in stocks if _cget(_hist_cache, f"{s['code']}_1y") is None]
-        if missing_syms:
-            print(f"[SIGNALS] {len(missing_syms)} hisse icin tarihsel veri paralel cekilecek")
-            with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
-                list(executor.map(_preload_one_hist, missing_syms))
+        # Sadece cache'deki veriyi kullan - HTTP fetch YAPMA (background preloader halleder)
+        hist_ready = sum(1 for s in stocks if _cget_hist(f"{s['code']}_1y") is not None)
+        if hist_ready < 10:
+            return jsonify({'success': True, 'loading': True, 'signals': [], 'message': f'Tarihsel veriler hazirlaniyor ({hist_ready}/{len(stocks)})...'})
 
         results = []
         for stock in stocks:
             sym = stock['code']
             try:
-                hist = _cget(_hist_cache, f"{sym}_1y")
+                hist = _cget_hist(f"{sym}_1y")
                 if hist is None:
                     continue
 
@@ -2412,18 +2422,16 @@ def opportunities():
         if not stocks:
             return jsonify({'success': True, 'loading': True, 'message': 'Veriler yukleniyor...'})
 
-        # Eksik tarihsel verileri paralel cek
-        missing_syms = [s['code'] for s in stocks if _cget(_hist_cache, f"{s['code']}_1y") is None]
-        if missing_syms:
-            print(f"[OPPORTUNITIES] {len(missing_syms)} hisse icin tarihsel veri paralel cekilecek")
-            with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
-                list(executor.map(_preload_one_hist, missing_syms))
+        # Sadece cache'deki veriyi kullan - HTTP fetch YAPMA
+        hist_ready = sum(1 for s in stocks if _cget_hist(f"{s['code']}_1y") is not None)
+        if hist_ready < 10:
+            return jsonify({'success': True, 'loading': True, 'message': f'Tarihsel veriler hazirlaniyor ({hist_ready}/{len(stocks)})...'})
 
         opportunities_list = []
         for stock in stocks:
             sym = stock['code']
             try:
-                hist = _cget(_hist_cache, f"{sym}_1y")
+                hist = _cget_hist(f"{sym}_1y")
                 if hist is None:
                     continue
 
@@ -2568,17 +2576,11 @@ def live_strategies():
             'mean_reversion': 'Ortalamaya Donus (RSI)',
         }
 
-        # Eksik tarihsel verileri paralel cek
-        missing_syms = [s['code'] for s in stocks if _cget(_hist_cache, f"{s['code']}_1y") is None]
-        if missing_syms:
-            print(f"[STRATEGIES] {len(missing_syms)} hisse icin tarihsel veri paralel cekilecek")
-            with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
-                list(executor.map(_preload_one_hist, missing_syms))
-
+        # Sadece cache'deki veriyi kullan - HTTP fetch YAPMA
         for stock in stocks:
             sym = stock['code']
             try:
-                hist = _cget(_hist_cache, f"{sym}_1y")
+                hist = _cget_hist(f"{sym}_1y")
                 if hist is None:
                     continue
 
@@ -2688,18 +2690,13 @@ def dividend_calendar():
             return jsonify({'success': True, 'loading': True, 'dividends': [], 'message': 'Veriler yukleniyor...'})
 
         # Eksik tarihsel verileri paralel cek
-        missing_syms = [s['code'] for s in stocks if _cget(_hist_cache, f"{s['code']}_1y") is None]
-        if missing_syms:
-            print(f"[DIVIDENDS] {len(missing_syms)} hisse icin tarihsel veri paralel cekilecek")
-            with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
-                list(executor.map(_preload_one_hist, missing_syms))
-
+        # Sadece cache'deki veriyi kullan - HTTP fetch YAPMA
         dividends_list = []
         for stock in stocks:
             sym = stock['code']
             try:
                 ticker_sym = sym + '.IS'
-                hist = _cget(_hist_cache, f"{sym}_1y")
+                hist = _cget_hist(f"{sym}_1y")
 
                 # yfinance Ticker ile temettu bilgisi
                 if YF_OK:
@@ -2794,7 +2791,7 @@ def _auto_signal_check():
             for stock in stocks:
                 sym = stock['code']
                 try:
-                    hist = _cget(_hist_cache, f"{sym}_1y")
+                    hist = _cget_hist(f"{sym}_1y")
                     if hist is None:
                         continue
                     c = hist['Close'].values.astype(float)
@@ -2870,7 +2867,7 @@ def send_telegram_report():
         for stock in stocks:
             sym = stock['code']
             try:
-                hist = _cget(_hist_cache, f"{sym}_1y")
+                hist = _cget_hist(f"{sym}_1y")
                 if hist is None:
                     continue
                 c = hist['Close'].values.astype(float)

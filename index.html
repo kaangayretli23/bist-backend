@@ -2825,7 +2825,7 @@ async function loadSignals() {
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Tüm hisseler taranıyor... (bu birkaç saniye sürebilir)</div>';
 
   const data = await api(`/signals?timeframe=${tf}&type=${type}`);
-  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler arka planda hazırlanıyor, otomatik yenilenecek...</div>'; setTimeout(loadSignals, 8000); return; }
+  if (data.loading) { container.innerHTML = `<div class="loading"><div class="spinner"></div>${data.message || 'Tarihsel veriler hazırlanıyor...'} Otomatik yenilenecek.</div>`; statsEl.innerHTML = ''; setTimeout(loadSignals, 10000); return; }
   if (data.error) { container.innerHTML = `<div class="card" style="text-align:center;"><div style="margin-bottom:12px;">${data.error}</div><button class="btn btn-primary btn-sm" onclick="loadSignals()">Tekrar Dene</button></div>`; return; }
 
   const signals = data.signals || [];
@@ -2901,7 +2901,7 @@ async function loadOpportunities() {
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Fırsatlar araştırılıyor...</div>';
 
   const data = await api('/opportunities');
-  if (data.loading) { container.innerHTML = '<div class="loading"><div class="spinner"></div>Veriler arka planda hazırlanıyor, otomatik yenilenecek...</div>'; setTimeout(loadOpportunities, 8000); return; }
+  if (data.loading) { container.innerHTML = `<div class="loading"><div class="spinner"></div>${data.message || 'Tarihsel veriler hazırlanıyor...'} Otomatik yenilenecek.</div>`; setTimeout(loadOpportunities, 10000); return; }
   if (data.error) { container.innerHTML = `<div class="card" style="text-align:center;"><div style="margin-bottom:12px;">${data.error}</div><button class="btn btn-primary btn-sm" onclick="loadOpportunities()">Tekrar Dene</button></div>`; return; }
 
   const buyOpps = data.buyOpportunities || [];
