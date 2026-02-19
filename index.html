@@ -1384,6 +1384,19 @@ async function loadStockDetail(symbol, period) {
       </div>
     </div>
 
+    <!-- Trade Plan (Detayli Giris/Cikis) -->
+    ${s.tradePlan && Object.keys(s.tradePlan).length ? `
+    <div class="card mb-24 fade-in" style="border:2px solid var(--accent);">
+      <div class="collapsible-header" onclick="toggleSection(this)">
+        <div style="font-weight:700;font-size:16px;">🎯 Detaylı Trade Planı (Giriş / Çıkış Seviyeleri)</div>
+        <span class="collapse-icon">▼</span>
+      </div>
+      <div class="collapsible-body" style="max-height:5000px;">
+        <div style="font-size:11px;color:var(--text-muted);margin:8px 0 12px;">⚠️ Bu seviyeler teknik analize dayanır. Destek/Direnç, Fibonacci, Bollinger, Pivot ve EMA seviyeleri kullanılarak hesaplanmıştır. Yatırım tavsiyesi değildir.</div>
+        ${renderTradePlan(s.tradePlan)}
+      </div>
+    </div>` : ''}
+
     <!-- Pivot Points & Fibonacci & S/R - Collapsible -->
     <div class="grid-2 grid-3col mb-24" style="grid-template-columns:repeat(3,1fr);">
       <div class="card fade-in">
@@ -2109,6 +2122,160 @@ function renderSignalBacktest(bt) {
       </tbody>
     </table>
     ${bt.byReason ? '<div style="margin-top:10px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);padding-top:8px;"><b>Sinyal Tiplerine Gore:</b><br>' + Object.entries(bt.byReason).map(([k,v]) => `• ${k}: ${v.count} sinyal, %${v.winRate10d} basari`).join('<br>') + '</div>' : ''}
+  </div>`;
+}
+
+function renderTradePlan(plan) {
+  if (!plan || !Object.keys(plan).length) return '<div style="font-size:12px;color:var(--text-muted);">Trade plan verisi mevcut degil</div>';
+
+  const tfLabels = { daily: 'Gunluk', weekly: 'Haftalik', monthly: 'Aylik' };
+  const trendIcons = { yukari: '📈', asagi: '📉', yatay: '↔️' };
+  const signalColors = { AL: 'var(--green)', SAT: 'var(--red)', BEKLE: 'var(--yellow)' };
+
+  let html = '';
+  for (const [tf, tfPlan] of Object.entries(plan)) {
+    const label = tfLabels[tf] || tf;
+    const trendIcon = trendIcons[tfPlan.trend] || '❓';
+    const sigColor = signalColors[tfPlan.signal] || 'var(--text-muted)';
+    const buy = tfPlan.buy || {};
+    const sell = tfPlan.sell || {};
+    const kl = tfPlan.keyLevels || {};
+
+    html += `<div style="border:2px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px;background:var(--card-bg);">`;
+    // Header
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:20px;">${trendIcon}</span>
+        <div>
+          <div style="font-weight:800;font-size:15px;">${label} Plan</div>
+          <div style="font-size:11px;color:var(--text-muted);">RSI: ${tfPlan.rsi} | ATR: ${tfPlan.atr} TL | Momentum: %${tfPlan.momentum}</div>
+        </div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:20px;font-weight:900;color:${sigColor};">${tfPlan.signal}</div>
+        <div style="font-size:10px;color:var(--text-muted);max-width:180px;">${tfPlan.signalDescription}</div>
+      </div>
+    </div>`;
+
+    // Alis / Satis yan yana
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">';
+
+    // --- ALIS PLANI ---
+    html += `<div style="border-radius:10px;padding:14px;background:rgba(16,185,129,0.04);border:1px solid rgba(16,185,129,0.2);">
+      <div style="font-weight:800;color:var(--green);font-size:13px;margin-bottom:10px;">🟢 ALIŞ PLANI</div>`;
+    // Entry
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="font-size:11px;color:var(--text-muted);">Giriş Fiyatı</span>
+      <span style="font-weight:800;font-size:16px;color:var(--green);">${buy.entry || '-'} ₺</span>
+    </div>`;
+    // SL
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="font-size:11px;color:var(--text-muted);">Stop-Loss</span>
+      <span style="font-weight:700;font-size:13px;color:var(--red);">${buy.stopLoss || '-'} ₺</span>
+    </div>`;
+    // Risk
+    if (buy.risk) {
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span style="font-size:11px;color:var(--text-muted);">Risk (Fark)</span>
+        <span style="font-size:12px;color:var(--red);">${buy.risk} ₺</span>
+      </div>`;
+    }
+    // Targets
+    if (buy.targets && buy.targets.length) {
+      html += '<div style="border-top:1px solid rgba(16,185,129,0.15);padding-top:8px;margin-top:4px;">';
+      buy.targets.forEach((t, i) => {
+        const tColors = ['var(--green)', 'var(--accent)', 'var(--yellow)'];
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <span style="font-size:11px;color:var(--text-muted);">Hedef ${i+1}</span>
+          <span style="font-weight:700;font-size:13px;color:${tColors[i] || 'var(--green)'};">${t} ₺</span>
+        </div>`;
+      });
+      html += '</div>';
+    }
+    // R/R
+    if (buy.riskReward) {
+      const rrColor = parseFloat(buy.riskReward) >= 2 ? 'var(--green)' : (parseFloat(buy.riskReward) >= 1 ? 'var(--yellow)' : 'var(--red)');
+      html += `<div style="margin-top:8px;padding:6px 10px;background:rgba(16,185,129,0.1);border-radius:6px;text-align:center;">
+        <span style="font-size:11px;color:var(--text-muted);">Risk/Ödül:</span>
+        <span style="font-weight:800;font-size:14px;color:${rrColor};margin-left:6px;">1:${buy.riskReward}</span>
+      </div>`;
+    }
+    // Entry uzakligi
+    if (buy.distanceFromEntry && parseFloat(buy.distanceFromEntry) != 0) {
+      const dist = parseFloat(buy.distanceFromEntry);
+      html += `<div style="font-size:10px;color:var(--text-muted);margin-top:6px;text-align:center;">
+        Mevcut fiyat giristen %${Math.abs(dist).toFixed(1)} ${dist > 0 ? 'yukarida' : 'asagida'}
+      </div>`;
+    }
+    html += '</div>';
+
+    // --- SATIS PLANI ---
+    html += `<div style="border-radius:10px;padding:14px;background:rgba(239,68,68,0.04);border:1px solid rgba(239,68,68,0.2);">
+      <div style="font-weight:800;color:var(--red);font-size:13px;margin-bottom:10px;">🔴 SATIŞ PLANI</div>`;
+    // Entry
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="font-size:11px;color:var(--text-muted);">Satış Fiyatı</span>
+      <span style="font-weight:800;font-size:16px;color:var(--red);">${sell.entry || '-'} ₺</span>
+    </div>`;
+    // SL
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="font-size:11px;color:var(--text-muted);">Stop-Loss</span>
+      <span style="font-weight:700;font-size:13px;color:var(--yellow);">${sell.stopLoss || '-'} ₺</span>
+    </div>`;
+    // Targets
+    if (sell.targets && sell.targets.length) {
+      html += '<div style="border-top:1px solid rgba(239,68,68,0.15);padding-top:8px;margin-top:4px;">';
+      sell.targets.forEach((t, i) => {
+        const tColors = ['var(--red)', '#FF9800', 'var(--yellow)'];
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <span style="font-size:11px;color:var(--text-muted);">Hedef ${i+1}</span>
+          <span style="font-weight:700;font-size:13px;color:${tColors[i] || 'var(--red)'};">${t} ₺</span>
+        </div>`;
+      });
+      html += '</div>';
+    }
+    // R/R
+    if (sell.riskReward) {
+      const rrColor = parseFloat(sell.riskReward) >= 2 ? 'var(--green)' : (parseFloat(sell.riskReward) >= 1 ? 'var(--yellow)' : 'var(--red)');
+      html += `<div style="margin-top:8px;padding:6px 10px;background:rgba(239,68,68,0.1);border-radius:6px;text-align:center;">
+        <span style="font-size:11px;color:var(--text-muted);">Risk/Ödül:</span>
+        <span style="font-weight:800;font-size:14px;color:${rrColor};margin-left:6px;">1:${sell.riskReward}</span>
+      </div>`;
+    }
+    html += '</div>';
+    html += '</div>'; // grid end
+
+    // Onemli seviyeler compact
+    html += `<div style="margin-top:10px;padding:10px;background:var(--bg);border-radius:8px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text-muted);margin-bottom:6px;">ÖNEMLI SEVİYELER</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:11px;">
+        ${kl.ema20 ? `<span style="padding:2px 8px;border-radius:4px;background:rgba(99,102,241,0.1);color:var(--accent);">EMA20: ${kl.ema20}</span>` : ''}
+        ${kl.ema50 ? `<span style="padding:2px 8px;border-radius:4px;background:rgba(99,102,241,0.1);color:var(--accent);">EMA50: ${kl.ema50}</span>` : ''}
+        ${kl.bbUpper ? `<span style="padding:2px 8px;border-radius:4px;background:rgba(239,68,68,0.1);color:var(--red);">BB Üst: ${kl.bbUpper}</span>` : ''}
+        ${kl.bbLower ? `<span style="padding:2px 8px;border-radius:4px;background:rgba(16,185,129,0.1);color:var(--green);">BB Alt: ${kl.bbLower}</span>` : ''}
+        ${kl.pivotPP ? `<span style="padding:2px 8px;border-radius:4px;background:rgba(234,179,8,0.1);color:var(--yellow);">Pivot: ${kl.pivotPP}</span>` : ''}
+        ${(kl.supports||[]).map(s => `<span style="padding:2px 8px;border-radius:4px;background:rgba(16,185,129,0.1);color:var(--green);">D: ${s}</span>`).join('')}
+        ${(kl.resistances||[]).map(r => `<span style="padding:2px 8px;border-radius:4px;background:rgba(239,68,68,0.1);color:var(--red);">R: ${r}</span>`).join('')}
+      </div>
+    </div>`;
+
+    html += '</div>'; // main card end
+  }
+  return html;
+}
+
+function renderTradePlanCompact(plan, timeframe) {
+  // Sinyaller sayfasinda kullanilacak kompakt versiyon
+  if (!plan) return '';
+  const tf = plan[timeframe] || plan.weekly || plan.daily;
+  if (!tf) return '';
+  const buy = tf.buy || {};
+  const sell = tf.sell || {};
+  return `<div style="font-size:11px;line-height:1.7;">
+    <div style="color:var(--green);">🟢 Giriş: ${buy.entry||'-'} ₺ | SL: ${buy.stopLoss||'-'} ₺</div>
+    <div style="color:var(--green);">→ Hedef: ${(buy.targets||[]).join(' / ')} ₺ (R/R ${buy.riskReward||'-'})</div>
+    <div style="color:var(--red);margin-top:2px;">🔴 Satiş: ${sell.entry||'-'} ₺ | SL: ${sell.stopLoss||'-'} ₺</div>
+    <div style="color:var(--red);">→ Hedef: ${(sell.targets||[]).join(' / ')} ₺</div>
   </div>`;
 }
 
@@ -3038,11 +3205,8 @@ async function loadSignals() {
   } else {
     html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Zaman Dilimi: <b>${tfLabels[tf] || tf}</b> | ${signals.length} sinyal bulundu</div>`;
   }
-  html += '<div class="table-wrap"><table><thead><tr>';
-  html += '<th>Hisse</th><th>Fiyat</th><th>Değişim</th><th>Sinyal</th><th>Skor</th><th>ML</th><th>İndikatörler</th><th>RSI</th><th>MACD</th><th>Formasyonlar</th><th>Hedef</th>';
-  html += '</tr></thead><tbody>';
-
-  for (const s of signals) {
+  // Signal cards (daha detayli gosterim)
+  for (const [idx, s] of signals.entries()) {
     const score = parseFloat(s.score);
     const actionClass = s.action === 'AL' ? 'color:var(--green);font-weight:800;' :
                         s.action === 'SAT' ? 'color:var(--red);font-weight:800;' :
@@ -3054,30 +3218,82 @@ async function loadSignals() {
                      s.macdSignal === 'sell' ? '<span style="color:var(--red)">▼ SAT</span>' : '<span style="color:var(--text-muted)">- Nötr</span>';
     const rsiVal = parseFloat(s.rsi);
     const rsiColor = rsiVal < 30 ? 'var(--green)' : rsiVal > 70 ? 'var(--red)' : 'var(--text-primary)';
-
     const mlGrade = s.mlGrade || 'C';
     const mlConf = s.mlConfidence || 50;
     const mlColor = {'A':'var(--green)','B':'#4CAF50','C':'var(--yellow)','D':'var(--red)','F':'#ff0000'}[mlGrade] || 'var(--text-muted)';
     const candleInfo = (s.candlestickPatterns || []).map(p => {
       const ci = p.type === 'bullish' ? '🟢' : (p.type === 'bearish' ? '🔴' : '⚪');
-      return ci + p.name.split('(')[0].trim();
-    }).join('<br>') || '-';
+      return ci + ' ' + p.name.split('(')[0].trim();
+    }).join(', ') || '';
 
-    html += `<tr class="stock-row" onclick="goToStock('${s.code}')">
-      <td class="td-clickable"><span class="td-mono" style="font-weight:700;">${s.code}</span><br><span style="font-size:10px;color:var(--text-muted);">${s.name}</span></td>
-      <td class="td-mono">${s.price} ₺</td>
-      <td class="td-mono ${changeClass(s.changePct)}">%${s.changePct}</td>
-      <td style="${actionClass};font-size:13px;">${s.action}</td>
-      <td><div style="display:flex;align-items:center;gap:6px;"><span class="td-mono" style="${actionClass}">${s.score}</span><div style="width:50px;height:6px;background:var(--bg);border-radius:3px;overflow:hidden;"><div style="width:${barWidth}%;height:100%;background:${barColor};border-radius:3px;"></div></div></div></td>
-      <td style="text-align:center;"><span style="font-size:16px;font-weight:900;color:${mlColor};">${mlGrade}</span><br><span style="font-size:10px;color:var(--text-muted);">%${mlConf}</span></td>
-      <td><span style="color:var(--green)">${s.buySignals} AL</span> / <span style="color:var(--red)">${s.sellSignals} SAT</span> / ${s.totalIndicators}</td>
-      <td class="td-mono" style="color:${rsiColor};font-weight:600;">${s.rsi}</td>
-      <td>${macdIcon}</td>
-      <td style="font-size:10px;">${candleInfo}</td>
-      <td class="td-mono" style="color:var(--green);font-size:11px;">${s.target} ₺</td>
-    </tr>`;
+    // Trade plan (secili timeframe icin)
+    const tp = s.tradePlan || {};
+    const tfPlan = tp[tf] || tp.weekly || tp.daily || {};
+    const buyPlan = tfPlan.buy || {};
+    const sellPlan = tfPlan.sell || {};
+
+    html += `<div class="card mb-12 fade-in" style="padding:14px;cursor:pointer;" onclick="goToStock('${s.code}')">
+      <!-- Row 1: Header -->
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div>
+            <span style="font-weight:800;font-size:15px;">${s.code}</span>
+            <span style="color:var(--text-muted);font-size:11px;margin-left:4px;">${s.name}</span>
+          </div>
+          <span style="font-weight:700;font-size:15px;">${s.price} ₺</span>
+          <span class="${changeClass(s.changePct)}" style="font-size:12px;">%${s.changePct}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="${actionClass};font-size:18px;">${s.action}</div>
+          <div style="text-align:center;"><span style="font-size:20px;font-weight:900;color:${mlColor};">${mlGrade}</span><div style="font-size:9px;color:var(--text-muted);">ML %${mlConf}</div></div>
+          <div><span style="color:var(--green);font-size:11px;">${s.buySignals} AL</span> / <span style="color:var(--red);font-size:11px;">${s.sellSignals} SAT</span><div style="font-size:9px;color:var(--text-muted);">/ ${s.totalIndicators} indikatör</div></div>
+        </div>
+      </div>
+
+      <!-- Row 2: Skor bar + RSI + MACD + Formasyonlar -->
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:10px;flex-wrap:wrap;font-size:12px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="color:var(--text-muted);">Skor:</span>
+          <span class="td-mono" style="${actionClass}">${s.score}</span>
+          <div style="width:60px;height:6px;background:var(--bg);border-radius:3px;overflow:hidden;"><div style="width:${barWidth}%;height:100%;background:${barColor};border-radius:3px;"></div></div>
+        </div>
+        <div><span style="color:var(--text-muted);">RSI:</span> <span class="td-mono" style="color:${rsiColor};font-weight:600;">${s.rsi}</span></div>
+        <div><span style="color:var(--text-muted);">MACD:</span> ${macdIcon}</div>
+        ${candleInfo ? `<div style="color:var(--text-secondary);">${candleInfo}</div>` : ''}
+      </div>
+
+      <!-- Row 3: TRADE PLAN -->
+      ${buyPlan.entry || sellPlan.entry ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px;border-radius:8px;background:var(--bg);border:1px solid var(--border);">
+        <!-- Alis -->
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--green);margin-bottom:4px;">🟢 ALIŞ PLANI</div>
+          <div style="font-size:12px;">
+            <span style="color:var(--text-muted);">Giriş:</span> <span style="font-weight:800;color:var(--green);">${buyPlan.entry||'-'} ₺</span>
+            <span style="color:var(--text-muted);margin-left:8px;">SL:</span> <span style="color:var(--red);">${buyPlan.stopLoss||'-'} ₺</span>
+          </div>
+          ${buyPlan.targets?.length ? `<div style="font-size:11px;margin-top:3px;">
+            <span style="color:var(--text-muted);">Hedef:</span>
+            ${buyPlan.targets.map((t,i) => `<span style="color:var(--green);font-weight:600;margin-left:4px;">${t}</span>`).join(' /')}
+            <span style="color:var(--text-muted);margin-left:6px;">R/R ${buyPlan.riskReward||'-'}</span>
+          </div>` : ''}
+        </div>
+        <!-- Satis -->
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--red);margin-bottom:4px;">🔴 SATIŞ PLANI</div>
+          <div style="font-size:12px;">
+            <span style="color:var(--text-muted);">Satış:</span> <span style="font-weight:800;color:var(--red);">${sellPlan.entry||'-'} ₺</span>
+            <span style="color:var(--text-muted);margin-left:8px;">SL:</span> <span style="color:var(--yellow);">${sellPlan.stopLoss||'-'} ₺</span>
+          </div>
+          ${sellPlan.targets?.length ? `<div style="font-size:11px;margin-top:3px;">
+            <span style="color:var(--text-muted);">Hedef:</span>
+            ${sellPlan.targets.map((t,i) => `<span style="color:var(--red);font-weight:600;margin-left:4px;">${t}</span>`).join(' /')}
+            <span style="color:var(--text-muted);margin-left:6px;">R/R ${sellPlan.riskReward||'-'}</span>
+          </div>` : ''}
+        </div>
+      </div>` : ''}
+    </div>`;
   }
-  html += '</tbody></table></div>';
   container.innerHTML = html;
 }
 
@@ -3112,6 +3328,23 @@ async function loadOpportunities() {
     </div>
   </div>`;
 
+  // Helper: opportunity card icin trade plan
+  function renderOppTradePlan(opp, side) {
+    const tp = opp.tradePlan || {};
+    const tfPlan = tp.weekly || tp.daily || {};
+    const plan = side === 'buy' ? (tfPlan.buy || {}) : (tfPlan.sell || {});
+    if (!plan.entry) return '';
+    const color = side === 'buy' ? 'var(--green)' : 'var(--red)';
+    const label = side === 'buy' ? 'ALIŞ' : 'SATIŞ';
+    return `<div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:rgba(${side === 'buy' ? '16,185,129' : '239,68,68'},0.05);border:1px solid rgba(${side === 'buy' ? '16,185,129' : '239,68,68'},0.15);">
+      <span style="font-size:10px;font-weight:700;color:${color};">${label} PLANI:</span>
+      <span style="font-size:12px;margin-left:6px;">Giriş: <b style="color:${color};">${plan.entry} ₺</b></span>
+      <span style="font-size:12px;margin-left:8px;">SL: <b style="color:var(--red);">${plan.stopLoss} ₺</b></span>
+      ${plan.targets?.length ? `<span style="font-size:12px;margin-left:8px;">Hedef: <b style="color:${color};">${plan.targets.join(' / ')} ₺</b></span>` : ''}
+      ${plan.riskReward ? `<span style="font-size:11px;margin-left:6px;padding:1px 6px;border-radius:3px;background:rgba(99,102,241,0.1);color:var(--accent);">R/R ${plan.riskReward}</span>` : ''}
+    </div>`;
+  }
+
   // Alis firsatlari
   if (buyOpps.length) {
     html += '<div class="card mb-24"><div style="font-weight:700;font-size:15px;margin-bottom:16px;color:var(--green);">🟢 Alış Fırsatları</div>';
@@ -3138,6 +3371,7 @@ async function loadOpportunities() {
             return `<div style="font-size:12px;color:var(--text-secondary);"><span>${icon}</span> ${e.text}</div>`;
           }).join('')}
         </div>
+        ${renderOppTradePlan(opp, 'buy')}
       </div>`;
     }
     html += '</div>';
@@ -3162,6 +3396,7 @@ async function loadOpportunities() {
             return `<div style="font-size:12px;color:var(--text-secondary);"><span>${icon}</span> ${e.text}</div>`;
           }).join('')}
         </div>
+        ${renderOppTradePlan(opp, 'sell')}
       </div>`;
     }
     html += '</div>';
