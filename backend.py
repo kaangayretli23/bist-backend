@@ -1,5 +1,5 @@
 """
-BIST Pro v6.0.0 - IS YATIRIM API PRIMARY
+BIST Pro v7.0.0 - IS YATIRIM API PRIMARY + Advanced Analytics
 Thread guvenli: before_request ile lazy start.
 Hicbir route yfinance CAGIRMAZ.
 SQLite veritabani, kullanici sistemi, backtest, KAP haberleri
@@ -710,6 +710,16 @@ def _preload_one_hist(sym):
 
 def _preload_hist_data():
     """Tum hisselerin tarihsel verisini paralel on-yukle"""
+    # XU100 endeks verisini de yukle (market regime icin)
+    if _cget_hist("XU100_1y") is None:
+        try:
+            xu_df = _fetch_isyatirim_df("XU100", 365)
+            if xu_df is not None and len(xu_df) >= 30:
+                _cset(_hist_cache, "XU100_1y", xu_df)
+                print("[HIST-PRELOAD] XU100 endeks verisi yuklendi")
+        except Exception as e:
+            print(f"[HIST-PRELOAD] XU100 hata: {e}")
+
     symbols = list(BIST100_STOCKS.keys())
     # Sadece cache'de olmayanlari cek
     to_fetch = [s for s in symbols if _cget_hist(f"{s}_1y") is None]
@@ -1379,10 +1389,29 @@ def calc_52w(hist):
 
 def calc_all_indicators(hist, cp):
     c,h,l,v=hist['Close'].values.astype(float),hist['High'].values.astype(float),hist['Low'].values.astype(float),hist['Volume'].values.astype(float)
+    o=hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
     cp=float(cp)
     rsi_h=[{'date':hist.index[i].strftime('%Y-%m-%d'),'value':rv} for i in range(14,len(c)) if (rv:=calc_rsi_single(c[:i+1])) is not None]
+
+    # Dinamik esikler hesapla
+    dyn_thresholds = calc_dynamic_thresholds(c, h, l, v)
+
+    # RSI'yi dinamik esiklerle hesapla
+    rsi_data = calc_rsi(c)
+    rsi_val = rsi_data.get('value', 50)
+    dyn_oversold = float(dyn_thresholds.get('rsi_oversold', 30))
+    dyn_overbought = float(dyn_thresholds.get('rsi_overbought', 70))
+    if rsi_val < dyn_oversold:
+        rsi_data['signal'] = 'buy'
+        rsi_data['dynamicNote'] = f'Dinamik esik: <{dyn_oversold}'
+    elif rsi_val > dyn_overbought:
+        rsi_data['signal'] = 'sell'
+        rsi_data['dynamicNote'] = f'Dinamik esik: >{dyn_overbought}'
+    rsi_data['dynamicOversold'] = dyn_oversold
+    rsi_data['dynamicOverbought'] = dyn_overbought
+
     ind={
-        'rsi':calc_rsi(c),'rsiHistory':rsi_h,
+        'rsi':rsi_data,'rsiHistory':rsi_h,
         'macd':calc_macd(c),'macdHistory':calc_macd_history(c),
         'bollinger':calc_bollinger(c,cp),'bollingerHistory':calc_bollinger_history(c),
         'stochastic':calc_stochastic(c,h,l),'stochasticHistory':calc_stochastic_history(c,h,l),
@@ -1400,11 +1429,853 @@ def calc_all_indicators(hist, cp):
         'aroon':calc_aroon(h,l),
         'trix':calc_trix(c),
         'dmi':calc_dmi(h,l,c),
+        'candlestick':calc_candlestick_patterns(o,h,l,c),
+        'dynamicThresholds':dyn_thresholds,
     }
     sigs=[x.get('signal','neutral') for x in ind.values() if isinstance(x,dict) and 'signal' in x]
     bc,sc=sigs.count('buy'),sigs.count('sell'); t=len(sigs)
     ind['summary']={'overall':'buy' if bc>sc and bc>=t*0.4 else ('sell' if sc>bc and sc>=t*0.4 else 'neutral'),'buySignals':bc,'sellSignals':sc,'neutralSignals':t-bc-sc,'totalIndicators':t}
     return ind
+
+
+# =====================================================================
+# FEATURE 1: SIGNAL BACKTESTING & PERFORMANCE TRACKING
+# =====================================================================
+def calc_signal_backtest(hist, lookback_days=252):
+    """Gecmis sinyallerin performansini olc: her sinyal sonrasi 5/10/20 gun getiri"""
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)
+        l = hist['Low'].values.astype(float)
+        v = hist['Volume'].values.astype(float)
+        n = len(c)
+        if n < 60:
+            return {'totalSignals': 0, 'message': 'Yeterli veri yok'}
+
+        signals = []
+        # Her gunde geriye donuk indikatoru hesapla ve sinyal uret
+        for i in range(50, n - 20):  # 20 gun sonrasini gormek icin -20
+            sc = c[:i+1]
+            sh = h[:i+1]
+            sl = l[:i+1]
+            sv = v[:i+1]
+
+            rsi = calc_rsi(sc)
+            macd = calc_macd(sc)
+
+            signal_type = None
+            signal_reason = ''
+
+            # RSI asiri satim
+            if rsi.get('value', 50) < 30:
+                signal_type = 'buy'
+                signal_reason = 'RSI < 30'
+            elif rsi.get('value', 50) > 70:
+                signal_type = 'sell'
+                signal_reason = 'RSI > 70'
+            # MACD kesisim
+            elif macd.get('signalType') == 'buy' and len(sc) > 26:
+                prev_macd = calc_macd(sc[:-1])
+                if prev_macd.get('signalType') != 'buy':
+                    signal_type = 'buy'
+                    signal_reason = 'MACD Kesisim'
+            elif macd.get('signalType') == 'sell' and len(sc) > 26:
+                prev_macd = calc_macd(sc[:-1])
+                if prev_macd.get('signalType') != 'sell':
+                    signal_type = 'sell'
+                    signal_reason = 'MACD Kesisim'
+            # Bollinger alt bant
+            elif len(sc) >= 20:
+                bb = calc_bollinger(sc, float(sc[-1]))
+                if bb.get('lower', 0) > 0 and float(sc[-1]) < bb['lower']:
+                    signal_type = 'buy'
+                    signal_reason = 'Bollinger Alt Bant'
+                elif bb.get('upper', 0) > 0 and float(sc[-1]) > bb['upper']:
+                    signal_type = 'sell'
+                    signal_reason = 'Bollinger Ust Bant'
+
+            if signal_type:
+                entry_price = float(c[i])
+                ret_5d = sf(((float(c[min(i+5, n-1)]) - entry_price) / entry_price) * 100)
+                ret_10d = sf(((float(c[min(i+10, n-1)]) - entry_price) / entry_price) * 100)
+                ret_20d = sf(((float(c[min(i+20, n-1)]) - entry_price) / entry_price) * 100)
+
+                # Satis sinyali icin getiriyi ters cevir
+                if signal_type == 'sell':
+                    ret_5d, ret_10d, ret_20d = -ret_5d, -ret_10d, -ret_20d
+
+                signals.append({
+                    'day': i,
+                    'type': signal_type,
+                    'reason': signal_reason,
+                    'price': sf(entry_price),
+                    'ret5d': float(ret_5d),
+                    'ret10d': float(ret_10d),
+                    'ret20d': float(ret_20d),
+                    'win5d': float(ret_5d) > 0,
+                    'win10d': float(ret_10d) > 0,
+                    'win20d': float(ret_20d) > 0,
+                })
+
+        if not signals:
+            return {'totalSignals': 0, 'message': 'Sinyal bulunamadi'}
+
+        buy_signals = [s for s in signals if s['type'] == 'buy']
+        sell_signals = [s for s in signals if s['type'] == 'sell']
+
+        def calc_stats(sigs):
+            if not sigs:
+                return {'count': 0, 'winRate5d': 0, 'winRate10d': 0, 'winRate20d': 0, 'avgRet5d': 0, 'avgRet10d': 0, 'avgRet20d': 0}
+            return {
+                'count': len(sigs),
+                'winRate5d': sf(sum(1 for s in sigs if s['win5d']) / len(sigs) * 100),
+                'winRate10d': sf(sum(1 for s in sigs if s['win10d']) / len(sigs) * 100),
+                'winRate20d': sf(sum(1 for s in sigs if s['win20d']) / len(sigs) * 100),
+                'avgRet5d': sf(np.mean([s['ret5d'] for s in sigs])),
+                'avgRet10d': sf(np.mean([s['ret10d'] for s in sigs])),
+                'avgRet20d': sf(np.mean([s['ret20d'] for s in sigs])),
+            }
+
+        # Sinyal tiplerine gore istatistik
+        by_reason = {}
+        for s in signals:
+            r = s['reason']
+            if r not in by_reason:
+                by_reason[r] = []
+            by_reason[r].append(s)
+
+        reason_stats = {}
+        for reason, sigs in by_reason.items():
+            reason_stats[reason] = calc_stats(sigs)
+
+        return {
+            'totalSignals': len(signals),
+            'buySignals': calc_stats(buy_signals),
+            'sellSignals': calc_stats(sell_signals),
+            'overall': calc_stats(signals),
+            'byReason': reason_stats,
+            'recentSignals': signals[-10:],
+        }
+    except Exception as e:
+        print(f"  [BACKTEST] Hata: {e}")
+        return {'totalSignals': 0, 'error': str(e)}
+
+
+# =====================================================================
+# FEATURE 2: DYNAMIC THRESHOLDS (Hisse bazli adaptif esikler)
+# =====================================================================
+def calc_dynamic_thresholds(closes, highs, lows, volumes):
+    """Her hisse icin tarihsel dagılıma gore adaptif RSI/BB/Volume esikleri"""
+    try:
+        n = len(closes)
+        if n < 60:
+            return {'rsi_oversold': 30, 'rsi_overbought': 70, 'vol_spike': 2.0, 'bb_std': 2.0}
+
+        # Tum RSI degerlerini hesapla
+        rsi_values = []
+        for i in range(20, n):
+            rv = calc_rsi_single(closes[:i+1])
+            if rv is not None:
+                rsi_values.append(rv)
+
+        if len(rsi_values) < 20:
+            return {'rsi_oversold': 30, 'rsi_overbought': 70, 'vol_spike': 2.0, 'bb_std': 2.0}
+
+        rsi_arr = np.array(rsi_values)
+        # Percentile bazli esikler: %10 ve %90
+        rsi_oversold = sf(np.percentile(rsi_arr, 10))
+        rsi_overbought = sf(np.percentile(rsi_arr, 90))
+
+        # Minimum/maximum sinirlari
+        rsi_oversold = max(20, min(40, float(rsi_oversold)))
+        rsi_overbought = max(60, min(85, float(rsi_overbought)))
+
+        # Volatilite bazli Bollinger genisligi
+        if n >= 60:
+            daily_returns = np.diff(closes[-60:]) / closes[-60:-1]
+            vol = float(np.std(daily_returns))
+            # Dusuk volatilite -> daha dar bantlar, yuksek -> daha genis
+            bb_std = max(1.5, min(3.0, 2.0 * (vol / 0.02)))
+        else:
+            bb_std = 2.0
+
+        # Hacim spike esigi: medyan bazli
+        if n >= 30:
+            vol_mean = float(np.mean(volumes[-30:]))
+            vol_std = float(np.std(volumes[-30:]))
+            vol_spike = max(1.5, min(3.0, (vol_mean + vol_std) / vol_mean if vol_mean > 0 else 2.0))
+        else:
+            vol_spike = 2.0
+
+        return {
+            'rsi_oversold': sf(rsi_oversold),
+            'rsi_overbought': sf(rsi_overbought),
+            'vol_spike': sf(vol_spike),
+            'bb_std': sf(bb_std),
+        }
+    except:
+        return {'rsi_oversold': 30, 'rsi_overbought': 70, 'vol_spike': 2.0, 'bb_std': 2.0}
+
+
+# =====================================================================
+# FEATURE 3: CANDLESTICK PATTERN RECOGNITION
+# =====================================================================
+def calc_candlestick_patterns(opens, highs, lows, closes):
+    """Mum formasyonlarini tespit et"""
+    try:
+        n = len(closes)
+        if n < 5:
+            return {'patterns': [], 'signal': 'neutral'}
+
+        patterns = []
+        o, h, l, c = [float(x) for x in opens[-5:]], [float(x) for x in highs[-5:]], [float(x) for x in lows[-5:]], [float(x) for x in closes[-5:]]
+        body = [c[i] - o[i] for i in range(5)]
+        body_abs = [abs(b) for b in body]
+        upper_shadow = [h[i] - max(o[i], c[i]) for i in range(5)]
+        lower_shadow = [min(o[i], c[i]) - l[i] for i in range(5)]
+        total_range = [h[i] - l[i] for i in range(5)]
+
+        # Son mum (index 4)
+        i = 4
+        avg_body = np.mean(body_abs[:4]) if np.mean(body_abs[:4]) > 0 else 0.01
+
+        # 1. Doji - Gövde çok küçük
+        if body_abs[i] < total_range[i] * 0.1 and total_range[i] > 0:
+            patterns.append({'name': 'Doji', 'type': 'neutral', 'description': 'Kararsizlik formasyonu. Trend donusu habercisi olabilir.', 'strength': 2})
+
+        # 2. Hammer (Cekic) - Uzun alt golge, kucuk govde, ust kisminda
+        if (lower_shadow[i] > body_abs[i] * 2 and upper_shadow[i] < body_abs[i] * 0.5 and
+            body[i-1] < 0):  # Onceki mum dusus
+            patterns.append({'name': 'Cekic (Hammer)', 'type': 'bullish', 'description': 'Dusus sonrasi toparlanma sinyali. Guclu alis formasyonu.', 'strength': 3})
+
+        # 3. Shooting Star (Kayan Yildiz) - Uzun ust golge, kucuk govde, alt kisminda
+        if (upper_shadow[i] > body_abs[i] * 2 and lower_shadow[i] < body_abs[i] * 0.5 and
+            body[i-1] > 0):  # Onceki mum yukselis
+            patterns.append({'name': 'Kayan Yildiz (Shooting Star)', 'type': 'bearish', 'description': 'Yukselis sonrasi satis baskisi. Dusus sinyali.', 'strength': 3})
+
+        # 4. Bullish Engulfing (Yukari Yutan)
+        if (body[i] > 0 and body[i-1] < 0 and
+            o[i] <= c[i-1] and c[i] >= o[i-1] and
+            body_abs[i] > body_abs[i-1]):
+            patterns.append({'name': 'Yukari Yutan (Bullish Engulfing)', 'type': 'bullish', 'description': 'Guclu alis formasyonu. Alicilar kontrolu ele aldi.', 'strength': 4})
+
+        # 5. Bearish Engulfing (Asagi Yutan)
+        if (body[i] < 0 and body[i-1] > 0 and
+            o[i] >= c[i-1] and c[i] <= o[i-1] and
+            body_abs[i] > body_abs[i-1]):
+            patterns.append({'name': 'Asagi Yutan (Bearish Engulfing)', 'type': 'bearish', 'description': 'Guclu satis formasyonu. Saticilar kontrolu ele aldi.', 'strength': 4})
+
+        # 6. Morning Star (Sabah Yildizi) - 3 mumlu boğa formasyonu
+        if (n >= 3 and body[i-2] < 0 and body_abs[i-2] > avg_body and
+            body_abs[i-1] < avg_body * 0.5 and
+            body[i] > 0 and body_abs[i] > avg_body):
+            patterns.append({'name': 'Sabah Yildizi (Morning Star)', 'type': 'bullish', 'description': 'Guclu 3 mumlu dip formasyonu. Trendin donusu bekleniyor.', 'strength': 5})
+
+        # 7. Evening Star (Aksam Yildizi) - 3 mumlu ayı formasyonu
+        if (n >= 3 and body[i-2] > 0 and body_abs[i-2] > avg_body and
+            body_abs[i-1] < avg_body * 0.5 and
+            body[i] < 0 and body_abs[i] > avg_body):
+            patterns.append({'name': 'Aksam Yildizi (Evening Star)', 'type': 'bearish', 'description': 'Guclu 3 mumlu tepe formasyonu. Dusus bekleniyor.', 'strength': 5})
+
+        # 8. Three White Soldiers (Uc Beyaz Asker)
+        if (body[i] > 0 and body[i-1] > 0 and body[i-2] > 0 and
+            c[i] > c[i-1] > c[i-2] and
+            body_abs[i] > avg_body * 0.5 and body_abs[i-1] > avg_body * 0.5):
+            patterns.append({'name': 'Uc Beyaz Asker', 'type': 'bullish', 'description': 'Art arda 3 guclu yukselis mumu. Guclu alis trendi.', 'strength': 4})
+
+        # 9. Three Black Crows (Uc Kara Karga)
+        if (body[i] < 0 and body[i-1] < 0 and body[i-2] < 0 and
+            c[i] < c[i-1] < c[i-2] and
+            body_abs[i] > avg_body * 0.5 and body_abs[i-1] > avg_body * 0.5):
+            patterns.append({'name': 'Uc Kara Karga', 'type': 'bearish', 'description': 'Art arda 3 guclu dusus mumu. Guclu satis baskisi.', 'strength': 4})
+
+        # 10. Marubozu (gölgesiz güçlü mum)
+        if total_range[i] > 0:
+            shadow_ratio = (upper_shadow[i] + lower_shadow[i]) / total_range[i]
+            if shadow_ratio < 0.1 and body_abs[i] > avg_body * 1.5:
+                mtype = 'bullish' if body[i] > 0 else 'bearish'
+                patterns.append({'name': f'Marubozu ({"Yukari" if mtype == "bullish" else "Asagi"})', 'type': mtype,
+                    'description': 'Golgesiz guclu mum. Tek yonlu baski. Trend devami beklenir.', 'strength': 3})
+
+        # Genel sinyal
+        bullish = sum(1 for p in patterns if p['type'] == 'bullish')
+        bearish = sum(1 for p in patterns if p['type'] == 'bearish')
+        signal = 'buy' if bullish > bearish else ('sell' if bearish > bullish else 'neutral')
+
+        return {
+            'patterns': patterns,
+            'signal': signal,
+            'bullishCount': bullish,
+            'bearishCount': bearish,
+        }
+    except Exception as e:
+        print(f"  [CANDLE] Hata: {e}")
+        return {'patterns': [], 'signal': 'neutral'}
+
+
+# =====================================================================
+# FEATURE 4: MARKET REGIME DETECTION (Piyasa Rejimi)
+# =====================================================================
+_market_regime_cache = {'regime': None, 'ts': 0}
+
+def calc_market_regime():
+    """BIST100 trend durumunu analiz et: bull/bear/sideways"""
+    try:
+        # Cache kontrol (5 dakika)
+        if _market_regime_cache['regime'] and time.time() - _market_regime_cache['ts'] < 300:
+            return _market_regime_cache['regime']
+
+        # XU100 tarihsel verisini al
+        hist = _cget_hist("XU100_1y")
+        if hist is None:
+            # Herhangi bir BIST30 hissesinden piyasa durumunu cikar
+            regime = {'regime': 'unknown', 'strength': 0, 'description': 'Piyasa verisi mevcut degil'}
+            return regime
+
+        c = hist['Close'].values.astype(float)
+        n = len(c)
+        if n < 50:
+            return {'regime': 'unknown', 'strength': 0, 'description': 'Yeterli veri yok'}
+
+        cur = float(c[-1])
+
+        # SMA hesapla
+        sma20 = float(np.mean(c[-20:])) if n >= 20 else cur
+        sma50 = float(np.mean(c[-50:])) if n >= 50 else sma20
+        sma200 = float(np.mean(c[-200:])) if n >= 200 else sma50
+
+        # EMA hesapla
+        s = pd.Series(c)
+        ema20 = float(s.ewm(span=20).mean().iloc[-1])
+        ema50 = float(s.ewm(span=50).mean().iloc[-1])
+
+        # ADX (trend gucu)
+        h = hist['High'].values.astype(float)
+        l = hist['Low'].values.astype(float)
+        adx_data = calc_adx(h, l, c)
+        adx_val = float(adx_data.get('value', 25))
+        plus_di = float(adx_data.get('plusDI', 0))
+        minus_di = float(adx_data.get('minusDI', 0))
+
+        # RSI
+        rsi = calc_rsi(c).get('value', 50)
+
+        # Son 20 gun momentum
+        ret_20d = ((cur - float(c[-20])) / float(c[-20])) * 100 if n >= 20 else 0
+        ret_50d = ((cur - float(c[-50])) / float(c[-50])) * 100 if n >= 50 else 0
+
+        # Volatilite
+        if n >= 20:
+            daily_returns = np.diff(c[-30:]) / c[-30:-1]
+            volatility = float(np.std(daily_returns)) * (252 ** 0.5) * 100
+        else:
+            volatility = 25
+
+        # Piyasa genisligi (cache'deki hisselerden)
+        stocks = _get_stocks()
+        advancing = sum(1 for s in stocks if s.get('changePct', 0) > 0)
+        declining = sum(1 for s in stocks if s.get('changePct', 0) < 0)
+        breadth_ratio = advancing / max(declining, 1)
+
+        # Rejim belirleme skoru
+        score = 0
+        reasons = []
+
+        # Fiyat > SMA pozisyonu
+        if cur > sma20: score += 1; reasons.append('Fiyat SMA20 uzerinde')
+        else: score -= 1; reasons.append('Fiyat SMA20 altinda')
+
+        if cur > sma50: score += 1; reasons.append('Fiyat SMA50 uzerinde')
+        else: score -= 1; reasons.append('Fiyat SMA50 altinda')
+
+        if n >= 200:
+            if cur > sma200: score += 1.5; reasons.append('Fiyat SMA200 uzerinde (uzun vadeli boga)')
+            else: score -= 1.5; reasons.append('Fiyat SMA200 altinda (uzun vadeli ayi)')
+
+        # SMA siralamasi
+        if sma20 > sma50: score += 1; reasons.append('SMA20 > SMA50 (yukari trend)')
+        else: score -= 1; reasons.append('SMA20 < SMA50 (asagi trend)')
+
+        # Momentum
+        if ret_20d > 5: score += 1; reasons.append(f'20 gunluk getiri: %{sf(ret_20d)} (guclu)')
+        elif ret_20d > 0: score += 0.5
+        elif ret_20d < -5: score -= 1; reasons.append(f'20 gunluk getiri: %{sf(ret_20d)} (zayif)')
+        else: score -= 0.5
+
+        # ADX trend gucu
+        if adx_val > 25:
+            if plus_di > minus_di: score += 1; reasons.append(f'ADX={sf(adx_val)}: Guclu yukari trend')
+            else: score -= 1; reasons.append(f'ADX={sf(adx_val)}: Guclu asagi trend')
+
+        # Piyasa genisligi
+        if breadth_ratio > 1.5: score += 0.5; reasons.append(f'Piyasa genisligi pozitif ({advancing}/{declining})')
+        elif breadth_ratio < 0.7: score -= 0.5; reasons.append(f'Piyasa genisligi negatif ({advancing}/{declining})')
+
+        # Rejim siniflandirma
+        if score >= 3:
+            regime = 'strong_bull'
+            desc = 'Guclu Boga Piyasasi - Alis sinyalleri daha guvenilir'
+        elif score >= 1:
+            regime = 'bull'
+            desc = 'Boga Piyasasi - Genel yukari trend'
+        elif score <= -3:
+            regime = 'strong_bear'
+            desc = 'Guclu Ayi Piyasasi - Satis sinyalleri daha guvenilir'
+        elif score <= -1:
+            regime = 'bear'
+            desc = 'Ayi Piyasasi - Genel asagi trend'
+        else:
+            regime = 'sideways'
+            desc = 'Yatay Piyasa - Belirsizlik hakim, dikkatli olun'
+
+        # Sinyal guven carpani
+        if regime in ('strong_bull', 'bull'):
+            buy_confidence_mult = 1.2
+            sell_confidence_mult = 0.8
+        elif regime in ('strong_bear', 'bear'):
+            buy_confidence_mult = 0.8
+            sell_confidence_mult = 1.2
+        else:
+            buy_confidence_mult = 1.0
+            sell_confidence_mult = 1.0
+
+        result = {
+            'regime': regime,
+            'score': sf(score),
+            'strength': sf(min(abs(score) / 5 * 100, 100)),
+            'description': desc,
+            'reasons': reasons[:6],
+            'indicators': {
+                'sma20': sf(sma20), 'sma50': sf(sma50), 'sma200': sf(sma200) if n >= 200 else None,
+                'adx': sf(adx_val), 'rsi': sf(rsi),
+                'ret20d': sf(ret_20d), 'ret50d': sf(ret_50d),
+                'volatility': sf(volatility),
+                'breadthRatio': sf(breadth_ratio),
+            },
+            'confidence_multiplier': {
+                'buy': buy_confidence_mult,
+                'sell': sell_confidence_mult,
+            },
+        }
+
+        _market_regime_cache['regime'] = result
+        _market_regime_cache['ts'] = time.time()
+        return result
+    except Exception as e:
+        print(f"  [REGIME] Hata: {e}")
+        return {'regime': 'unknown', 'strength': 0, 'description': str(e)}
+
+
+# =====================================================================
+# FEATURE 5: SECTOR ANALYSIS & RELATIVE STRENGTH
+# =====================================================================
+def calc_sector_relative_strength():
+    """Sektor bazli goreceli guc analizi"""
+    try:
+        stocks = _get_stocks()
+        if not stocks:
+            return {'sectors': []}
+
+        stock_map = {s['code']: s for s in stocks}
+        sector_results = []
+
+        for sector_name, symbols in SECTOR_MAP.items():
+            sector_stocks = []
+            returns_1d = []
+            returns_1w = []
+            returns_1m = []
+
+            for sym in symbols:
+                s = stock_map.get(sym)
+                if not s:
+                    continue
+
+                hist = _cget_hist(f"{sym}_1y")
+                stock_info = {'code': sym, 'name': s.get('name', sym), 'price': s['price'], 'changePct': s.get('changePct', 0)}
+
+                if hist is not None and len(hist) >= 22:
+                    c = hist['Close'].values.astype(float)
+                    n = len(c)
+                    stock_info['ret1w'] = sf(((float(c[-1]) - float(c[-5])) / float(c[-5])) * 100) if n >= 5 else 0
+                    stock_info['ret1m'] = sf(((float(c[-1]) - float(c[-22])) / float(c[-22])) * 100) if n >= 22 else 0
+                    stock_info['ret3m'] = sf(((float(c[-1]) - float(c[-66])) / float(c[-66])) * 100) if n >= 66 else 0
+
+                    # RSI
+                    rsi = calc_rsi(c)
+                    stock_info['rsi'] = rsi.get('value', 50)
+                    stock_info['rsiSignal'] = rsi.get('signal', 'neutral')
+
+                    returns_1d.append(s.get('changePct', 0))
+                    returns_1w.append(float(stock_info.get('ret1w', 0)))
+                    returns_1m.append(float(stock_info.get('ret1m', 0)))
+
+                sector_stocks.append(stock_info)
+
+            if not sector_stocks:
+                continue
+
+            avg_1d = sf(np.mean(returns_1d)) if returns_1d else 0
+            avg_1w = sf(np.mean(returns_1w)) if returns_1w else 0
+            avg_1m = sf(np.mean(returns_1m)) if returns_1m else 0
+
+            # Relative Strength Index (sektor bazli)
+            rs_score = float(avg_1d) * 0.2 + float(avg_1w) * 0.3 + float(avg_1m) * 0.5
+
+            sector_results.append({
+                'name': sector_name,
+                'displayName': {
+                    'bankacilik': 'Bankacilik', 'havacilik': 'Havacilik',
+                    'otomotiv': 'Otomotiv', 'enerji': 'Enerji',
+                    'holding': 'Holding', 'perakende': 'Perakende',
+                    'teknoloji': 'Teknoloji', 'telekom': 'Telekom',
+                    'demir_celik': 'Demir Celik', 'gida': 'Gida',
+                    'insaat': 'Insaat', 'gayrimenkul': 'Gayrimenkul',
+                }.get(sector_name, sector_name),
+                'avgChange1d': avg_1d,
+                'avgChange1w': avg_1w,
+                'avgChange1m': avg_1m,
+                'relativeStrength': sf(rs_score),
+                'stockCount': len(sector_stocks),
+                'stocks': sorted(sector_stocks, key=lambda x: float(x.get('ret1m', 0)), reverse=True),
+                'topPerformer': max(sector_stocks, key=lambda x: float(x.get('ret1m', 0)))['code'] if sector_stocks else '',
+                'worstPerformer': min(sector_stocks, key=lambda x: float(x.get('ret1m', 0)))['code'] if sector_stocks else '',
+            })
+
+        sector_results.sort(key=lambda x: float(x['relativeStrength']), reverse=True)
+
+        # Sektor rotasyonu tespit
+        rotation = 'neutral'
+        if sector_results:
+            top_sectors = sector_results[:3]
+            defensive = ['perakende', 'gida', 'telekom']
+            cyclical = ['bankacilik', 'otomotiv', 'enerji', 'holding']
+            top_names = [s['name'] for s in top_sectors]
+            if any(s in top_names for s in cyclical):
+                rotation = 'risk_on'
+            elif any(s in top_names for s in defensive):
+                rotation = 'risk_off'
+
+        return {
+            'sectors': sector_results,
+            'rotation': rotation,
+            'rotationDescription': {
+                'risk_on': 'Dongusel sektorler lider - Risk istahi yuksek',
+                'risk_off': 'Defansif sektorler lider - Temkinli piyasa',
+                'neutral': 'Belirgin sektor rotasyonu yok',
+            }.get(rotation, ''),
+        }
+    except Exception as e:
+        print(f"  [SECTOR-RS] Hata: {e}")
+        return {'sectors': [], 'error': str(e)}
+
+
+# =====================================================================
+# FEATURE 6: FUNDAMENTAL ANALYSIS (F/K, PD/DD) - Is Yatirim Scraping
+# =====================================================================
+_fundamental_cache = {}
+
+def fetch_fundamental_data(symbol):
+    """Is Yatirim'dan temel analiz verilerini cek (F/K, PD/DD vs.)"""
+    try:
+        # Cache kontrol (1 saat)
+        cached = _fundamental_cache.get(symbol)
+        if cached and time.time() - cached['ts'] < 3600:
+            return cached['data']
+
+        url = f"https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/MaliTablo?hession={symbol}&doession=2024&dession=4"
+        headers = IS_YATIRIM_HEADERS.copy()
+
+        try:
+            resp = req_lib.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                rows = data.get('value', [])
+                if rows:
+                    result = _parse_fundamental_data(rows, symbol)
+                    _fundamental_cache[symbol] = {'data': result, 'ts': time.time()}
+                    return result
+        except Exception as e:
+            print(f"  [FUNDAMENTAL] {symbol} Is Yatirim hata: {e}")
+
+        # Fallback: yfinance info
+        if YF_OK:
+            try:
+                tkr = yf.Ticker(f"{symbol}.IS")
+                info = tkr.info or {}
+                result = {
+                    'pe': sf(info.get('trailingPE', 0)),
+                    'forwardPE': sf(info.get('forwardPE', 0)),
+                    'pb': sf(info.get('priceToBook', 0)),
+                    'marketCap': info.get('marketCap', 0),
+                    'dividendYield': sf(info.get('dividendYield', 0) * 100) if info.get('dividendYield') else 0,
+                    'debtToEquity': sf(info.get('debtToEquity', 0)),
+                    'roe': sf(info.get('returnOnEquity', 0) * 100) if info.get('returnOnEquity') else 0,
+                    'roa': sf(info.get('returnOnAssets', 0) * 100) if info.get('returnOnAssets') else 0,
+                    'profitMargin': sf(info.get('profitMargins', 0) * 100) if info.get('profitMargins') else 0,
+                    'source': 'yfinance',
+                }
+                _fundamental_cache[symbol] = {'data': result, 'ts': time.time()}
+                return result
+            except Exception as e:
+                print(f"  [FUNDAMENTAL] {symbol} yfinance hata: {e}")
+
+        return {}
+    except Exception as e:
+        print(f"  [FUNDAMENTAL] {symbol}: {e}")
+        return {}
+
+def _parse_fundamental_data(rows, symbol):
+    """Is Yatirim mali tablo verisini parse et"""
+    try:
+        result = {'source': 'isyatirim'}
+        for row in rows:
+            key = str(row.get('KALEM', '')).upper()
+            val = row.get('DEGER', 0)
+            if 'NET KAR' in key or 'NET DONEM' in key:
+                result['netProfit'] = sf(float(val)) if val else 0
+            elif 'SATIS' in key or 'GELIR' in key:
+                result['revenue'] = sf(float(val)) if val else 0
+            elif 'OZKAYN' in key:
+                result['equity'] = sf(float(val)) if val else 0
+        return result
+    except:
+        return {'source': 'isyatirim'}
+
+
+# =====================================================================
+# FEATURE 7: ENHANCED TELEGRAM/EMAIL ALERT SYSTEM
+# =====================================================================
+def check_signal_alerts():
+    """Sinyal bazli otomatik uyari kontrolu - enhanced"""
+    stocks = _get_stocks()
+    if not stocks:
+        return []
+
+    alerts = []
+    regime = calc_market_regime()
+    regime_str = regime.get('regime', 'unknown')
+
+    for stock in stocks:
+        sym = stock['code']
+        try:
+            hist = _cget_hist(f"{sym}_1y")
+            if hist is None or len(hist) < 50:
+                continue
+
+            c = hist['Close'].values.astype(float)
+            h = hist['High'].values.astype(float)
+            l = hist['Low'].values.astype(float)
+            o = hist['Open'].values.astype(float)
+            v = hist['Volume'].values.astype(float)
+            cp = float(c[-1])
+            n = len(c)
+
+            # Mum formasyonlari
+            candles = calc_candlestick_patterns(o, h, l, c)
+            for p in candles.get('patterns', []):
+                if p.get('strength', 0) >= 4:
+                    alerts.append({
+                        'symbol': sym,
+                        'type': 'candlestick',
+                        'signal': p['type'],
+                        'message': f"{sym} ({sf(cp)} TL): {p['name']} - {p['description']}",
+                        'strength': p['strength'],
+                    })
+
+            # Altin/Olum kesisim
+            if n >= 200:
+                ema50 = pd.Series(c).ewm(span=50).mean().values
+                ema200 = pd.Series(c).ewm(span=200).mean().values
+                if ema50[-1] > ema200[-1] and ema50[-2] <= ema200[-2]:
+                    alerts.append({'symbol': sym, 'type': 'golden_cross', 'signal': 'bullish',
+                        'message': f"ALTIN KESISIM: {sym} ({sf(cp)} TL) - EMA50 > EMA200", 'strength': 5})
+                elif ema50[-1] < ema200[-1] and ema50[-2] >= ema200[-2]:
+                    alerts.append({'symbol': sym, 'type': 'death_cross', 'signal': 'bearish',
+                        'message': f"OLUM KESISIMI: {sym} ({sf(cp)} TL) - EMA50 < EMA200", 'strength': 5})
+
+            # Dinamik RSI esikleri
+            thresholds = calc_dynamic_thresholds(c, h, l, v)
+            rsi_val = calc_rsi(c).get('value', 50)
+            if rsi_val < float(thresholds['rsi_oversold']):
+                alerts.append({'symbol': sym, 'type': 'rsi_dynamic', 'signal': 'bullish',
+                    'message': f"RSI ASIRI SATIM: {sym} ({sf(cp)} TL) RSI={sf(rsi_val)} < {thresholds['rsi_oversold']} (dinamik esik)", 'strength': 3})
+            elif rsi_val > float(thresholds['rsi_overbought']):
+                alerts.append({'symbol': sym, 'type': 'rsi_dynamic', 'signal': 'bearish',
+                    'message': f"RSI ASIRI ALIM: {sym} ({sf(cp)} TL) RSI={sf(rsi_val)} > {thresholds['rsi_overbought']} (dinamik esik)", 'strength': 3})
+
+        except:
+            continue
+
+    # Strength'e gore sirala
+    alerts.sort(key=lambda x: x.get('strength', 0), reverse=True)
+    return alerts
+
+
+# =====================================================================
+# FEATURE 8: ML-BASED SIGNAL CONFIDENCE SCORING
+# =====================================================================
+def calc_ml_confidence(hist, indicators, recommendation_score, signal_type='buy'):
+    """Sinyal guven skorunu coklu faktore gore hesapla (ML-inspired weighted scoring)"""
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)
+        l = hist['Low'].values.astype(float)
+        v = hist['Volume'].values.astype(float)
+        n = len(c)
+        if n < 50:
+            return {'confidence': 50, 'grade': 'C', 'factors': []}
+
+        factors = []
+        score = 0
+        max_score = 0
+
+        # 1. Indikatör Konsensüsü (agirlik: 25%)
+        summary = indicators.get('summary', {})
+        bc = summary.get('buySignals', 0)
+        sc = summary.get('sellSignals', 0)
+        total = summary.get('totalIndicators', 1)
+        if signal_type == 'buy':
+            consensus = bc / total * 100
+        else:
+            consensus = sc / total * 100
+        consensus_score = min(consensus / 100 * 25, 25)
+        score += consensus_score
+        max_score += 25
+        factors.append({'name': 'Indikatör Konsensüsü', 'value': sf(consensus), 'score': sf(consensus_score), 'max': 25})
+
+        # 2. Piyasa Rejimi Uyumu (agirlik: 15%)
+        regime = calc_market_regime()
+        regime_type = regime.get('regime', 'unknown')
+        regime_score = 0
+        if signal_type == 'buy' and regime_type in ('strong_bull', 'bull'):
+            regime_score = 15
+        elif signal_type == 'sell' and regime_type in ('strong_bear', 'bear'):
+            regime_score = 15
+        elif regime_type == 'sideways':
+            regime_score = 7.5
+        elif signal_type == 'buy' and regime_type in ('strong_bear', 'bear'):
+            regime_score = 3
+        elif signal_type == 'sell' and regime_type in ('strong_bull', 'bull'):
+            regime_score = 3
+        else:
+            regime_score = 10
+        score += regime_score
+        max_score += 15
+        factors.append({'name': 'Piyasa Rejimi Uyumu', 'value': regime_type, 'score': sf(regime_score), 'max': 15})
+
+        # 3. Hacim Teyidi (agirlik: 15%)
+        vol_score = 0
+        if n >= 20:
+            vol_avg = float(np.mean(v[-20:]))
+            vol_recent = float(np.mean(v[-3:]))
+            vol_ratio = vol_recent / vol_avg if vol_avg > 0 else 1
+            if vol_ratio > 1.5:
+                # Hacim teyidi var
+                price_direction = 'up' if c[-1] > c[-3] else 'down'
+                if (signal_type == 'buy' and price_direction == 'up') or (signal_type == 'sell' and price_direction == 'down'):
+                    vol_score = 15  # Hacim sinyal yonunu destekliyor
+                else:
+                    vol_score = 5  # Hacim ters yonde
+            elif vol_ratio > 1.0:
+                vol_score = 10  # Normal hacim
+            else:
+                vol_score = 5  # Dusuk hacim
+        score += vol_score
+        max_score += 15
+        factors.append({'name': 'Hacim Teyidi', 'value': sf(vol_ratio) if n >= 20 else '-', 'score': sf(vol_score), 'max': 15})
+
+        # 4. Trend Uyumu (agirlik: 15%)
+        trend_score = 0
+        if n >= 50:
+            s = pd.Series(c)
+            ema20 = float(s.ewm(span=20).mean().iloc[-1])
+            ema50 = float(s.ewm(span=50).mean().iloc[-1])
+            cp = float(c[-1])
+            if signal_type == 'buy':
+                if cp > ema20 > ema50: trend_score = 15
+                elif cp > ema20: trend_score = 10
+                elif cp > ema50: trend_score = 7
+                else: trend_score = 3
+            else:
+                if cp < ema20 < ema50: trend_score = 15
+                elif cp < ema20: trend_score = 10
+                elif cp < ema50: trend_score = 7
+                else: trend_score = 3
+        score += trend_score
+        max_score += 15
+        factors.append({'name': 'Trend Uyumu', 'value': 'EMA20/50', 'score': sf(trend_score), 'max': 15})
+
+        # 5. Mum Formasyon Teyidi (agirlik: 10%)
+        o = hist['Open'].values.astype(float)
+        candles = calc_candlestick_patterns(o, h, l, c)
+        candle_score = 0
+        matching_patterns = [p for p in candles.get('patterns', [])
+                            if (p['type'] == 'bullish' and signal_type == 'buy') or
+                               (p['type'] == 'bearish' and signal_type == 'sell')]
+        if matching_patterns:
+            best_strength = max(p['strength'] for p in matching_patterns)
+            candle_score = min(best_strength * 2, 10)
+        score += candle_score
+        max_score += 10
+        factors.append({'name': 'Mum Formasyonu', 'value': matching_patterns[0]['name'] if matching_patterns else 'Yok', 'score': sf(candle_score), 'max': 10})
+
+        # 6. Destek/Direnc Yakinligi (agirlik: 10%)
+        sr_score = 0
+        sr = calc_support_resistance(hist)
+        cp = float(c[-1])
+        if signal_type == 'buy' and sr.get('supports'):
+            nearest_sup = sr['supports'][0]
+            dist = abs(cp - nearest_sup) / cp * 100
+            if dist < 2: sr_score = 10  # Desteğe çok yakin
+            elif dist < 5: sr_score = 7
+            else: sr_score = 3
+        elif signal_type == 'sell' and sr.get('resistances'):
+            nearest_res = sr['resistances'][0]
+            dist = abs(nearest_res - cp) / cp * 100
+            if dist < 2: sr_score = 10  # Dirence çok yakin
+            elif dist < 5: sr_score = 7
+            else: sr_score = 3
+        score += sr_score
+        max_score += 10
+        factors.append({'name': 'Destek/Direnc', 'value': 'Yakin' if sr_score >= 7 else 'Uzak', 'score': sf(sr_score), 'max': 10})
+
+        # 7. Geçmiş Sinyal Performansı (agirlik: 10%)
+        backtest = calc_signal_backtest(hist)
+        bt_score = 0
+        if backtest.get('totalSignals', 0) > 5:
+            if signal_type == 'buy':
+                win_rate = float(backtest.get('buySignals', {}).get('winRate10d', 50))
+            else:
+                win_rate = float(backtest.get('sellSignals', {}).get('winRate10d', 50))
+            bt_score = min(win_rate / 100 * 10, 10)
+        else:
+            bt_score = 5  # Yeterli veri yok, notr
+        score += bt_score
+        max_score += 10
+        factors.append({'name': 'Gecmis Performans', 'value': f'{sf(win_rate)}%' if backtest.get('totalSignals', 0) > 5 else 'N/A', 'score': sf(bt_score), 'max': 10})
+
+        # Final confidence
+        confidence = sf(score / max_score * 100) if max_score > 0 else 50
+
+        # Grade
+        conf_val = float(confidence)
+        if conf_val >= 80: grade = 'A'
+        elif conf_val >= 65: grade = 'B'
+        elif conf_val >= 50: grade = 'C'
+        elif conf_val >= 35: grade = 'D'
+        else: grade = 'F'
+
+        return {
+            'confidence': confidence,
+            'grade': grade,
+            'score': sf(score),
+            'maxScore': sf(max_score),
+            'factors': factors,
+        }
+    except Exception as e:
+        print(f"  [ML-CONF] Hata: {e}")
+        return {'confidence': 50, 'grade': 'C', 'factors': [], 'error': str(e)}
+
 
 def prepare_chart_data(hist):
     try:
@@ -1423,7 +2294,7 @@ def health():
         stale = [k for k, v in _stock_cache.items() if CACHE_TTL <= now - v['ts'] < CACHE_STALE_TTL]
     hist_ready = sum(1 for s in BIST100_STOCKS if _cget_hist(f"{s}_1y") is not None)
     return jsonify({
-        'status': 'ok', 'version': '4.2.0', 'yf': YF_OK,
+        'status': 'ok', 'version': '7.0.0', 'yf': YF_OK,
         'time': datetime.now().isoformat(),
         'loader': _status,
         'loaderStarted': _loader_started,
@@ -1591,6 +2462,21 @@ def stock_detail(symbol):
         cp=float(hist['Close'].iloc[-1])
         prev=float(hist['Close'].iloc[-2]) if len(hist)>1 else cp
         w52=calc_52w(hist)
+        ind=calc_all_indicators(hist,cp)
+        rec=calc_recommendation(hist, ind)
+
+        # ML Confidence (sadece aktif sinyal varsa)
+        ml_conf = {}
+        for tf_label in ['weekly', 'monthly', 'yearly']:
+            tf_rec = rec.get(tf_label, {})
+            tf_action = tf_rec.get('action', 'NOTR')
+            if tf_action in ('AL', 'TUTUN/AL'):
+                ml_conf[tf_label] = calc_ml_confidence(hist, ind, float(tf_rec.get('score', 0)), 'buy')
+            elif tf_action in ('SAT', 'TUTUN/SAT'):
+                ml_conf[tf_label] = calc_ml_confidence(hist, ind, float(tf_rec.get('score', 0)), 'sell')
+            else:
+                ml_conf[tf_label] = {'confidence': 50, 'grade': 'C', 'factors': []}
+
         return jsonify(safe_dict({
             'success':True,'code':symbol,
             'name':BIST100_STOCKS.get(symbol,symbol),
@@ -1604,12 +2490,15 @@ def stock_detail(symbol):
             'period':period,'dataPoints':len(hist),
             'week52':w52,
             'marketValue':sf(cp * si(hist['Volume'].iloc[-1])),
-            'indicators':calc_all_indicators(hist,cp),
+            'indicators':ind,
             'chartData':prepare_chart_data(hist),
             'fibonacci':calc_fibonacci(hist),
             'supportResistance':calc_support_resistance(hist),
             'pivotPoints':calc_pivot_points(hist),
-            'recommendation':calc_recommendation(hist, None),
+            'recommendation':rec,
+            'mlConfidence':ml_conf,
+            'signalBacktest':calc_signal_backtest(hist),
+            'marketRegime':calc_market_regime(),
             'fundamentals':calc_fundamentals(hist, symbol),
         }))
     except Exception as e:
@@ -2370,6 +3259,15 @@ def signal_scanner():
                 if abs(score) < min_score:
                     continue
 
+                # ML Confidence
+                sig_type = 'buy' if score > 0 else 'sell'
+                ml_conf = calc_ml_confidence(hist, ind, score, sig_type)
+
+                # Candlestick patterns
+                o_arr = hist['Open'].values.astype(float)
+                candles = ind.get('candlestick', {})
+                candle_patterns = candles.get('patterns', [])
+
                 results.append({
                     'code': sym,
                     'name': BIST100_STOCKS.get(sym, sym),
@@ -2380,6 +3278,8 @@ def signal_scanner():
                     'score': sf(score),
                     'confidence': sf(confidence),
                     'composite': sf(composite),
+                    'mlConfidence': ml_conf.get('confidence', 50),
+                    'mlGrade': ml_conf.get('grade', 'C'),
                     'buySignals': buy_count,
                     'sellSignals': sell_count,
                     'totalIndicators': total_ind,
@@ -2392,6 +3292,8 @@ def signal_scanner():
                     'resistances': resistances,
                     'reasons': tf_rec.get('reasons', [])[:5],
                     'strategy': tf_rec.get('strategy', ''),
+                    'candlestickPatterns': candle_patterns[:3],
+                    'dynamicThresholds': ind.get('dynamicThresholds', {}),
                 })
             except Exception as e:
                 continue
@@ -2405,6 +3307,7 @@ def signal_scanner():
             'totalScanned': len(stocks),
             'signalCount': len(results),
             'signals': results,
+            'marketRegime': calc_market_regime(),
             'timestamp': datetime.now().isoformat(),
         }))
     except Exception as e:
@@ -2525,6 +3428,17 @@ def opportunities():
                     else:
                         returns[label] = 0
 
+                # Candlestick patterns tespiti
+                o_arr = hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
+                candles = calc_candlestick_patterns(o_arr, h, l, c)
+                for p in candles.get('patterns', []):
+                    impact = 'positive' if p['type'] == 'bullish' else ('negative' if p['type'] == 'bearish' else 'neutral')
+                    events.append({'type': 'candlestick', 'text': f"Mum Formasyonu: {p['name']} - {p['description']}", 'impact': impact})
+                    event_score += p['strength'] if p['type'] == 'bullish' else -p['strength']
+
+                # Dinamik esikler
+                dyn = calc_dynamic_thresholds(c, h, l, v)
+
                 if events:
                     opportunities_list.append({
                         'code': sym,
@@ -2536,6 +3450,8 @@ def opportunities():
                         'eventCount': len(events),
                         'returns': returns,
                         'rsi': sf(rsi_val),
+                        'dynamicThresholds': dyn,
+                        'candlestickPatterns': candles.get('patterns', []),
                     })
             except:
                 continue
@@ -2552,6 +3468,7 @@ def opportunities():
             'totalScanned': len(stocks),
             'buyOpportunities': buy_opps[:20],
             'sellOpportunities': sell_opps[:20],
+            'marketRegime': calc_market_regime(),
             'timestamp': datetime.now().isoformat(),
         }))
     except Exception as e:
@@ -2776,7 +3693,7 @@ def send_telegram(message):
         return False
 
 def _auto_signal_check():
-    """Arka planda guclu sinyalleri tespit edip Telegram bildirim gonder"""
+    """Arka planda guclu sinyalleri tespit edip Telegram bildirim gonder - Enhanced v7"""
     while True:
         try:
             time.sleep(600)  # 10dk arayla kontrol
@@ -2787,47 +3704,24 @@ def _auto_signal_check():
             if not stocks:
                 continue
 
-            alerts = []
-            for stock in stocks:
-                sym = stock['code']
-                try:
-                    hist = _cget_hist(f"{sym}_1y")
-                    if hist is None:
-                        continue
-                    c = hist['Close'].values.astype(float)
-                    h = hist['High'].values.astype(float)
-                    l = hist['Low'].values.astype(float)
-                    cp = float(c[-1])
-                    n = len(c)
+            # Enhanced: check_signal_alerts kullan (mum formasyonu, dinamik esikler dahil)
+            signal_alerts = check_signal_alerts()
+            if not signal_alerts:
+                continue
 
-                    # Guclu sinyaller
-                    rsi = calc_rsi(c).get('value', 50)
-                    macd = calc_macd(c)
+            # Piyasa rejimi
+            regime = calc_market_regime()
+            regime_emoji = {'strong_bull': '🐂🐂', 'bull': '🐂', 'strong_bear': '🐻🐻', 'bear': '🐻', 'sideways': '↔️'}.get(regime.get('regime', ''), '❓')
 
-                    # Altin kesisim
-                    if n >= 200:
-                        ema50 = pd.Series(c).ewm(span=50).mean().values
-                        ema200 = pd.Series(c).ewm(span=200).mean().values
-                        if ema50[-1] > ema200[-1] and ema50[-2] <= ema200[-2]:
-                            alerts.append(f"🟢 <b>ALTIN KESISIM</b>: {sym} ({sf(cp)} TL) - EMA50 > EMA200")
-                        elif ema50[-1] < ema200[-1] and ema50[-2] >= ema200[-2]:
-                            alerts.append(f"🔴 <b>OLUM KESISIMI</b>: {sym} ({sf(cp)} TL) - EMA50 < EMA200")
+            alerts_text = []
+            for alert in signal_alerts[:15]:
+                emoji = '🟢' if alert.get('signal') == 'bullish' else ('🔴' if alert.get('signal') == 'bearish' else '⚪')
+                alerts_text.append(f"{emoji} {alert['message']}")
 
-                    # RSI asiri bolgeler
-                    if rsi < 25:
-                        alerts.append(f"🟢 <b>ASIRI SATIM</b>: {sym} ({sf(cp)} TL) RSI={sf(rsi)}")
-                    elif rsi > 80:
-                        alerts.append(f"🔴 <b>ASIRI ALIM</b>: {sym} ({sf(cp)} TL) RSI={sf(rsi)}")
-
-                    # MACD taze kesisim
-                    if macd.get('signalType') == 'buy' and abs(macd.get('histogram', 0)) < 0.5:
-                        alerts.append(f"🟢 <b>MACD AL</b>: {sym} ({sf(cp)} TL)")
-                except:
-                    continue
-
-            if alerts:
-                header = f"📊 <b>BIST Sinyal Raporu</b> ({datetime.now().strftime('%H:%M')})\n\n"
-                msg = header + '\n'.join(alerts[:15])  # Max 15 sinyal
+            if alerts_text:
+                header = f"📊 <b>BIST Sinyal Raporu v7</b> ({datetime.now().strftime('%H:%M')})\n"
+                header += f"{regime_emoji} Piyasa: {regime.get('description', 'Bilinmiyor')}\n\n"
+                msg = header + '\n'.join(alerts_text)
                 send_telegram(msg)
 
         except:
@@ -3078,19 +3972,123 @@ def _send_telegram_alerts(user_id, triggered_alerts):
         pass
 
 
+# =====================================================================
+# YENI ENDPOINTLER - Sinyal Performans, Sektor RS, Market Regime, Alerts
+# =====================================================================
+@app.route('/api/market/regime')
+def market_regime_endpoint():
+    """Piyasa rejimi (boga/ayi/yatay)"""
+    try:
+        regime = calc_market_regime()
+        return jsonify(safe_dict({'success': True, **regime}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/sectors/analysis')
+def sectors_analysis():
+    """Sektor bazli goreceli guc analizi"""
+    try:
+        result = calc_sector_relative_strength()
+        return jsonify(safe_dict({'success': True, **result}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/backtest-signals')
+def stock_signal_backtest(symbol):
+    """Hisse bazli sinyal backtest sonuclari"""
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 50:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok'}), 400
+        result = calc_signal_backtest(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/fundamentals')
+def stock_fundamentals_endpoint(symbol):
+    """Hisse temel analiz verileri (F/K, PD/DD)"""
+    try:
+        symbol = symbol.upper()
+        result = fetch_fundamental_data(symbol)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, 'fundamentals': result}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/alerts/signals')
+def signal_alerts_endpoint():
+    """Sinyal bazli otomatik uyarilar (mum formasyonu, altin kesisim vb.)"""
+    try:
+        alerts = check_signal_alerts()
+        return jsonify(safe_dict({
+            'success': True,
+            'alerts': alerts[:30],
+            'totalAlerts': len(alerts),
+            'marketRegime': calc_market_regime(),
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/signals/performance')
+def signals_performance():
+    """Tum hisselerin sinyal performans ozeti"""
+    try:
+        stocks = _get_stocks()
+        if not stocks:
+            return jsonify({'success': True, 'loading': True})
+
+        results = []
+        for stock in stocks[:50]:  # Performans icin ilk 50
+            sym = stock['code']
+            try:
+                hist = _cget_hist(f"{sym}_1y")
+                if hist is None or len(hist) < 60:
+                    continue
+                bt = calc_signal_backtest(hist)
+                if bt.get('totalSignals', 0) > 3:
+                    overall = bt.get('overall', {})
+                    results.append({
+                        'code': sym,
+                        'name': BIST100_STOCKS.get(sym, sym),
+                        'totalSignals': bt['totalSignals'],
+                        'winRate5d': overall.get('winRate5d', 0),
+                        'winRate10d': overall.get('winRate10d', 0),
+                        'winRate20d': overall.get('winRate20d', 0),
+                        'avgReturn10d': overall.get('avgRet10d', 0),
+                    })
+            except:
+                continue
+
+        results.sort(key=lambda x: float(x.get('winRate10d', 0)), reverse=True)
+        return jsonify(safe_dict({
+            'success': True,
+            'performance': results,
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/docs')
 def docs():
-    return jsonify({'name': 'BIST Pro v6.0.0', 'endpoints': [
+    return jsonify({'name': 'BIST Pro v7.0.0', 'endpoints': [
         '/api/health', '/api/debug', '/api/dashboard', '/api/indices',
         '/api/bist100', '/api/bist30', '/api/stock/<sym>', '/api/stock/<sym>/kap',
+        '/api/stock/<sym>/backtest-signals', '/api/stock/<sym>/fundamentals',
         '/api/commodity/<sym>', '/api/compare', '/api/screener', '/api/heatmap', '/api/report',
-        '/api/backtest', '/api/sectors', '/api/search',
+        '/api/backtest', '/api/sectors', '/api/sectors/analysis', '/api/search',
+        '/api/signals', '/api/signals/performance', '/api/opportunities',
+        '/api/market/regime', '/api/alerts/signals',
         '/api/auth/register', '/api/auth/login', '/api/auth/profile',
         '/api/portfolio', '/api/watchlist', '/api/alerts', '/api/alerts/check',
     ]})
 
 # NO MODULE-LEVEL THREAD START - before_request handles it
-print("[STARTUP] BIST Pro v6.0.0 ready - batch loader + SQLite + uyelik")
+print("[STARTUP] BIST Pro v7.0.0 ready - batch loader + SQLite + uyelik + advanced analytics")
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
