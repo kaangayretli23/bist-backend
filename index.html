@@ -450,6 +450,30 @@ tr:hover td { background: rgba(26,34,52,0.5); }
     </div>
   </div>
 
+  <!-- Meta Bar: lastUpdated + stale badge -->
+  <div id="dashboardMeta" class="card mb-24" style="padding:10px 16px;display:flex;align-items:center;justify-content:space-between;background:var(--bg-secondary);border:1px solid var(--border);">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span id="dataQualityBadge" class="badge badge-green" style="font-size:11px;">CANLI</span>
+      <span id="lastUpdatedText" style="font-size:12px;color:var(--text-muted);">Son güncelleme: --</span>
+    </div>
+    <button class="btn btn-sm btn-secondary" onclick="loadDashboard(true)" style="padding:4px 12px;font-size:11px;">Yenile</button>
+  </div>
+
+  <!-- Piyasa Rejimi + Favori Hisseler -->
+  <div class="grid-2 mb-24">
+    <div class="card" id="dashboardRegime" style="border-left:3px solid var(--accent);">
+      <div style="font-weight:700;font-size:14px;margin-bottom:8px;">Piyasa Rejimi</div>
+      <div id="dashRegimeContent" style="font-size:13px;color:var(--text-secondary);">Yükleniyor...</div>
+    </div>
+    <div class="card" id="dashboardWatchlist" style="border-left:3px solid var(--yellow);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div style="font-weight:700;font-size:14px;">Favorilerim</div>
+        <button class="btn btn-sm btn-secondary" onclick="navigate('watchlist')" style="padding:3px 10px;font-size:11px;">Tümü</button>
+      </div>
+      <div id="dashWatchlistContent" style="font-size:12px;color:var(--text-secondary);">Giriş yaparak favorilerinizi görebilirsiniz.</div>
+    </div>
+  </div>
+
   <!-- Movers Grid -->
   <div class="grid-2 mb-24">
     <!-- En Çok Artan -->
@@ -1088,12 +1112,16 @@ function _setCache(key, data) {
   _pageCache[key] = { data, ts: Date.now() };
 }
 
-async function loadDashboard() {
+async function loadDashboard(forceRefresh) {
   // Indices
   loadIndices();
 
+  // Dashboard regime & watchlist
+  _loadDashboardRegime();
+  _loadDashboardWatchlist();
+
   // Onceki veri varsa hemen render et, arka planda guncelle
-  const cached = _getCached('dashboard');
+  const cached = forceRefresh ? null : _getCached('dashboard');
   if (cached && cached.allStocks && cached.allStocks.length > 0) {
     renderDashboard(cached);
   }
@@ -1129,6 +1157,25 @@ async function loadDashboard() {
 }
 
 function renderDashboard(data) {
+  // Meta bar (lastUpdated + stale badge)
+  const meta = data.meta || {};
+  const qualityBadge = document.getElementById('dataQualityBadge');
+  const lastUpdatedEl = document.getElementById('lastUpdatedText');
+  if (meta.dataQuality === 'stale') {
+    qualityBadge.className = 'badge badge-yellow'; qualityBadge.textContent = 'ESKİ VERİ';
+  } else if (meta.dataQuality === 'loading') {
+    qualityBadge.className = 'badge badge-blue'; qualityBadge.textContent = 'YÜKLENİYOR';
+  } else if (meta.dataQuality === 'expired') {
+    qualityBadge.className = 'badge badge-red'; qualityBadge.textContent = 'SÜRESI DOLMUŞ';
+  } else {
+    qualityBadge.className = 'badge badge-green'; qualityBadge.textContent = 'CANLI';
+  }
+  if (meta.lastUpdated) {
+    try {
+      const d = new Date(meta.lastUpdated);
+      lastUpdatedEl.textContent = 'Son güncelleme: ' + d.toLocaleTimeString('tr-TR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    } catch(e) { lastUpdatedEl.textContent = ''; }
+  }
 
   // Breadth
   const mb = data.marketBreadth || {};
@@ -1146,6 +1193,50 @@ function renderDashboard(data) {
   renderMoverTable('topLosers', data.movers?.topLosers, 'changePct');
   renderMoverTable('volumeLeaders', data.movers?.volumeLeaders, 'volume', true);
   renderMoverTable('gapStocks', data.movers?.gapStocks, 'gapPct');
+}
+
+async function _loadDashboardRegime() {
+  try {
+    const data = await api('/market/regime');
+    if (!data.success) return;
+    const el = document.getElementById('dashRegimeContent');
+    const regimeEmoji = {'strong_bull':'🐂🐂','bull':'🐂','strong_bear':'🐻🐻','bear':'🐻','sideways':'↔️'}[data.regime] || '❓';
+    const regimeColor = {'strong_bull':'var(--green)','bull':'#4CAF50','strong_bear':'var(--red)','bear':'#FF9800','sideways':'var(--yellow)'}[data.regime] || 'var(--text-secondary)';
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="font-size:20px;">${regimeEmoji}</span>
+        <span style="font-weight:700;color:${regimeColor};font-size:15px;">${data.description || data.regime}</span>
+      </div>
+      <div style="background:var(--bg-input);border-radius:4px;height:6px;overflow:hidden;margin-bottom:6px;">
+        <div style="height:100%;width:${data.strength || 0}%;background:${regimeColor};border-radius:4px;"></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);">Güç: %${data.strength || 0} | Skor: ${data.score || 0}</div>
+      ${(data.reasons||[]).slice(0,2).map(r => `<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">• ${r}</div>`).join('')}
+    `;
+  } catch(e) {}
+}
+
+async function _loadDashboardWatchlist() {
+  try {
+    const user = typeof currentUser !== 'undefined' ? currentUser : null;
+    if (!user || !user.userId) {
+      document.getElementById('dashWatchlistContent').innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Giriş yaparak favorilerinizi görebilirsiniz.</div>';
+      return;
+    }
+    const data = await api('/watchlist?userId=' + user.userId);
+    if (!data.success || !data.watchlist || data.watchlist.length === 0) {
+      document.getElementById('dashWatchlistContent').innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Henüz favori eklenmemiş.</div>';
+      return;
+    }
+    const el = document.getElementById('dashWatchlistContent');
+    el.innerHTML = data.watchlist.slice(0,5).map(s => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid var(--border);cursor:pointer;" onclick="goToStock('${s.code}')">
+        <span style="font-family:var(--font-mono);font-weight:700;color:var(--accent);font-size:12px;">${s.code}</span>
+        <span style="font-family:var(--font-mono);font-size:12px;">${fmtPrice(s.price)}</span>
+        <span class="${changeClass(s.changePct)}" style="font-family:var(--font-mono);font-size:11px;">${fmtPct(s.changePct)}</span>
+      </div>
+    `).join('') + (data.watchlist.length > 5 ? `<div style="text-align:center;margin-top:4px;font-size:11px;color:var(--text-muted);">+${data.watchlist.length - 5} daha</div>` : '');
+  } catch(e) {}
 }
 
 async function loadIndices() {
