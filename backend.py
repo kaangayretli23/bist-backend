@@ -23,68 +23,174 @@ except ImportError:
     pass
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Render.com: Ephemeral filesystem siler DB'yi her deploy'da.
-# Render Disk ekle -> /var/data mount -> env DB_PATH=/var/data/bist.db
+
+# Postgres: DATABASE_URL env var (Render Postgres addon otomatik ekler)
+# Fallback: SQLite (lokal gelistirme)
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
+USE_POSTGRES = bool(DATABASE_URL)
+
+# SQLite fallback
 DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'bist.db'))
-# DB dizininin var oldugundan emin ol
 os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
+
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bist-pro-secret-' + str(hash(BASE_DIR)))
 CORS(app, supports_credentials=True)
 
 # =====================================================================
-# DATABASE (SQLite)
+# DATABASE (Postgres birincil, SQLite yedek)
 # =====================================================================
+try:
+    import psycopg2
+    import psycopg2.extras
+    PG_OK = True
+except ImportError:
+    PG_OK = False
+
+class PgRowWrapper:
+    """psycopg2 row'u sqlite3.Row gibi dict-like erisilebilir yapan wrapper"""
+    def __init__(self, row_dict):
+        self._d = row_dict or {}
+    def __getitem__(self, key):
+        return self._d[key]
+    def __contains__(self, key):
+        return key in self._d
+    def get(self, key, default=None):
+        return self._d.get(key, default)
+    def keys(self):
+        return self._d.keys()
+
+class PgConnection:
+    """Postgres baglantisi - sqlite3 arayuzuyle uyumlu wrapper"""
+    def __init__(self, conn):
+        self._conn = conn
+        self._cursor = None
+    def execute(self, sql, params=None):
+        # SQLite ? parametrelerini Postgres %s'e cevir
+        sql = sql.replace('?', '%s')
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, params or ())
+        self._cursor = cur
+        return self
+    def executescript(self, sql):
+        cur = self._conn.cursor()
+        cur.execute(sql)
+        self._cursor = cur
+    def fetchall(self):
+        if self._cursor:
+            return [PgRowWrapper(r) for r in self._cursor.fetchall()]
+        return []
+    def fetchone(self):
+        if self._cursor:
+            r = self._cursor.fetchone()
+            return PgRowWrapper(r) if r else None
+        return None
+    def commit(self):
+        self._conn.commit()
+    def close(self):
+        self._conn.close()
+    @property
+    def lastrowid(self):
+        return self._cursor.lastrowid if self._cursor else None
+
 def get_db():
-    db = sqlite3.connect(DB_PATH)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    return db
+    if USE_POSTGRES and PG_OK:
+        conn = psycopg2.connect(DATABASE_URL)
+        return PgConnection(conn)
+    else:
+        db = sqlite3.connect(DB_PATH)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA journal_mode=WAL")
+        return db
 
 def init_db():
-    db = get_db()
-    db.executescript('''
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            email TEXT,
-            telegram_chat_id TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS portfolios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            quantity REAL NOT NULL,
-            avg_cost REAL NOT NULL,
-            added_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE TABLE IF NOT EXISTS watchlists (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            added_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(user_id, symbol),
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE TABLE IF NOT EXISTS alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            condition TEXT NOT NULL,
-            target_value REAL NOT NULL,
-            active INTEGER DEFAULT 1,
-            triggered INTEGER DEFAULT 0,
-            triggered_at TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-    ''')
-    db.commit()
-    db.close()
-    print("[DB] Veritabani hazir:", DB_PATH)
+    if USE_POSTGRES and PG_OK:
+        db = get_db()
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                email TEXT,
+                telegram_chat_id TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS portfolios (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                symbol TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                avg_cost REAL NOT NULL,
+                added_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS watchlists (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                symbol TEXT NOT NULL,
+                added_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(user_id, symbol)
+            );
+            CREATE TABLE IF NOT EXISTS alerts (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                symbol TEXT NOT NULL,
+                condition TEXT NOT NULL,
+                target_value REAL NOT NULL,
+                active INTEGER DEFAULT 1,
+                triggered INTEGER DEFAULT 0,
+                triggered_at TEXT,
+                cooldown_until TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        ''')
+        db.commit()
+        db.close()
+        print(f"[DB] PostgreSQL hazir: {DATABASE_URL[:40]}...")
+    else:
+        db = get_db()
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                email TEXT,
+                telegram_chat_id TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS portfolios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                avg_cost REAL NOT NULL,
+                added_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS watchlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                added_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(user_id, symbol),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                condition TEXT NOT NULL,
+                target_value REAL NOT NULL,
+                active INTEGER DEFAULT 1,
+                triggered INTEGER DEFAULT 0,
+                triggered_at TEXT,
+                cooldown_until TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+        ''')
+        db.commit()
+        db.close()
+        print("[DB] SQLite hazir:", DB_PATH)
 
 init_db()
 
@@ -123,6 +229,37 @@ def safe_dict(d):
     if hasattr(d, 'item'): return d.item()
     if isinstance(d, float): return 0.0 if d != d else round(d, 4)
     return d
+
+# =====================================================================
+# RESPONSE WRAPPER: lastUpdated + stale + data_quality
+# =====================================================================
+def _cache_freshness():
+    """Cache durumunu dondur: fresh/stale/loading"""
+    now = time.time()
+    with _lock:
+        if not _stock_cache:
+            return 'loading', None
+        ages = [now - v['ts'] for v in _stock_cache.values()]
+    avg_age = sum(ages) / len(ages) if ages else 9999
+    if avg_age < CACHE_TTL:
+        return 'fresh', datetime.fromtimestamp(now - avg_age).isoformat()
+    elif avg_age < CACHE_STALE_TTL:
+        return 'stale', datetime.fromtimestamp(now - avg_age).isoformat()
+    else:
+        return 'expired', None
+
+def _api_meta(data_quality=None, extra=None):
+    """Tum API response'larina eklenecek meta bilgisi"""
+    freshness, last_updated = _cache_freshness()
+    meta = {
+        'lastUpdated': last_updated or _status.get('lastRun'),
+        'snapshotTimestamp': datetime.now().isoformat(),
+        'dataQuality': data_quality or freshness,
+        'loaderPhase': _status.get('phase', 'idle'),
+    }
+    if extra:
+        meta.update(extra)
+    return meta
 
 BIST100_STOCKS = {
     'THYAO':'Turk Hava Yollari','GARAN':'Garanti BBVA','ISCTR':'Is Bankasi (C)',
@@ -685,6 +822,9 @@ def _background_loop():
             # === FAZE 5: Tarihsel veri on-yukleme (sinyaller/firsatlar icin) ===
             _preload_hist_data()
 
+            # === FAZE 6: Otomatik alert kontrolu (cooldown destekli) ===
+            _auto_check_all_alerts()
+
         except Exception as e:
             print(f"[LOADER] FATAL: {e}")
             traceback.print_exc()
@@ -693,6 +833,63 @@ def _background_loop():
 
         time.sleep(300)
 
+
+def _auto_check_all_alerts():
+    """Background loop'ta tum aktif alert'leri kontrol et (cooldown destekli)"""
+    try:
+        db = get_db()
+        rows = db.execute("SELECT * FROM alerts WHERE active=1 AND triggered=0").fetchall()
+        if not rows:
+            db.close()
+            return
+
+        now = datetime.now()
+        triggered_count = 0
+        for r in rows:
+            # Cooldown kontrolu (ayni alert 30dk icinde tekrar tetiklenmez)
+            cooldown_until = r['cooldown_until'] if 'cooldown_until' in r.keys() else None
+            if cooldown_until:
+                try:
+                    cd_time = datetime.fromisoformat(cooldown_until)
+                    if now < cd_time:
+                        continue
+                except:
+                    pass
+
+            stock = _cget(_stock_cache, r['symbol'])
+            if not stock:
+                continue
+
+            price = stock['price']
+            fire = False
+            if r['condition'] == 'price_above' and price >= r['target_value']:
+                fire = True
+            elif r['condition'] == 'price_below' and price <= r['target_value']:
+                fire = True
+            elif r['condition'] == 'change_above' and stock.get('changePct', 0) >= r['target_value']:
+                fire = True
+            elif r['condition'] == 'change_below' and stock.get('changePct', 0) <= r['target_value']:
+                fire = True
+
+            if fire:
+                cooldown_end = (now + timedelta(minutes=30)).isoformat()
+                db.execute("UPDATE alerts SET triggered=1, triggered_at=?, cooldown_until=? WHERE id=?",
+                           (now.isoformat(), cooldown_end, r['id']))
+                triggered_count += 1
+
+                # Telegram bildirim
+                _send_telegram_alerts(r['user_id'], [{
+                    'symbol': r['symbol'], 'condition': r['condition'],
+                    'targetValue': r['target_value'], 'currentPrice': price,
+                    'message': f"{r['symbol']} uyarisi tetiklendi: {r['condition']} {r['target_value']} (Guncel: {price})"
+                }])
+
+        if triggered_count > 0:
+            db.commit()
+            print(f"[ALERT-AUTO] {triggered_count} uyari tetiklendi")
+        db.close()
+    except Exception as e:
+        print(f"[ALERT-AUTO] Hata: {e}")
 
 def _preload_one_hist(sym):
     """Tek hisse icin tarihsel veriyi cek ve cache'le"""
@@ -1128,12 +1325,13 @@ def calc_dmi(highs, lows, closes, period=14):
     return {'name':'DMI','diPlus':diP,'diMinus':diM,'adx':sf(dx),'signal':sig}
 
 def calc_recommendation(hist, indicators):
-    """Haftalik/Aylik/Yillik al-sat onerisi - destek/direnc yorumlu"""
+    """Haftalik/Aylik/Yillik al-sat onerisi - guclendirilmis analiz + detayli reason"""
     try:
         c=hist['Close'].values.astype(float)
         h=hist['High'].values.astype(float)
         l=hist['Low'].values.astype(float)
         v=hist['Volume'].values.astype(float)
+        o=hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
         n=len(c)
         cur=float(c[-1])
         recommendations={}
@@ -1152,54 +1350,106 @@ def calc_recommendation(hist, indicators):
         bb_lower = bb.get('lower', 0)
         bb_middle = bb.get('middle', 0)
 
+        # Dinamik esikler
+        dyn = calc_dynamic_thresholds(c, h, l, v) if n >= 60 else {'rsi_oversold': 30, 'rsi_overbought': 70}
+        dyn_oversold = float(dyn.get('rsi_oversold', 30))
+        dyn_overbought = float(dyn.get('rsi_overbought', 70))
+
+        # Mum formasyonlari
+        candle_data = calc_candlestick_patterns(o, h, l, c) if n >= 5 else {'patterns': [], 'signal': 'neutral'}
+
+        # Piyasa rejimi
+        regime = calc_market_regime()
+        regime_type = regime.get('regime', 'unknown')
+
         for label, days in [('weekly',5),('monthly',22),('yearly',252)]:
-            if n<days+14: recommendations[label]={'action':'neutral','confidence':0,'reasons':[],'score':0,'strategy':'Yeterli veri yok'}; continue
+            if n<days+14: recommendations[label]={'action':'neutral','confidence':0,'reasons':[],'score':0,'strategy':'Yeterli veri yok','reason':'Yeterli veri yok','indicatorBreakdown':{}}; continue
 
             sl=slice(-days,None)
             sc=c[sl]; sh=h[sl]; slow=l[sl]; sv=v[sl]
 
             score=0; reasons=[]; strategy_parts=[]
+            buy_indicators = 0; sell_indicators = 0; total_indicators = 0
 
-            # 1. Trend (SMA)
+            # 1. Trend (SMA) - Agirlik: 2 puan
             sma20=np.mean(c[-20:]) if n>=20 else c[-1]
             sma50=np.mean(c[-50:]) if n>=50 else sma20
             sma200=np.mean(c[-200:]) if n>=200 else sma50
-            if cur>sma20: score+=1; reasons.append(f'Fiyat ({sf(cur)}) SMA20 ({sf(sma20)}) uzerinde')
-            else: score-=1; reasons.append(f'Fiyat ({sf(cur)}) SMA20 ({sf(sma20)}) altinda')
+            total_indicators += 1
+            if cur>sma20:
+                score+=1; buy_indicators+=1
+                reasons.append(f'Fiyat ({sf(cur)}) SMA20 ({sf(sma20)}) uzerinde')
+            else:
+                score-=1; sell_indicators+=1
+                reasons.append(f'Fiyat ({sf(cur)}) SMA20 ({sf(sma20)}) altinda')
 
-            if sma20>sma50: score+=1; reasons.append(f'SMA20 ({sf(sma20)}) > SMA50 ({sf(sma50)}) → Yukari trend')
-            else: score-=1; reasons.append(f'SMA20 ({sf(sma20)}) < SMA50 ({sf(sma50)}) → Asagi trend')
+            total_indicators += 1
+            if sma20>sma50:
+                score+=1; buy_indicators+=1
+                reasons.append(f'SMA20 ({sf(sma20)}) > SMA50 ({sf(sma50)}) → Yukari trend')
+            else:
+                score-=1; sell_indicators+=1
+                reasons.append(f'SMA20 ({sf(sma20)}) < SMA50 ({sf(sma50)}) → Asagi trend')
 
-            # 2. RSI
+            # SMA200 bonus (uzun vadeli trend)
+            if n >= 200:
+                total_indicators += 1
+                if cur > sma200:
+                    score += 0.5; buy_indicators += 1
+                    reasons.append(f'Fiyat SMA200 ({sf(sma200)}) uzerinde → Uzun vadeli boga')
+                else:
+                    score -= 0.5; sell_indicators += 1
+                    reasons.append(f'Fiyat SMA200 ({sf(sma200)}) altinda → Uzun vadeli ayi')
+
+            # 2. RSI (Dinamik esikler ile)
             rsi_val=calc_rsi(c)
             rsi_v = rsi_val.get('value', 50)
-            if rsi_v<30: score+=2; reasons.append(f'RSI={sf(rsi_v)}: Asiri satim bolgesi (<30) → Alis firsati olabilir')
-            elif rsi_v<40: score+=1; reasons.append(f'RSI={sf(rsi_v)}: Zayif bolge (30-40) → Toparlanma bekleniyor')
-            elif rsi_v>70: score-=2; reasons.append(f'RSI={sf(rsi_v)}: Asiri alim bolgesi (>70) → Kar realizasyonu bekleniyor')
-            elif rsi_v>60: score-=0.5; reasons.append(f'RSI={sf(rsi_v)}: Guclu bolge (60-70)')
-            elif rsi_v>=50: score+=0.5; reasons.append(f'RSI={sf(rsi_v)}: Notr-pozitif')
-            else: score-=0.5; reasons.append(f'RSI={sf(rsi_v)}: Notr-negatif')
+            total_indicators += 1
+            if rsi_v < dyn_oversold:
+                score+=2; buy_indicators+=1
+                reasons.append(f'RSI={sf(rsi_v)}: Asiri satim bolgesi (<{sf(dyn_oversold)}) → Guclu alis firsati')
+            elif rsi_v<40:
+                score+=1; buy_indicators+=1
+                reasons.append(f'RSI={sf(rsi_v)}: Zayif bolge → Toparlanma bekleniyor')
+            elif rsi_v > dyn_overbought:
+                score-=2; sell_indicators+=1
+                reasons.append(f'RSI={sf(rsi_v)}: Asiri alim bolgesi (>{sf(dyn_overbought)}) → Kar realizasyonu bekleniyor')
+            elif rsi_v>60:
+                score-=0.5; sell_indicators+=1
+                reasons.append(f'RSI={sf(rsi_v)}: Guclu bolge (60-70)')
+            elif rsi_v>=50:
+                score+=0.5; buy_indicators+=1
+                reasons.append(f'RSI={sf(rsi_v)}: Notr-pozitif')
+            else:
+                score-=0.5; sell_indicators+=1
+                reasons.append(f'RSI={sf(rsi_v)}: Notr-negatif')
 
             # 3. MACD
             macd=calc_macd(c)
             macd_type = macd.get('signalType', 'neutral')
             macd_hist = macd.get('histogram', 0)
+            total_indicators += 1
             if macd_type=='buy':
-                score+=1.5
+                score+=1.5; buy_indicators+=1
                 reasons.append(f'MACD alis sinyali (histogram: {macd_hist})')
             elif macd_type=='sell':
-                score-=1.5
+                score-=1.5; sell_indicators+=1
                 reasons.append(f'MACD satis sinyali (histogram: {macd_hist})')
 
             # 4. Bollinger
+            total_indicators += 1
             if bb_lower > 0 and cur < bb_lower:
-                score+=1; reasons.append(f'Fiyat ({sf(cur)}) alt Bollinger bandinin ({sf(bb_lower)}) altinda → Toparlanma bekleniyor')
+                score+=1; buy_indicators+=1
+                reasons.append(f'Fiyat ({sf(cur)}) alt Bollinger bandinin ({sf(bb_lower)}) altinda → Toparlanma bekleniyor')
             elif bb_upper > 0 and cur > bb_upper:
-                score-=1; reasons.append(f'Fiyat ({sf(cur)}) ust Bollinger bandinin ({sf(bb_upper)}) uzerinde → Geri cekilme bekleniyor')
+                score-=1; sell_indicators+=1
+                reasons.append(f'Fiyat ({sf(cur)}) ust Bollinger bandinin ({sf(bb_upper)}) uzerinde → Geri cekilme bekleniyor')
             elif bb_middle > 0:
                 if cur > bb_middle:
+                    buy_indicators+=1
                     reasons.append(f'Fiyat Bollinger orta bant ({sf(bb_middle)}) uzerinde')
                 else:
+                    sell_indicators+=1
                     reasons.append(f'Fiyat Bollinger orta bant ({sf(bb_middle)}) altinda')
 
             # 5. Hacim trendi
@@ -1207,34 +1457,92 @@ def calc_recommendation(hist, indicators):
                 vol_avg=np.mean(sv[-20:]) if len(sv)>=20 else np.mean(sv)
                 vol_recent=np.mean(sv[-5:])
                 vol_ratio = vol_recent / vol_avg if vol_avg > 0 else 1
+                total_indicators += 1
                 if vol_ratio > 1.5:
-                    if c[-1]>c[-5]: score+=1; reasons.append(f'Hacim ortalamanin {sf(vol_ratio)}x uzerinde + yukari hareket → Guclu alis')
-                    else: score-=1; reasons.append(f'Hacim ortalamanin {sf(vol_ratio)}x uzerinde + dusus → Guclu satis baskisi')
+                    if c[-1]>c[-5]:
+                        score+=1; buy_indicators+=1
+                        reasons.append(f'Hacim ortalamanin {sf(vol_ratio)}x uzerinde + yukari hareket → Guclu alis')
+                    else:
+                        score-=1; sell_indicators+=1
+                        reasons.append(f'Hacim ortalamanin {sf(vol_ratio)}x uzerinde + dusus → Guclu satis baskisi')
+                elif vol_ratio < 0.5:
+                    reasons.append(f'Hacim ortalamanin altinda ({sf(vol_ratio)}x) → Dusuk ilgi, sinyal gucsuslesiyor')
 
             # 6. Momentum (periyoda gore)
             if len(sc)>=days:
                 period_return=sf(((c[-1]-sc[0])/sc[0])*100)
-                if period_return>10: score+=1.5; reasons.append(f'{label} getiri: %{period_return} (guclu yukselis)')
-                elif period_return>5: score+=1; reasons.append(f'{label} getiri: %{period_return} (pozitif)')
-                elif period_return<-10: score-=1.5; reasons.append(f'{label} getiri: %{period_return} (sert dusus)')
-                elif period_return<-5: score-=1; reasons.append(f'{label} getiri: %{period_return} (negatif)')
+                total_indicators += 1
+                if period_return>10: score+=1.5; buy_indicators+=1; reasons.append(f'{label} getiri: %{period_return} (guclu yukselis)')
+                elif period_return>5: score+=1; buy_indicators+=1; reasons.append(f'{label} getiri: %{period_return} (pozitif)')
+                elif period_return<-10: score-=1.5; sell_indicators+=1; reasons.append(f'{label} getiri: %{period_return} (sert dusus)')
+                elif period_return<-5: score-=1; sell_indicators+=1; reasons.append(f'{label} getiri: %{period_return} (negatif)')
 
             # 7. Stochastic
             stoch=calc_stochastic(c,h,l)
             stoch_k = stoch.get('k', 50)
-            if stoch_k<20: score+=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri satim bolgesi')
-            elif stoch_k>80: score-=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri alim bolgesi')
+            total_indicators += 1
+            if stoch_k<20: score+=1; buy_indicators+=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri satim bolgesi')
+            elif stoch_k>80: score-=1; sell_indicators+=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri alim bolgesi')
 
             # 8. ADX - Trend gucu
             adx_data = calc_adx(h, l, c)
             adx_val = adx_data.get('value', 25)
+            total_indicators += 1
             if adx_val > 25:
                 trend_dir = 'yukari' if adx_data.get('plusDI', 0) > adx_data.get('minusDI', 0) else 'asagi'
                 reasons.append(f'ADX={sf(adx_val)}: Guclu {trend_dir} trend')
-                if trend_dir == 'yukari': score += 0.5
-                else: score -= 0.5
+                if trend_dir == 'yukari': score += 0.5; buy_indicators += 1
+                else: score -= 0.5; sell_indicators += 1
+            else:
+                reasons.append(f'ADX={sf(adx_val)}: Zayif trend (<25), yatay piyasa')
 
-            # 9. Destek/Direnc bazli yorumlar
+            # 9. Ichimoku (eger yeterli veri varsa)
+            if n >= 52:
+                ichi = calc_ichimoku(c, h, l)
+                total_indicators += 1
+                if ichi.get('signal') == 'buy':
+                    score += 1; buy_indicators += 1
+                    reasons.append(f'Ichimoku alis sinyali (fiyat bulutun uzerinde)')
+                elif ichi.get('signal') == 'sell':
+                    score -= 1; sell_indicators += 1
+                    reasons.append(f'Ichimoku satis sinyali (fiyat bulutun altinda)')
+
+            # 10. Parabolic SAR
+            if n >= 5:
+                psar = calc_psar(c, h, l)
+                total_indicators += 1
+                if psar.get('signal') == 'buy':
+                    score += 0.5; buy_indicators += 1
+                    reasons.append(f'Parabolic SAR yukari trend (SAR={sf(psar.get("value", 0))})')
+                elif psar.get('signal') == 'sell':
+                    score -= 0.5; sell_indicators += 1
+                    reasons.append(f'Parabolic SAR asagi trend (SAR={sf(psar.get("value", 0))})')
+
+            # 11. Mum formasyonlari
+            for p in candle_data.get('patterns', []):
+                if p.get('strength', 0) >= 3:
+                    total_indicators += 1
+                    if p['type'] == 'bullish':
+                        score += 0.5 * (p['strength'] / 5)
+                        buy_indicators += 1
+                        reasons.append(f'Mum: {p["name"]} → {p["description"][:60]}')
+                    elif p['type'] == 'bearish':
+                        score -= 0.5 * (p['strength'] / 5)
+                        sell_indicators += 1
+                        reasons.append(f'Mum: {p["name"]} → {p["description"][:60]}')
+
+            # 12. Piyasa rejimi etkisi
+            if regime_type in ('strong_bull', 'bull') and score > 0:
+                score *= 1.15
+                reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Alis sinyali gucleniyor')
+            elif regime_type in ('strong_bear', 'bear') and score < 0:
+                score *= 1.15
+                reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Satis sinyali gucleniyor')
+            elif regime_type in ('strong_bear', 'bear') and score > 0:
+                score *= 0.85
+                reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Alis sinyali zayifliyor (ayi piyasasi)')
+
+            # 13. Destek/Direnc bazli yorumlar
             if supports:
                 nearest_sup = supports[0]
                 sup_dist = sf(((cur - nearest_sup) / nearest_sup) * 100)
@@ -1255,7 +1563,7 @@ def calc_recommendation(hist, indicators):
                 elif float(res_dist) < 5:
                     strategy_parts.append(f'{sf(nearest_res)} TL direncini kirarsa alis guclenir')
 
-            # 10. Fibonacci bazli yorumlar
+            # 14. Fibonacci bazli yorumlar
             if fib_sup and fib_sup.get('price'):
                 fib_sup_dist = sf(((cur - fib_sup['price']) / cur) * 100)
                 if float(fib_sup_dist) < 3:
@@ -1266,13 +1574,27 @@ def calc_recommendation(hist, indicators):
                     strategy_parts.append(f"Fibonacci {fib_res['level']} direnci ({fib_res['price']} TL) yakininda")
 
             # Sonuc
-            max_score=12.0
+            max_score=14.0
             conf=min(abs(score)/max_score*100, 100)
             if score>=3: action='AL'
             elif score>=1.5: action='TUTUN/AL'
             elif score<=-3: action='SAT'
             elif score<=-1.5: action='TUTUN/SAT'
             else: action='NOTR'
+
+            # KISA OZET REASON (tek satirlik aciklama)
+            if action == 'AL':
+                top_buy = [r for r in reasons if any(k in r.lower() for k in ['alis','yukari','pozitif','topar','destek','asiri satim','uzerinde'])][:3]
+                reason_summary = f"AL: {buy_indicators}/{total_indicators} gosterge alis yonunde. " + (top_buy[0] if top_buy else reasons[0] if reasons else '')
+            elif action == 'SAT':
+                top_sell = [r for r in reasons if any(k in r.lower() for k in ['satis','asagi','negatif','dusus','direnc','asiri alim','altinda'])][:3]
+                reason_summary = f"SAT: {sell_indicators}/{total_indicators} gosterge satis yonunde. " + (top_sell[0] if top_sell else reasons[0] if reasons else '')
+            elif action == 'TUTUN/AL':
+                reason_summary = f"ZAYIF ALIS: {buy_indicators}/{total_indicators} gosterge alis yonunde. Destek bolgesi bekleniyor."
+            elif action == 'TUTUN/SAT':
+                reason_summary = f"ZAYIF SATIS: {sell_indicators}/{total_indicators} gosterge satis yonunde. Direnc bolgesi bekleniyor."
+            else:
+                reason_summary = f"NOTR: {buy_indicators} alis vs {sell_indicators} satis sinyali. Belirgin yon yok."
 
             # Strateji olustur
             if not strategy_parts:
@@ -1289,22 +1611,31 @@ def calc_recommendation(hist, indicators):
 
             recommendations[label]={
                 'action':action,'score':sf(score),'confidence':sf(conf),
-                'reasons':reasons[:8],
+                'reasons':reasons[:10],
+                'reason': reason_summary,
                 'strategy': ' | '.join(strategy_parts[:4]),
+                'indicatorBreakdown': {
+                    'buy': buy_indicators,
+                    'sell': sell_indicators,
+                    'total': total_indicators,
+                    'consensus': sf(buy_indicators / total_indicators * 100) if total_indicators > 0 else 50,
+                },
                 'keyLevels': {
                     'supports': supports[:3],
                     'resistances': resistances[:3],
                     'sma20': sf(sma20),
                     'sma50': sf(sma50),
+                    'sma200': sf(sma200) if n >= 200 else None,
                     'bollingerUpper': sf(bb_upper),
                     'bollingerLower': sf(bb_lower),
-                }
+                },
+                'dynamicRSI': {'oversold': sf(dyn_oversold), 'overbought': sf(dyn_overbought), 'current': sf(rsi_v)},
             }
 
         return recommendations
     except Exception as e:
         print(f"  [REC] Hata: {e}")
-        return {'weekly':{'action':'neutral','confidence':0,'reasons':[],'strategy':''},'monthly':{'action':'neutral','confidence':0,'reasons':[],'strategy':''},'yearly':{'action':'neutral','confidence':0,'reasons':[],'strategy':''}}
+        return {'weekly':{'action':'neutral','confidence':0,'reasons':[],'strategy':'','reason':'Hesaplama hatasi','indicatorBreakdown':{}},'monthly':{'action':'neutral','confidence':0,'reasons':[],'strategy':'','reason':'Hesaplama hatasi','indicatorBreakdown':{}},'yearly':{'action':'neutral','confidence':0,'reasons':[],'strategy':'','reason':'Hesaplama hatasi','indicatorBreakdown':{}}}
 
 def calc_fundamentals(hist, symbol):
     """Temel verileri mevcut fiyat/hacim verisinden hesapla"""
@@ -2642,11 +2973,11 @@ def dashboard():
     try:
         stocks=_get_stocks()
         if not stocks:
-            return jsonify(safe_dict({'success':True,'loading':True,'stockCount':0,'message':f"Veriler yukleniyor ({_status['loaded']}/{_status['total']})...",'movers':{'topGainers':[],'topLosers':[],'volumeLeaders':[],'gapStocks':[]},'marketBreadth':{'advancing':0,'declining':0,'unchanged':0,'advDecRatio':0},'allStocks':[]}))
+            return jsonify(safe_dict({'success':True,'loading':True,'stockCount':0,'message':f"Veriler yukleniyor ({_status['loaded']}/{_status['total']})...",'movers':{'topGainers':[],'topLosers':[],'volumeLeaders':[],'gapStocks':[]},'marketBreadth':{'advancing':0,'declining':0,'unchanged':0,'advDecRatio':0},'allStocks':[],'meta':_api_meta('loading')}))
         sbc=sorted(stocks,key=lambda x:x.get('changePct',0),reverse=True)
         adv=sum(1 for s in stocks if s.get('changePct',0)>0)
         dec=sum(1 for s in stocks if s.get('changePct',0)<0)
-        return jsonify(safe_dict({'success':True,'loading':False,'stockCount':len(stocks),'timestamp':datetime.now().isoformat(),'movers':{'topGainers':sbc[:5],'topLosers':sbc[-5:][::-1],'volumeLeaders':sorted(stocks,key=lambda x:x.get('volume',0),reverse=True)[:5],'gapStocks':sorted(stocks,key=lambda x:abs(x.get('gapPct',0)),reverse=True)[:5]},'marketBreadth':{'advancing':adv,'declining':dec,'unchanged':len(stocks)-adv-dec,'advDecRatio':sf(adv/dec if dec>0 else adv)},'allStocks':sbc}))
+        return jsonify(safe_dict({'success':True,'loading':False,'stockCount':len(stocks),'timestamp':datetime.now().isoformat(),'movers':{'topGainers':sbc[:5],'topLosers':sbc[-5:][::-1],'volumeLeaders':sorted(stocks,key=lambda x:x.get('volume',0),reverse=True)[:5],'gapStocks':sorted(stocks,key=lambda x:abs(x.get('gapPct',0)),reverse=True)[:5]},'marketBreadth':{'advancing':adv,'declining':dec,'unchanged':len(stocks)-adv-dec,'advDecRatio':sf(adv/dec if dec>0 else adv)},'allStocks':sbc,'meta':_api_meta()}))
     except Exception as e:
         return jsonify({'error':str(e)}),500
 
@@ -2699,7 +3030,7 @@ def bist100():
             return jsonify(safe_dict({'success':True,'stocks':[],'count':0,'sectors':list(SECTOR_MAP.keys()),'loading':True,'message':f"Hisse verileri yukleniyor ({_status['loaded']}/{_status['total']})..."}))
         rev=(order=='desc'); km={'change':'changePct','volume':'volume','price':'price'}; sk=km.get(sort_by,'code')
         stocks.sort(key=lambda x:x.get(sk,0) if sk!='code' else x.get('code',''),reverse=rev)
-        return jsonify(safe_dict({'success':True,'stocks':stocks,'count':len(stocks),'sectors':list(SECTOR_MAP.keys())}))
+        return jsonify(safe_dict({'success':True,'stocks':stocks,'count':len(stocks),'sectors':list(SECTOR_MAP.keys()),'meta':_api_meta()}))
     except Exception as e:
         return jsonify({'error':str(e)}),500
 
@@ -2793,6 +3124,7 @@ def stock_detail(symbol):
             'tradePlan':calc_trade_plan(hist, ind),
             'marketRegime':calc_market_regime(),
             'fundamentals':calc_fundamentals(hist, symbol),
+            'meta':_api_meta(),
         }))
     except Exception as e:
         print(f"STOCK {symbol}: {traceback.format_exc()}")
@@ -3325,6 +3657,17 @@ def backtest():
         win_rate = sf(wins / total_trades * 100) if total_trades > 0 else 0
         alpha = sf(float(total_return) - float(bh_return))
 
+        # Exposure (piyasada kalma orani)
+        in_market_days = sum(1 for i in range(n) if (any(t['action'] == 'AL' and dates.index(t['date']) <= i for t in trades if t['date'] in dates)))
+        exposure_pct = sf(in_market_days / n * 100) if n > 0 else 0
+
+        # Ortalama trade getirisi
+        trade_pnls = [float(t['pnl']) for t in trades if t['action'] == 'SAT' and t['pnl'] != 0]
+        avg_trade = sf(np.mean(trade_pnls)) if trade_pnls else 0
+        avg_win = sf(np.mean([p for p in trade_pnls if p > 0])) if [p for p in trade_pnls if p > 0] else 0
+        avg_loss = sf(np.mean([p for p in trade_pnls if p < 0])) if [p for p in trade_pnls if p < 0] else 0
+        profit_factor = sf(abs(sum(p for p in trade_pnls if p > 0) / sum(p for p in trade_pnls if p < 0))) if any(p < 0 for p in trade_pnls) else 999
+
         return jsonify(safe_dict({
             'success': True,
             'results': {
@@ -3332,9 +3675,20 @@ def backtest():
                 'maxDrawdown': sf(-max_dd), 'winRate': win_rate, 'totalTrades': total_trades,
                 'buyAndHoldReturn': bh_return, 'alpha': alpha,
                 'finalEquity': sf(final_equity), 'initialCapital': sf(initial_capital),
+                'exposure': exposure_pct,
+                'avgTrade': avg_trade,
+                'avgWin': avg_win,
+                'avgLoss': avg_loss,
+                'profitFactor': profit_factor,
+                'commission': sf(commission * 100),
             },
             'equityCurve': equity_curve[::max(1, len(equity_curve)//200)],
             'trades': trades[-50:],
+            'warnings': [
+                'Hayatta kalma yanliligi (Survivorship Bias): Bu backtest sadece bugun BIST100 endeksinde bulunan hisseleri kapsamaktadir. Gecmiste endeksten cikarilmis (iflas, birlesme, borsadan cikarma) hisseler dahil degildir. Gercek performans bu sonuclardan daha dusuk olabilir.',
+                'Kayma (Slippage): Gercek islemlerde emir fiyati ile gerceklesen fiyat arasinda fark olabilir. Ozellikle dusuk hacimli hisselerde bu etki belirgindir.',
+                'Komisyon: Backtest %' + str(sf(commission * 100)) + ' komisyon varsayimi kullanmaktadir.',
+            ],
         }))
     except Exception as e:
         print(f"[BACKTEST] Hata: {traceback.format_exc()}")
@@ -3584,6 +3938,8 @@ def signal_scanner():
                     'supports': supports,
                     'resistances': resistances,
                     'reasons': tf_rec.get('reasons', [])[:5],
+                    'reason': tf_rec.get('reason', ''),
+                    'indicatorBreakdown': tf_rec.get('indicatorBreakdown', {}),
                     'strategy': tf_rec.get('strategy', ''),
                     'candlestickPatterns': candle_patterns[:3],
                     'dynamicThresholds': ind.get('dynamicThresholds', {}),
@@ -3603,6 +3959,7 @@ def signal_scanner():
             'signals': results,
             'marketRegime': calc_market_regime(),
             'timestamp': datetime.now().isoformat(),
+            'meta': _api_meta(),
         }))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -3765,6 +4122,7 @@ def opportunities():
             'sellOpportunities': sell_opps[:20],
             'marketRegime': calc_market_regime(),
             'timestamp': datetime.now().isoformat(),
+            'meta': _api_meta(),
         }))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
