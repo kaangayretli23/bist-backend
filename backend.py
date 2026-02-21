@@ -4726,9 +4726,753 @@ def signals_performance():
         return jsonify({'error': str(e)}), 500
 
 
+# =====================================================================
+# BES (Bireysel Emeklilik Sistemi) FON ANALIZ MODULU
+# TEFAS API uzerinden fon verisi cekilir, analiz & oneri yapilir
+# =====================================================================
+_bes_cache = {}
+_bes_cache_lock = threading.Lock()
+BES_CACHE_TTL = 1800  # 30 dakika
+
+TEFAS_API_URL = "https://www.tefas.gov.tr/api/DB/BindHistoryInfo"
+TEFAS_ALLOC_URL = "https://www.tefas.gov.tr/api/DB/BindHistoryAllocation"
+TEFAS_COMPARE_URL = "https://www.tefas.gov.tr/api/DB/BindComparisonFundReturns"
+TEFAS_HEADERS = {
+    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Referer': 'https://www.tefas.gov.tr/TarihselVeriler.aspx',
+    'Origin': 'https://www.tefas.gov.tr',
+}
+
+# BES Fon Gruplari
+BES_FUND_GROUPS = {
+    'hisse': 'Hisse Senedi',
+    'borclanma': 'Borçlanma Araçları',
+    'katilim': 'Katılım',
+    'karma': 'Karma / Dengeli',
+    'doviz': 'Döviz',
+    'altin': 'Altın / Kıymetli Maden',
+    'endeks': 'Endeks',
+    'para_piyasasi': 'Para Piyasası / Likit',
+    'standart': 'Standart',
+    'diger': 'Diğer',
+}
+
+def _bes_cache_get(key):
+    with _bes_cache_lock:
+        item = _bes_cache.get(key)
+        if item and time.time() - item['ts'] < BES_CACHE_TTL:
+            return item['data']
+    return None
+
+def _bes_cache_set(key, data):
+    with _bes_cache_lock:
+        _bes_cache[key] = {'data': data, 'ts': time.time()}
+
+def _classify_fund(fund_name):
+    """Fon adina gore kategori tahmini"""
+    name_upper = fund_name.upper() if fund_name else ''
+    if any(k in name_upper for k in ['HİSSE', 'HISSE', 'EQUITY', 'PAY']): return 'hisse'
+    if any(k in name_upper for k in ['BORÇLANMA', 'BORCLANMA', 'TAHVİL', 'TAHVIL', 'BONO', 'BOND']): return 'borclanma'
+    if any(k in name_upper for k in ['KATILIM', 'KATKIM', 'SUKUK']): return 'katilim'
+    if any(k in name_upper for k in ['KARMA', 'DENGELİ', 'DENGELI', 'MIX', 'BALANCED']): return 'karma'
+    if any(k in name_upper for k in ['DÖVİZ', 'DOVIZ', 'EURO', 'DOLAR', 'USD', 'EUR', 'FX']): return 'doviz'
+    if any(k in name_upper for k in ['ALTIN', 'KIYMETLI', 'GOLD', 'PRECIOUS', 'GÜMÜŞ', 'GUMUS']): return 'altin'
+    if any(k in name_upper for k in ['ENDEKS', 'INDEX']): return 'endeks'
+    if any(k in name_upper for k in ['LİKİT', 'LIKIT', 'PARA PİYASASI', 'PARA PIYASASI', 'MONEY']): return 'para_piyasasi'
+    if any(k in name_upper for k in ['STANDART', 'STANDARD']): return 'standart'
+    return 'diger'
+
+def _fetch_tefas_funds(start_date, end_date, fund_code=''):
+    """TEFAS API'den BES fon verisi cek (max 90 gun)"""
+    try:
+        data = {
+            'fontip': 'EMK',
+            'sfontur': '',
+            'fonkod': fund_code,
+            'fongrup': '',
+            'bastarih': start_date,
+            'bittarih': end_date,
+            'fonturkod': '',
+            'fonunvantip': '',
+        }
+        resp = req_lib.post(TEFAS_API_URL, headers=TEFAS_HEADERS, data=data, timeout=30)
+        resp.raise_for_status()
+        result = resp.json()
+        if isinstance(result, dict) and 'data' in result:
+            return result['data']
+        if isinstance(result, list):
+            return result
+        return result
+    except Exception as e:
+        print(f"[BES] TEFAS fetch hata: {e}")
+        return []
+
+def _fetch_tefas_allocation(fund_code, start_date, end_date):
+    """TEFAS API'den fon portfoy dagilimini cek"""
+    try:
+        data = {
+            'fontip': 'EMK',
+            'fonkod': fund_code,
+            'bastarih': start_date,
+            'bittarih': end_date,
+        }
+        resp = req_lib.post(TEFAS_ALLOC_URL, headers=TEFAS_HEADERS, data=data, timeout=30)
+        resp.raise_for_status()
+        result = resp.json()
+        if isinstance(result, dict) and 'data' in result:
+            return result['data']
+        if isinstance(result, list):
+            return result
+        return result
+    except Exception as e:
+        print(f"[BES] TEFAS allocation hata: {e}")
+        return []
+
+def _fetch_tefas_history_chunked(fund_code, days=365):
+    """90 gunluk chunk'larla uzun sureli fon gecmisi cek"""
+    all_data = []
+    end = datetime.now()
+    start = end - timedelta(days=days)
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=89), end)
+        sd = chunk_start.strftime('%d.%m.%Y')
+        ed = chunk_end.strftime('%d.%m.%Y')
+        chunk_data = _fetch_tefas_funds(sd, ed, fund_code)
+        if chunk_data and isinstance(chunk_data, list):
+            all_data.extend(chunk_data)
+        chunk_start = chunk_end + timedelta(days=1)
+        time.sleep(0.3)  # Rate limiting
+    return all_data
+
+def _parse_fund_row(row):
+    """TEFAS API'den donen bir fund row'unu parse et"""
+    if isinstance(row, dict):
+        return {
+            'code': row.get('FonKodu', row.get('fonkodu', row.get('FONKODU', ''))),
+            'name': row.get('FonUnvani', row.get('fonunvani', row.get('FONUNVANI', ''))),
+            'date': row.get('Tarih', row.get('tarih', row.get('TARIH', ''))),
+            'price': sf(row.get('BirimPayDegeri', row.get('birimpay', row.get('BIRIMPAY', row.get('ToplamDeger', 0))))),
+            'total_value': sf(row.get('ToplamDeger', row.get('toplamdeger', row.get('TOPLAMDEGER', 0)))),
+            'investors': si(row.get('YatirimciSayisi', row.get('yatirimcisayisi', row.get('YATIRIMCISAYISI', 0)))),
+            'shares': sf(row.get('PaySayisi', row.get('paysayisi', row.get('PAYSAYISI', 0)))),
+        }
+    return None
+
+def _analyze_fund_performance(history_data, fund_code):
+    """Fon gecmis verisinden performans metrikleri hesapla"""
+    if not history_data or len(history_data) < 2:
+        return None
+
+    # Fiyatlari cikar ve sırala
+    prices = []
+    for row in history_data:
+        parsed = _parse_fund_row(row)
+        if parsed and parsed['price'] and parsed['price'] > 0:
+            prices.append({
+                'date': parsed['date'],
+                'price': parsed['price'],
+                'code': parsed['code'],
+                'name': parsed['name'],
+            })
+
+    if len(prices) < 2:
+        return None
+
+    # Tarihe gore sirala (en eski en basta)
+    try:
+        prices.sort(key=lambda x: x['date'])
+    except:
+        pass
+
+    current_price = prices[-1]['price']
+    first_price = prices[0]['price']
+    total_return = ((current_price - first_price) / first_price) * 100 if first_price > 0 else 0
+    total_days = len(prices)
+
+    # Donemsel getiriler
+    returns = {}
+    period_map = {'1h': 7, '1a': 30, '3a': 90, '6a': 180, '1y': 365}
+    for label, days in period_map.items():
+        if len(prices) >= days:
+            old_price = prices[-min(days, len(prices))]['price']
+            if old_price > 0:
+                returns[label] = sf(((current_price - old_price) / old_price) * 100)
+            else:
+                returns[label] = 0
+        else:
+            returns[label] = None
+
+    # Volatilite (gunluk fiyat degisim std sapma)
+    daily_returns = []
+    for i in range(1, len(prices)):
+        if prices[i-1]['price'] > 0:
+            dr = (prices[i]['price'] - prices[i-1]['price']) / prices[i-1]['price']
+            daily_returns.append(dr)
+
+    volatility = 0
+    if daily_returns:
+        mean_r = sum(daily_returns) / len(daily_returns)
+        variance = sum((r - mean_r)**2 for r in daily_returns) / len(daily_returns)
+        volatility = sf(variance ** 0.5 * (252 ** 0.5) * 100)  # Yillik volatilite %
+
+    # Max drawdown
+    max_dd = 0
+    peak = prices[0]['price']
+    for p in prices:
+        if p['price'] > peak:
+            peak = p['price']
+        dd = ((peak - p['price']) / peak) * 100 if peak > 0 else 0
+        if dd > max_dd:
+            max_dd = dd
+
+    # Sharpe benzeri metrik (risksiz oran ~%45 TRY)
+    risk_free_daily = 0.45 / 252
+    avg_daily_return = sum(daily_returns) / len(daily_returns) if daily_returns else 0
+    std_daily = (sum((r - avg_daily_return)**2 for r in daily_returns) / len(daily_returns)) ** 0.5 if daily_returns else 1
+    sharpe = sf(((avg_daily_return - risk_free_daily) / std_daily * (252 ** 0.5)) if std_daily > 0 else 0)
+
+    return {
+        'code': fund_code,
+        'name': prices[-1].get('name', ''),
+        'category': _classify_fund(prices[-1].get('name', '')),
+        'currentPrice': current_price,
+        'firstPrice': first_price,
+        'totalReturn': sf(total_return),
+        'totalDays': total_days,
+        'returns': returns,
+        'volatility': volatility,
+        'maxDrawdown': sf(max_dd),
+        'sharpe': sharpe,
+        'dailyReturns': daily_returns[-30:] if daily_returns else [],
+        'priceHistory': [{'date': p['date'], 'price': p['price']} for p in prices[-90:]],
+    }
+
+def _bes_optimize(funds_perf, risk_profile='moderate', horizon_months=12):
+    """
+    BES fon dagilim optimizasyonu.
+    Risk profiline gore ideal fon agirliklarini hesaplar.
+    """
+    if not funds_perf:
+        return []
+
+    risk_weights = {
+        'conservative': {'return_w': 0.2, 'risk_w': 0.6, 'sharpe_w': 0.2, 'max_equity': 20},
+        'moderate':     {'return_w': 0.35, 'risk_w': 0.35, 'sharpe_w': 0.3, 'max_equity': 50},
+        'aggressive':   {'return_w': 0.5, 'risk_w': 0.15, 'sharpe_w': 0.35, 'max_equity': 80},
+    }
+    weights = risk_weights.get(risk_profile, risk_weights['moderate'])
+
+    scored_funds = []
+    for f in funds_perf:
+        if not f:
+            continue
+        ret_6m = f.get('returns', {}).get('6a') or f.get('returns', {}).get('3a') or 0
+        vol = f.get('volatility', 50)
+        sharpe = f.get('sharpe', 0)
+        category = f.get('category', 'diger')
+
+        # Normalizing: return pozitif iyi, vol dusuk iyi, sharpe yuksek iyi
+        ret_score = min(max(ret_6m, -50), 100) / 100
+        vol_score = 1 - min(vol, 100) / 100
+        sharpe_score = min(max(sharpe, -3), 3) / 3
+
+        total_score = (
+            ret_score * weights['return_w'] +
+            vol_score * weights['risk_w'] +
+            sharpe_score * weights['sharpe_w']
+        )
+
+        scored_funds.append({
+            'code': f['code'],
+            'name': f['name'],
+            'category': category,
+            'categoryLabel': BES_FUND_GROUPS.get(category, 'Diğer'),
+            'score': sf(total_score * 100),
+            'return6m': sf(ret_6m),
+            'volatility': f['volatility'],
+            'sharpe': f['sharpe'],
+            'maxDrawdown': f['maxDrawdown'],
+            'currentPrice': f['currentPrice'],
+        })
+
+    scored_funds.sort(key=lambda x: x['score'], reverse=True)
+
+    # Kategori bazli dagilim onerisi
+    category_targets = {
+        'conservative': {'borclanma': 40, 'para_piyasasi': 25, 'altin': 15, 'katilim': 10, 'hisse': 5, 'diger': 5},
+        'moderate':     {'hisse': 25, 'borclanma': 25, 'altin': 15, 'katilim': 15, 'para_piyasasi': 10, 'diger': 10},
+        'aggressive':   {'hisse': 40, 'endeks': 15, 'altin': 15, 'doviz': 10, 'borclanma': 10, 'karma': 10},
+    }
+    targets = category_targets.get(risk_profile, category_targets['moderate'])
+
+    # Her kategori icin en iyi fonu sec
+    recommendations = []
+    used_categories = set()
+    for cat, target_pct in sorted(targets.items(), key=lambda x: x[1], reverse=True):
+        best_in_cat = [f for f in scored_funds if f['category'] == cat]
+        if best_in_cat:
+            pick = best_in_cat[0]
+            pick['recommendedPct'] = target_pct
+            pick['reasoning'] = _fund_reasoning(pick, cat, target_pct, risk_profile)
+            recommendations.append(pick)
+            used_categories.add(cat)
+
+    # Hedef kategoride fon bulunamazsa en iyi genel fonlardan tamamla
+    total_allocated = sum(r['recommendedPct'] for r in recommendations)
+    if total_allocated < 100:
+        remaining = 100 - total_allocated
+        remaining_funds = [f for f in scored_funds if f['code'] not in [r['code'] for r in recommendations]]
+        if remaining_funds:
+            pick = remaining_funds[0]
+            pick['recommendedPct'] = remaining
+            pick['reasoning'] = f"Kalan %{remaining} oran portföy dengeleme amacıyla önerildi."
+            recommendations.append(pick)
+
+    return recommendations
+
+def _fund_reasoning(fund, category, pct, risk_profile):
+    """Fon onerisi icin aciklama metni uret"""
+    cat_label = BES_FUND_GROUPS.get(category, category)
+    sharpe = fund.get('sharpe', 0)
+    vol = fund.get('volatility', 0)
+    ret = fund.get('return6m', 0)
+
+    reasons = []
+    if ret > 10: reasons.append(f"6 aylık getirisi %{ret} ile güçlü")
+    elif ret > 0: reasons.append(f"6 aylık %{ret} pozitif getiri")
+    else: reasons.append(f"6 aylık getiri %{ret}")
+
+    if vol < 10: reasons.append("düşük volatilite")
+    elif vol < 20: reasons.append("orta seviye volatilite")
+    else: reasons.append(f"%{vol} volatilite")
+
+    if sharpe > 1: reasons.append("yüksek risk-getiri oranı")
+    elif sharpe > 0: reasons.append("pozitif risk-getiri dengesi")
+
+    profile_labels = {'conservative': 'muhafazakar', 'moderate': 'dengeli', 'aggressive': 'agresif'}
+    profile_label = profile_labels.get(risk_profile, 'dengeli')
+
+    return f"{cat_label} kategorisinde {profile_label} profil için %{pct} ağırlık. " + ", ".join(reasons) + "."
+
+def _simulate_bes(recommendations, monthly_contribution, horizon_months):
+    """BES portfoy simulasyonu: aylık katkı ile birikim projeksiyonu"""
+    if not recommendations or monthly_contribution <= 0 or horizon_months <= 0:
+        return {'error': 'Geçersiz parametreler'}
+
+    # Devlet katkisi (%30, yillik max limit - 2024 icin ~27.000 TL civarı)
+    yearly_contribution = monthly_contribution * 12
+    devlet_katkisi_rate = 0.30
+    devlet_katkisi_yearly_max = 30000  # Yaklasik yillik limit
+    devlet_katkisi_yearly = min(yearly_contribution * devlet_katkisi_rate, devlet_katkisi_yearly_max)
+    devlet_katkisi_monthly = devlet_katkisi_yearly / 12
+
+    # Her fon icin aylik getiri tahmini (gecmis veriden)
+    total_monthly = monthly_contribution + devlet_katkisi_monthly
+    monthly_results = []
+    fund_balances = {}
+
+    for rec in recommendations:
+        pct = rec.get('recommendedPct', 0) / 100
+        ret_6m = rec.get('return6m', 0) or 0
+        # 6 aylik getiriyi aylik getiriye cevir
+        monthly_return = ((1 + ret_6m / 100) ** (1/6) - 1)
+        fund_balances[rec['code']] = {
+            'name': rec['name'],
+            'code': rec['code'],
+            'pct': pct,
+            'monthlyReturn': monthly_return,
+            'balance': 0,
+            'totalContribution': 0,
+        }
+
+    total_balance = 0
+    total_contributed = 0
+    total_devlet = 0
+    total_gain = 0
+
+    for month in range(1, horizon_months + 1):
+        month_contribution = monthly_contribution
+        month_devlet = devlet_katkisi_monthly
+        total_contributed += month_contribution
+        total_devlet += month_devlet
+
+        for code, fb in fund_balances.items():
+            contrib = (month_contribution + month_devlet) * fb['pct']
+            fb['totalContribution'] += contrib
+            # Birikim: onceki bakiye * (1 + aylik getiri) + yeni katki
+            fb['balance'] = fb['balance'] * (1 + fb['monthlyReturn']) + contrib
+
+        total_balance = sum(fb['balance'] for fb in fund_balances.values())
+        total_gain = total_balance - total_contributed - total_devlet
+
+        if month % 3 == 0 or month == horizon_months or month <= 3:
+            monthly_results.append({
+                'month': month,
+                'totalBalance': sf(total_balance),
+                'totalContributed': sf(total_contributed),
+                'devletKatkisi': sf(total_devlet),
+                'totalGain': sf(total_gain),
+                'gainPct': sf((total_gain / (total_contributed + total_devlet)) * 100) if (total_contributed + total_devlet) > 0 else 0,
+            })
+
+    fund_details = []
+    for code, fb in fund_balances.items():
+        gain = fb['balance'] - fb['totalContribution']
+        fund_details.append({
+            'code': fb['code'],
+            'name': fb['name'],
+            'pct': sf(fb['pct'] * 100),
+            'balance': sf(fb['balance']),
+            'totalContribution': sf(fb['totalContribution']),
+            'gain': sf(gain),
+            'gainPct': sf((gain / fb['totalContribution']) * 100) if fb['totalContribution'] > 0 else 0,
+            'monthlyReturn': sf(fb['monthlyReturn'] * 100, 3),
+        })
+
+    return {
+        'totalBalance': sf(total_balance),
+        'totalContributed': sf(total_contributed),
+        'devletKatkisi': sf(total_devlet),
+        'totalGain': sf(total_gain),
+        'totalGainPct': sf((total_gain / (total_contributed + total_devlet)) * 100) if (total_contributed + total_devlet) > 0 else 0,
+        'horizonMonths': horizon_months,
+        'monthlyContribution': monthly_contribution,
+        'monthlyDevlet': sf(devlet_katkisi_monthly),
+        'timeline': monthly_results,
+        'fundDetails': fund_details,
+    }
+
+
+# ---- BES API ROUTES ----
+
+@app.route('/api/bes/funds')
+def bes_funds():
+    """Tum BES fonlarini listele (guncel fiyat, getiri)"""
+    try:
+        cache_key = 'bes_funds_all'
+        cached = _bes_cache_get(cache_key)
+        if cached:
+            return jsonify(safe_dict(cached))
+
+        today = datetime.now()
+        start = (today - timedelta(days=30)).strftime('%d.%m.%Y')
+        end = today.strftime('%d.%m.%Y')
+        raw = _fetch_tefas_funds(start, end)
+
+        if not raw:
+            return jsonify({'success': False, 'error': 'TEFAS verisi alinamadi', 'funds': []})
+
+        # En son tarihteki fonlari al
+        funds_map = {}
+        for row in (raw if isinstance(raw, list) else []):
+            parsed = _parse_fund_row(row)
+            if parsed and parsed['code']:
+                code = parsed['code']
+                if code not in funds_map or parsed['date'] > funds_map[code]['date']:
+                    funds_map[code] = parsed
+
+        funds_list = list(funds_map.values())
+        for f in funds_list:
+            f['category'] = _classify_fund(f.get('name', ''))
+            f['categoryLabel'] = BES_FUND_GROUPS.get(f['category'], 'Diğer')
+
+        funds_list.sort(key=lambda x: x.get('total_value', 0), reverse=True)
+
+        result = {
+            'success': True,
+            'count': len(funds_list),
+            'funds': funds_list,
+            'timestamp': datetime.now().isoformat(),
+            'categories': BES_FUND_GROUPS,
+        }
+        _bes_cache_set(cache_key, result)
+        return jsonify(safe_dict(result))
+    except Exception as e:
+        print(f"[BES] funds hata: {traceback.format_exc()}")
+        return jsonify({'success': False, 'error': str(e), 'funds': []}), 500
+
+
+@app.route('/api/bes/fund/<code>')
+def bes_fund_detail(code):
+    """Tek bir BES fonunun detayli analizi"""
+    try:
+        days = int(request.args.get('days', 365))
+        cache_key = f'bes_fund_{code}_{days}'
+        cached = _bes_cache_get(cache_key)
+        if cached:
+            return jsonify(safe_dict(cached))
+
+        history = _fetch_tefas_history_chunked(code, days=days)
+        if not history:
+            return jsonify({'success': False, 'error': f'{code} fon verisi bulunamadi'})
+
+        perf = _analyze_fund_performance(history, code)
+        if not perf:
+            return jsonify({'success': False, 'error': f'{code} analiz yapilamadi'})
+
+        # Portfoy dagilimi
+        today = datetime.now()
+        alloc_start = (today - timedelta(days=7)).strftime('%d.%m.%Y')
+        alloc_end = today.strftime('%d.%m.%Y')
+        allocation = _fetch_tefas_allocation(code, alloc_start, alloc_end)
+
+        result = {
+            'success': True,
+            'fund': perf,
+            'allocation': allocation,
+            'timestamp': datetime.now().isoformat(),
+        }
+        _bes_cache_set(cache_key, result)
+        return jsonify(safe_dict(result))
+    except Exception as e:
+        print(f"[BES] fund detail hata: {traceback.format_exc()}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/bes/analyze', methods=['POST'])
+def bes_analyze():
+    """
+    Kullanicinin BES bilgilerini alip analiz & oneri yap.
+    Input: { funds: [{code, pct}], monthlyContribution, horizonMonths, riskProfile }
+    """
+    try:
+        body = request.get_json(force=True)
+        user_funds = body.get('funds', [])
+        monthly_contribution = float(body.get('monthlyContribution', 1000))
+        horizon_months = int(body.get('horizonMonths', 36))
+        risk_profile = body.get('riskProfile', 'moderate')
+
+        if risk_profile not in ('conservative', 'moderate', 'aggressive'):
+            risk_profile = 'moderate'
+
+        # Kullanicinin mevcut fonlarini analiz et
+        current_analysis = []
+        if user_funds:
+            for uf in user_funds:
+                code = uf.get('code', '').strip().upper()
+                if not code:
+                    continue
+                history = _fetch_tefas_history_chunked(code, days=365)
+                perf = _analyze_fund_performance(history, code)
+                if perf:
+                    perf['userPct'] = uf.get('pct', 0)
+                    current_analysis.append(perf)
+                time.sleep(0.2)
+
+        # Genel fon havuzundan en iyileri bul
+        all_funds_cache = _bes_cache_get('bes_analysis_pool')
+        if not all_funds_cache:
+            today = datetime.now()
+            start = (today - timedelta(days=7)).strftime('%d.%m.%Y')
+            end = today.strftime('%d.%m.%Y')
+            raw = _fetch_tefas_funds(start, end)
+            if raw and isinstance(raw, list):
+                # Tekil fonlari al
+                seen = set()
+                pool_codes = []
+                for row in raw:
+                    parsed = _parse_fund_row(row)
+                    if parsed and parsed['code'] and parsed['code'] not in seen:
+                        seen.add(parsed['code'])
+                        pool_codes.append(parsed['code'])
+
+                # En buyuk 60 fonu analiz et (performans icin sinirla)
+                fund_sizes = []
+                for row in raw:
+                    parsed = _parse_fund_row(row)
+                    if parsed and parsed['code']:
+                        fund_sizes.append((parsed['code'], parsed.get('total_value', 0), parsed.get('name', '')))
+                fund_sizes.sort(key=lambda x: x[1], reverse=True)
+                top_codes = [c for c, _, _ in fund_sizes[:60]]
+
+                all_perfs = []
+                for code in top_codes:
+                    history = _fetch_tefas_history_chunked(code, days=180)
+                    perf = _analyze_fund_performance(history, code)
+                    if perf:
+                        all_perfs.append(perf)
+                    time.sleep(0.15)
+
+                all_funds_cache = all_perfs
+                _bes_cache_set('bes_analysis_pool', all_perfs)
+        else:
+            all_perfs = all_funds_cache
+
+        # Optimizasyon
+        recommendations = _bes_optimize(all_perfs if all_perfs else current_analysis, risk_profile, horizon_months)
+
+        # Simulasyon
+        simulation = _simulate_bes(recommendations, monthly_contribution, horizon_months)
+
+        # Mevcut portfoy vs onerilen karsilastirma
+        current_score = 0
+        if current_analysis:
+            for ca in current_analysis:
+                w = ca.get('userPct', 0) / 100
+                s = ca.get('sharpe', 0)
+                current_score += w * s
+
+        recommended_score = 0
+        if recommendations:
+            for rec in recommendations:
+                w = rec.get('recommendedPct', 0) / 100
+                s = rec.get('sharpe', 0)
+                recommended_score += w * s
+
+        result = {
+            'success': True,
+            'currentPortfolio': {
+                'funds': [{
+                    'code': ca['code'],
+                    'name': ca['name'],
+                    'category': ca['category'],
+                    'categoryLabel': BES_FUND_GROUPS.get(ca['category'], 'Diğer'),
+                    'userPct': ca.get('userPct', 0),
+                    'returns': ca['returns'],
+                    'volatility': ca['volatility'],
+                    'sharpe': ca['sharpe'],
+                    'maxDrawdown': ca['maxDrawdown'],
+                } for ca in current_analysis],
+                'overallSharpe': sf(current_score),
+            },
+            'recommendations': recommendations,
+            'simulation': simulation,
+            'riskProfile': risk_profile,
+            'riskProfileLabel': {'conservative': 'Muhafazakar', 'moderate': 'Dengeli', 'aggressive': 'Agresif'}.get(risk_profile, 'Dengeli'),
+            'horizonMonths': horizon_months,
+            'monthlyContribution': monthly_contribution,
+            'comparison': {
+                'currentScore': sf(current_score * 100),
+                'recommendedScore': sf(recommended_score * 100),
+                'improvement': sf((recommended_score - current_score) * 100),
+            },
+            'timestamp': datetime.now().isoformat(),
+        }
+        return jsonify(safe_dict(result))
+    except Exception as e:
+        print(f"[BES] analyze hata: {traceback.format_exc()}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/bes/simulate', methods=['POST'])
+def bes_simulate():
+    """Hizli simulasyon: verilen fonlar ve oranlarla birikim projeksiyonu"""
+    try:
+        body = request.get_json(force=True)
+        funds = body.get('funds', [])
+        monthly = float(body.get('monthlyContribution', 1000))
+        months = int(body.get('horizonMonths', 36))
+
+        # Her fonun performansini cek
+        fund_perfs = []
+        for f in funds:
+            code = f.get('code', '').strip().upper()
+            pct = float(f.get('pct', 0))
+            if not code:
+                continue
+            history = _fetch_tefas_history_chunked(code, days=180)
+            perf = _analyze_fund_performance(history, code)
+            if perf:
+                perf['recommendedPct'] = pct
+                perf['return6m'] = perf.get('returns', {}).get('6a', 0)
+                fund_perfs.append(perf)
+            time.sleep(0.15)
+
+        simulation = _simulate_bes(fund_perfs, monthly, months)
+        return jsonify(safe_dict({
+            'success': True,
+            'simulation': simulation,
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/bes/top')
+def bes_top():
+    """Kategorilere gore en iyi BES fonlari"""
+    try:
+        category = request.args.get('category', '')
+        period = request.args.get('period', '3a')  # 1h, 1a, 3a, 6a, 1y
+        limit_n = int(request.args.get('limit', 20))
+
+        cache_key = f'bes_top_{category}_{period}'
+        cached = _bes_cache_get(cache_key)
+        if cached:
+            return jsonify(safe_dict(cached))
+
+        pool = _bes_cache_get('bes_analysis_pool')
+        if not pool:
+            # Hizli analiz: son 90 gun
+            today = datetime.now()
+            start = (today - timedelta(days=7)).strftime('%d.%m.%Y')
+            end = today.strftime('%d.%m.%Y')
+            raw = _fetch_tefas_funds(start, end)
+            if not raw:
+                return jsonify({'success': False, 'error': 'Veri alinamadi'})
+
+            fund_sizes = []
+            for row in (raw if isinstance(raw, list) else []):
+                parsed = _parse_fund_row(row)
+                if parsed and parsed['code']:
+                    fund_sizes.append(parsed)
+            fund_sizes.sort(key=lambda x: x.get('total_value', 0), reverse=True)
+
+            pool = []
+            for f in fund_sizes[:40]:
+                history = _fetch_tefas_history_chunked(f['code'], days=180)
+                perf = _analyze_fund_performance(history, f['code'])
+                if perf:
+                    pool.append(perf)
+                time.sleep(0.15)
+            _bes_cache_set('bes_analysis_pool', pool)
+
+        # Filtrele ve sirala
+        filtered = pool
+        if category:
+            filtered = [f for f in pool if f.get('category') == category]
+
+        # Period'a gore sirala
+        def sort_key(f):
+            returns = f.get('returns', {})
+            return returns.get(period, 0) or 0
+
+        filtered.sort(key=sort_key, reverse=True)
+
+        top_list = []
+        for f in filtered[:limit_n]:
+            top_list.append({
+                'code': f['code'],
+                'name': f['name'],
+                'category': f['category'],
+                'categoryLabel': BES_FUND_GROUPS.get(f['category'], 'Diğer'),
+                'currentPrice': f['currentPrice'],
+                'returns': f['returns'],
+                'volatility': f['volatility'],
+                'sharpe': f['sharpe'],
+                'maxDrawdown': f['maxDrawdown'],
+            })
+
+        result = {
+            'success': True,
+            'category': category,
+            'categoryLabel': BES_FUND_GROUPS.get(category, 'Tümü'),
+            'period': period,
+            'count': len(top_list),
+            'funds': top_list,
+            'timestamp': datetime.now().isoformat(),
+        }
+        _bes_cache_set(cache_key, result)
+        return jsonify(safe_dict(result))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/docs')
 def docs():
-    return jsonify({'name': 'BIST Pro v7.0.0', 'endpoints': [
+    return jsonify({'name': 'BIST Pro v7.1.0', 'endpoints': [
         '/api/health', '/api/debug', '/api/dashboard', '/api/indices',
         '/api/bist100', '/api/bist30', '/api/stock/<sym>', '/api/stock/<sym>/kap',
         '/api/stock/<sym>/backtest-signals', '/api/stock/<sym>/fundamentals',
@@ -4738,10 +5482,12 @@ def docs():
         '/api/market/regime', '/api/alerts/signals',
         '/api/auth/register', '/api/auth/login', '/api/auth/profile',
         '/api/portfolio', '/api/watchlist', '/api/alerts', '/api/alerts/check',
+        '/api/bes/funds', '/api/bes/fund/<code>', '/api/bes/analyze',
+        '/api/bes/simulate', '/api/bes/top',
     ]})
 
 # NO MODULE-LEVEL THREAD START - before_request handles it
-print("[STARTUP] BIST Pro v7.0.0 ready - batch loader + SQLite + uyelik + advanced analytics")
+print("[STARTUP] BIST Pro v7.1.0 ready - batch loader + SQLite + uyelik + advanced analytics + BES")
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
