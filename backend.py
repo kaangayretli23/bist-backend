@@ -416,19 +416,18 @@ def _fetch_isyatirim_df(symbol, days=365):
         print(f"  [ISYATIRIM] {symbol} {days}d cekiliyor...")
         resp = None
         last_err = None
-        for http_attempt in range(3):
+        for http_attempt in range(2):
             try:
-                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=15)
+                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=10)
                 resp.raise_for_status()
                 break
             except Exception as http_e:
                 last_err = http_e
-                if http_attempt < 2:
-                    wait = (http_attempt + 1) * 1.5
-                    print(f"  [ISYATIRIM] {symbol} HTTP hata ({http_e}), {wait}s sonra tekrar...")
-                    time.sleep(wait)
+                if http_attempt < 1:
+                    print(f"  [ISYATIRIM] {symbol} HTTP hata ({http_e}), 0.5s sonra tekrar...")
+                    time.sleep(0.5)
         if resp is None:
-            print(f"  [ISYATIRIM] {symbol} 3 HTTP denemesi basarisiz: {last_err}")
+            print(f"  [ISYATIRIM] {symbol} HTTP denemesi basarisiz: {last_err}")
             return None
 
         data = resp.json()
@@ -537,7 +536,7 @@ def _fetch_yahoo_http(symbol, period1_days=14):
         r = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
-        with urllib.request.urlopen(r, timeout=15) as resp:
+        with urllib.request.urlopen(r, timeout=8) as resp:
             raw = json.loads(resp.read().decode())
 
         result = raw.get('chart', {}).get('result', [])
@@ -576,7 +575,7 @@ def _fetch_yahoo_http_df(symbol, period1_days=365):
         r = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
-        with urllib.request.urlopen(r, timeout=20) as resp:
+        with urllib.request.urlopen(r, timeout=12) as resp:
             raw = json.loads(resp.read().decode())
 
         result = raw.get('chart', {}).get('result', [])
@@ -624,7 +623,7 @@ def _fetch_stock_data(sym, retry_count=2):
         # 3. yfinance (son care)
         if YF_OK:
             try:
-                h = yf.Ticker(f"{sym}.IS").history(period="5d", timeout=10)
+                h = yf.Ticker(f"{sym}.IS").history(period="5d", timeout=6)
                 if h is not None and not h.empty and len(h) >= 2:
                     cur, prev = float(h['Close'].iloc[-1]), float(h['Close'].iloc[-2])
                     if prev > 0:
@@ -636,7 +635,7 @@ def _fetch_stock_data(sym, retry_count=2):
                 print(f"  [YF] {sym}: {e}")
 
         if attempt < retry_count:
-            wait = attempt * 2
+            wait = attempt * 0.5
             print(f"  [RETRY] {sym} deneme {attempt}/{retry_count} basarisiz, {wait}s bekleniyor...")
             time.sleep(wait)
 
@@ -662,7 +661,7 @@ def _fetch_hist_df(sym, period='1y'):
     # 3. yfinance
     if YF_OK:
         try:
-            h = yf.Ticker(f"{sym}.IS").history(period=period, timeout=15)
+            h = yf.Ticker(f"{sym}.IS").history(period=period, timeout=10)
             if h is not None and not h.empty and len(h) >= 10:
                 print(f"  [YF-HIST] {sym} OK: {len(h)} bar")
                 return h
@@ -708,7 +707,7 @@ def _fetch_index_data(key, tsym, name):
 # =====================================================================
 # BACKGROUND LOADER (paralel - ThreadPoolExecutor)
 # =====================================================================
-PARALLEL_WORKERS = 6  # Ayni anda 6 hisse cek (Is Yatirim rate limit'e dikkat)
+PARALLEL_WORKERS = 12  # Paralel hisse cekme sayisi (performans iyilestirmesi)
 
 def _process_stock(sym, retry_count=2):
     """Tek hisseyi cek ve cache formatinda dondur (thread-safe)"""
@@ -760,7 +759,7 @@ def _fetch_stocks_parallel(symbols, label="STOCKS", retry_count=2):
 
 def _background_loop():
     print(f"[LOADER] Thread basliyor, YF={YF_OK}, workers={PARALLEL_WORKERS}")
-    time.sleep(3)
+    time.sleep(0.5)
 
     while True:
         t0 = time.time()
@@ -806,12 +805,12 @@ def _background_loop():
                 print(f"\n[LOADER] ====== FAZE 3: {len(remaining)} kalan hisse [paralel x{PARALLEL_WORKERS}] ======")
                 phase3_fail = _fetch_stocks_parallel(remaining, label="BIST100")
 
-            # === FAZE 4: Retry failed stocks (paralel, daha az worker) ===
+            # === FAZE 4: Retry failed stocks (paralel) ===
             all_failed = list(set(bist30_fail + phase3_fail))
             if all_failed:
                 print(f"\n[LOADER] ====== FAZE 4: {len(all_failed)} basarisiz hisse yeniden deneniyor ======")
-                time.sleep(3)
-                retry_fail = _fetch_stocks_parallel(all_failed, label="RETRY", retry_count=3)
+                time.sleep(1)
+                retry_fail = _fetch_stocks_parallel(all_failed, label="RETRY", retry_count=2)
                 print(f"[LOADER] FAZE 4: {len(all_failed) - len(retry_fail)}/{len(all_failed)} kurtarildi")
 
             elapsed = round(time.time() - t0, 1)
@@ -819,8 +818,8 @@ def _background_loop():
             _status['lastRun'] = datetime.now().isoformat()
             print(f"\n[LOADER] ====== SONUC: {len(_stock_cache)} hisse, {len(_index_cache)} endeks ({elapsed}s) ======\n")
 
-            # === FAZE 5: Tarihsel veri on-yukleme (sinyaller/firsatlar icin) ===
-            _preload_hist_data()
+            # === FAZE 5: Tarihsel veri on-yukleme (ayri thread - ana donguyu BLOKLAMAZ) ===
+            threading.Thread(target=_preload_hist_data, daemon=True).start()
 
             # === FAZE 6: Otomatik alert kontrolu (cooldown destekli) ===
             _auto_check_all_alerts()
