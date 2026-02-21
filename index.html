@@ -384,9 +384,71 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 /* ─── PORTFOLIO TABLE ─── */
 .pnl-positive { color: var(--green); }
 .pnl-negative { color: var(--red); }
+
+/* ─── LOADING POPUP ─── */
+.loading-overlay {
+  position: fixed; inset: 0; z-index: 2000;
+  background: rgba(10,14,23,0.92);
+  backdrop-filter: blur(12px);
+  display: flex; align-items: center; justify-content: center;
+  transition: opacity 0.4s ease;
+}
+.loading-overlay.fade-out { opacity: 0; pointer-events: none; }
+.loading-popup {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 16px; padding: 40px 48px; text-align: center;
+  max-width: 440px; width: 90vw; box-shadow: var(--shadow-lg);
+}
+.loading-popup .lp-icon { font-size: 48px; margin-bottom: 16px; }
+.loading-popup .lp-title {
+  font-size: 20px; font-weight: 800; color: var(--accent); margin-bottom: 8px;
+}
+.loading-popup .lp-subtitle {
+  font-size: 13px; color: var(--text-secondary); margin-bottom: 20px; line-height: 1.6;
+}
+.loading-popup .lp-progress-bar {
+  height: 6px; background: var(--bg-input); border-radius: 3px;
+  overflow: hidden; margin-bottom: 12px;
+}
+.loading-popup .lp-progress-fill {
+  height: 100%; background: linear-gradient(90deg, var(--accent), var(--green));
+  border-radius: 3px; transition: width 0.5s ease; width: 0%;
+}
+.loading-popup .lp-status {
+  font-size: 12px; color: var(--text-muted); margin-bottom: 16px;
+  min-height: 18px;
+}
+.loading-popup .lp-estimate {
+  font-size: 11px; color: var(--text-muted);
+  padding: 8px 16px; background: var(--bg-input);
+  border-radius: var(--radius-sm); display: inline-block;
+  margin-bottom: 16px;
+}
+.loading-popup .lp-close {
+  font-size: 12px; color: var(--text-muted); background: none;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 20px; cursor: pointer; transition: all .2s;
+  font-family: var(--font-body);
+}
+.loading-popup .lp-close:hover {
+  color: var(--text-primary); border-color: var(--accent);
+}
 </style>
 </head>
 <body>
+
+<!-- LOADING POPUP -->
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-popup">
+    <div class="lp-icon">◆</div>
+    <div class="lp-title">BIST Pro</div>
+    <div class="lp-subtitle">Piyasa verileri hazırlanıyor...<br>131 hisse senedi verisi arka planda yükleniyor.</div>
+    <div class="lp-progress-bar"><div class="lp-progress-fill" id="lpProgress"></div></div>
+    <div class="lp-status" id="lpStatus">Endeksler yükleniyor...</div>
+    <div class="lp-estimate">Tahmini süre: 10-30 saniye</div>
+    <div><button class="lp-close" onclick="dismissLoadingPopup()">Arka Planda Yüklensin</button></div>
+  </div>
+</div>
 
 <!-- NAVBAR -->
 <nav class="navbar">
@@ -933,6 +995,27 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 <div class="page" id="page-bes">
   <div class="section-title mb-24"><span class="icon">🏦</span> BES Fon Analiz & Öneri Sistemi</div>
 
+  <!-- Top Fonlar Ozeti (otomatik yuklenir) -->
+  <div id="besTopFundsSection" class="mb-24">
+    <div class="card" style="border-left:3px solid var(--accent);">
+      <div class="flex-between mb-16">
+        <div style="font-weight:700;font-size:15px;">En Iyi Performans Gosteren Fonlar</div>
+        <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="padding:4px 12px;font-size:11px;">Yenile</button>
+      </div>
+      <div id="besTopFundsContent">
+        <div class="loading"><div class="spinner"></div>En iyi fonlar yükleniyor...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Kategori Bazli Performans -->
+  <div id="besCategoryOverview" class="mb-24" style="display:none;">
+    <div class="card">
+      <div style="font-weight:700;font-size:15px;margin-bottom:16px;">Kategori Bazlı Performans</div>
+      <div id="besCategoryContent"></div>
+    </div>
+  </div>
+
   <!-- Risk Profili + Parametreler -->
   <div class="card" style="margin-bottom:20px;">
     <div style="font-weight:700;font-size:15px;margin-bottom:16px;color:var(--accent);">Portföy Bilgilerinizi Girin</div>
@@ -1094,6 +1177,32 @@ let currentChart = null; // legacy compat
 let btChartInstance = null;
 
 // =============================================================================
+// LOADING POPUP
+// =============================================================================
+let _loadingDismissed = false;
+let _loadingProgress = 0;
+
+function updateLoadingProgress(pct, status) {
+  _loadingProgress = Math.min(pct, 100);
+  const bar = document.getElementById('lpProgress');
+  const txt = document.getElementById('lpStatus');
+  if (bar) bar.style.width = _loadingProgress + '%';
+  if (txt) txt.textContent = status || '';
+  if (_loadingProgress >= 100) {
+    setTimeout(() => dismissLoadingPopup(), 600);
+  }
+}
+
+function dismissLoadingPopup() {
+  _loadingDismissed = true;
+  const overlay = document.getElementById('loadingOverlay');
+  if (overlay) {
+    overlay.classList.add('fade-out');
+    setTimeout(() => { overlay.style.display = 'none'; }, 400);
+  }
+}
+
+// =============================================================================
 // NAVIGATION
 // =============================================================================
 function navigate(page, params) {
@@ -1127,7 +1236,7 @@ function navigate(page, params) {
     case 'opportunities': loadOpportunities(); break;
     case 'strategies': loadStrategies(); break;
     case 'dividends': loadDividends(); break;
-    case 'bes': break;
+    case 'bes': besLoadTopFunds(); break;
   }
 }
 
@@ -1219,11 +1328,13 @@ document.addEventListener('click', e => {
 // DASHBOARD (page-level cache: sayfa gecisleri icin)
 // =============================================================================
 const _pageCache = {};
-const PAGE_CACHE_TTL = 30000; // 30 saniye
+const PAGE_CACHE_TTL = 300000; // 5 dakika (sayfalar arası geçişlerde tekrar yüklemeyi önler)
+const CACHE_TTL_SHORT = 60000; // 1 dakika (sık güncellenen veriler)
 
-function _getCached(key) {
+function _getCached(key, customTtl) {
   const c = _pageCache[key];
-  if (c && Date.now() - c.ts < PAGE_CACHE_TTL) return c.data;
+  const ttl = customTtl || PAGE_CACHE_TTL;
+  if (c && Date.now() - c.ts < ttl) return c.data;
   return null;
 }
 function _setCache(key, data) {
@@ -1231,10 +1342,11 @@ function _setCache(key, data) {
 }
 
 async function loadDashboard(forceRefresh) {
-  // Indices
+  // Indices (paralel başlat, cache'li)
+  updateLoadingProgress(10, 'Endeksler yükleniyor...');
   loadIndices();
 
-  // Dashboard regime & watchlist
+  // Dashboard regime & watchlist (paralel)
   _loadDashboardRegime();
   _loadDashboardWatchlist();
 
@@ -1242,36 +1354,42 @@ async function loadDashboard(forceRefresh) {
   const cached = forceRefresh ? null : _getCached('dashboard');
   if (cached && cached.allStocks && cached.allStocks.length > 0) {
     renderDashboard(cached);
+    updateLoadingProgress(100, 'Veriler hazır!');
+    if (!forceRefresh) return; // Cache taze, tekrar çekmeye gerek yok
   }
 
+  updateLoadingProgress(30, 'Hisse verileri çekiliyor...');
   const data = await api('/dashboard');
   if (data.error && !data.success) {
-    if (cached) return; // Cache varsa hatada eskiyi goster
+    updateLoadingProgress(100, 'Hata oluştu, cache verisi gösteriliyor');
+    if (cached) return;
     document.getElementById('indicesCards').innerHTML = `
       <div class="index-card" style="grid-column:1/-1;text-align:center;">
-        <div style="color:var(--yellow);margin-bottom:8px;">⚠️ Veri yüklenirken sorun oluştu</div>
+        <div style="color:var(--yellow);margin-bottom:8px;">Veri yüklenirken sorun oluştu</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${data.error}</div>
-        <button class="btn btn-primary btn-sm" onclick="loadDashboard()">Tekrar Dene</button>
+        <button class="btn btn-primary btn-sm" onclick="loadDashboard(true)">Tekrar Dene</button>
       </div>`;
     return;
   }
 
   if (data.loading || (data.allStocks && data.allStocks.length === 0)) {
-    if (cached) return; // Cache varsa loading durumunda eskiyi koru
+    updateLoadingProgress(50, 'Sunucu verileri hazırlıyor...');
+    if (cached) { renderDashboard(cached); return; }
     document.getElementById('indicesCards').innerHTML = `
       <div class="index-card" style="grid-column:1/-1;text-align:center;">
         <div class="spinner" style="margin:0 auto 12px;"></div>
-        <div style="color:var(--yellow);margin-bottom:8px;">⏳ ${data.message || 'Veriler yükleniyor...'}</div>
+        <div style="color:var(--yellow);margin-bottom:8px;">${data.message || 'Veriler yükleniyor...'}</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Sunucu arka planda veri çekiyor, otomatik yenilenecek...</div>
-        <button class="btn btn-primary btn-sm" onclick="loadDashboard()">Şimdi Yenile</button>
+        <button class="btn btn-primary btn-sm" onclick="loadDashboard(true)">Şimdi Yenile</button>
       </div>`;
-    // Auto-retry 10sn sonra
     setTimeout(() => loadDashboard(), 10000);
     return;
   }
 
+  updateLoadingProgress(90, 'Dashboard render ediliyor...');
   _setCache('dashboard', data);
   renderDashboard(data);
+  updateLoadingProgress(100, 'Veriler hazır!');
 }
 
 function renderDashboard(data) {
@@ -1358,6 +1476,14 @@ async function _loadDashboardWatchlist() {
 }
 
 async function loadIndices() {
+  // Cache'den göster
+  const cached = _getCached('indices');
+  if (cached && cached.indices && Object.keys(cached.indices).length > 0) {
+    renderIndicesCards(cached.indices);
+    updateLoadingProgress(25, 'Endeksler cache\'den yüklendi');
+    return;
+  }
+
   const data = await api('/indices');
   if (!data.success || !data.indices || Object.keys(data.indices).length === 0) {
     document.getElementById('indicesCards').innerHTML = `
@@ -1365,12 +1491,17 @@ async function loadIndices() {
         <div class="spinner" style="margin:0 auto 8px;"></div>
         <div style="color:var(--text-muted);">Endeks verileri yükleniyor... <button class="btn btn-sm btn-secondary" onclick="loadIndices()" style="margin-left:8px;">Yenile</button></div>
       </div>`;
-    // Auto-retry
     setTimeout(() => loadIndices(), 8000);
     return;
   }
 
+  _setCache('indices', data);
+  updateLoadingProgress(25, 'Endeksler yüklendi');
   const idx = data.indices;
+  renderIndicesCards(idx);
+}
+
+function renderIndicesCards(idx) {
   const currencyMap = {'GOLD':'$','SILVER':'$','USDTRY':'₺','EURTRY':'₺','GOLDTL':'₺','SILVERTL':'₺'};
   const commodityKeys = ['GOLD','SILVER','GOLDTL','SILVERTL','USDTRY','EURTRY'];
   const cards = Object.entries(idx).map(([key, val]) => {
@@ -1410,18 +1541,31 @@ async function loadBist100() {
   const params = new URLSearchParams({ sort, order: 'desc' });
   if (sector) params.set('sector', sector);
 
+  const cacheKey = 'bist100_' + sector + '_' + sort;
+
+  // Cache'den göster
+  const cached = _getCached(cacheKey);
+  if (cached && cached.stocks && cached.stocks.length > 0) {
+    renderBist100(cached);
+    return;
+  }
+
   document.getElementById('bist100Table').innerHTML = '<tr><td colspan="9"><div class="loading"><div class="spinner"></div>Yükleniyor...</div></td></tr>';
 
   const data = await api('/bist100?' + params.toString());
   if (!data.success) return;
 
-  // Loading state - veriler henüz hazır değil
   if (data.loading || !data.stocks || data.stocks.length === 0) {
     document.getElementById('bist100Table').innerHTML = `<tr><td colspan="9"><div class="loading"><div class="spinner"></div>${data.message || 'Veriler yükleniyor... Otomatik yenilenecek.'}</div></td></tr>`;
     setTimeout(() => loadBist100(), 10000);
     return;
   }
 
+  _setCache(cacheKey, data);
+  renderBist100(data);
+}
+
+function renderBist100(data) {
   // Sektör filtresi doldur
   if (data.sectors) {
     const sel = document.getElementById('sectorFilter');
@@ -4321,6 +4465,189 @@ function sf2(v) {
   return n.toLocaleString('tr-TR', { minimumFractionDigits: 6, maximumFractionDigits: 6 });
 }
 
+// =============================================================================
+// BES TOP FONLAR & KATEGORİ ANALİZİ
+// =============================================================================
+async function besLoadTopFunds(forceRefresh) {
+  const cached = forceRefresh ? null : _getCached('bes_top');
+  if (cached) {
+    besRenderTopFunds(cached);
+    return;
+  }
+
+  const el = document.getElementById('besTopFundsContent');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>En iyi fonlar yükleniyor...</div>';
+
+  try {
+    const data = await api('/bes/top');
+    if (!data || !data.success) {
+      el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px;">Fon verileri yüklenemedi. <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>';
+      return;
+    }
+    _setCache('bes_top', data);
+    besRenderTopFunds(data);
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px;">Hata oluştu. <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>';
+  }
+}
+
+function besRenderTopFunds(data) {
+  const el = document.getElementById('besTopFundsContent');
+  const topFunds = data.topFunds || data.funds || [];
+
+  if (topFunds.length === 0) {
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Henüz fon verisi yok.</div>';
+    return;
+  }
+
+  const catColors = {
+    hisse: '#00e5a0', borclanma: '#4da6ff', katilim: '#a78bfa',
+    karma: '#ffc547', doviz: '#ff9f43', altin: '#ffd700',
+    endeks: '#00d4aa', para_piyasasi: '#8896aa', standart: '#a0a0a0', diger: '#666'
+  };
+
+  // Top 10 fonlar tablosu
+  let html = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="border-bottom:2px solid var(--border);">
+      <th style="text-align:left;padding:8px;color:var(--text-muted);">Fon</th>
+      <th style="text-align:center;padding:8px;color:var(--text-muted);">Kategori</th>
+      <th style="text-align:right;padding:8px;color:var(--text-muted);">1A Getiri</th>
+      <th style="text-align:right;padding:8px;color:var(--text-muted);">3A Getiri</th>
+      <th style="text-align:right;padding:8px;color:var(--text-muted);">6A Getiri</th>
+      <th style="text-align:right;padding:8px;color:var(--text-muted);">Volatilite</th>
+      <th style="text-align:right;padding:8px;color:var(--text-muted);">Sharpe</th>
+      <th style="text-align:right;padding:8px;color:var(--text-muted);">Maks. Düşüş</th>
+      <th style="text-align:center;padding:8px;color:var(--text-muted);">Islem</th>
+    </tr></thead><tbody>`;
+
+  topFunds.slice(0, 15).forEach((f, i) => {
+    const cc = catColors[f.category] || '#8896aa';
+    const ret1m = f.returns?.['1a'] ?? f.return1m ?? null;
+    const ret3m = f.returns?.['3a'] ?? f.return3m ?? null;
+    const ret6m = f.returns?.['6a'] ?? f.return6m ?? null;
+    const vol = f.volatility != null ? Number(f.volatility).toFixed(1) : null;
+    const sharpe = f.sharpe != null ? Number(f.sharpe).toFixed(2) : null;
+    const maxDD = f.maxDrawdown != null ? Number(f.maxDrawdown).toFixed(1) : null;
+    const sharpeColor = sharpe > 1 ? 'var(--green)' : (sharpe > 0 ? 'var(--yellow)' : 'var(--red)');
+
+    html += `<tr style="border-bottom:1px solid var(--border);" onmouseover="this.style.background='var(--bg-card-hover)'" onmouseout="this.style.background='transparent'">
+      <td style="padding:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:14px;font-weight:800;color:var(--accent);min-width:22px;">${i+1}</span>
+          <div>
+            <div style="font-weight:700;color:var(--text-primary);">${f.code}</div>
+            <div style="font-size:10px;color:var(--text-muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${f.name || ''}</div>
+          </div>
+        </div>
+      </td>
+      <td style="text-align:center;padding:8px;">
+        <span style="background:${cc}22;color:${cc};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:600;">${f.categoryLabel || f.category || '-'}</span>
+      </td>
+      <td style="text-align:right;padding:8px;font-weight:600;color:${(ret1m||0) >= 0 ? 'var(--green)' : 'var(--red)'};">${ret1m != null ? '%'+Number(ret1m).toFixed(2) : '-'}</td>
+      <td style="text-align:right;padding:8px;font-weight:600;color:${(ret3m||0) >= 0 ? 'var(--green)' : 'var(--red)'};">${ret3m != null ? '%'+Number(ret3m).toFixed(2) : '-'}</td>
+      <td style="text-align:right;padding:8px;font-weight:600;color:${(ret6m||0) >= 0 ? 'var(--green)' : 'var(--red)'};">${ret6m != null ? '%'+Number(ret6m).toFixed(2) : '-'}</td>
+      <td style="text-align:right;padding:8px;font-size:11px;color:var(--text-secondary);">${vol != null ? '%'+vol : '-'}</td>
+      <td style="text-align:right;padding:8px;font-weight:600;color:${sharpeColor};">${sharpe ?? '-'}</td>
+      <td style="text-align:right;padding:8px;font-size:11px;color:var(--red);">${maxDD != null ? '-%'+maxDD : '-'}</td>
+      <td style="text-align:center;padding:8px;">
+        <button onclick="besAddFundFromList('${f.code}')" class="btn btn-sm" style="font-size:10px;padding:4px 10px;background:var(--accent-dim);color:var(--accent);border:1px solid var(--accent);border-radius:6px;cursor:pointer;">Ekle</button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+
+  // Kategori bazli performans
+  besRenderCategoryOverview(data);
+}
+
+function besRenderCategoryOverview(data) {
+  const categories = data.categories || data.categoryStats || null;
+  if (!categories || Object.keys(categories).length === 0) {
+    // Fon listesinden kategori istatistiklerini hesapla
+    const funds = data.topFunds || data.funds || [];
+    if (funds.length === 0) return;
+
+    const catStats = {};
+    funds.forEach(f => {
+      const cat = f.category || 'diger';
+      if (!catStats[cat]) catStats[cat] = { count: 0, totalReturn: 0, funds: [] };
+      const ret = f.returns?.['6a'] ?? f.return6m ?? f.totalReturn ?? 0;
+      catStats[cat].count++;
+      catStats[cat].totalReturn += Number(ret) || 0;
+      catStats[cat].funds.push(f);
+    });
+
+    if (Object.keys(catStats).length === 0) return;
+
+    const catLabels = {
+      hisse: 'Hisse Senedi', borclanma: 'Borçlanma', katilim: 'Katılım',
+      karma: 'Karma/Dengeli', doviz: 'Döviz', altin: 'Altın/K.Maden',
+      endeks: 'Endeks', para_piyasasi: 'Para Piyasası', standart: 'Standart', diger: 'Diğer'
+    };
+    const catColors = {
+      hisse: '#00e5a0', borclanma: '#4da6ff', katilim: '#a78bfa',
+      karma: '#ffc547', doviz: '#ff9f43', altin: '#ffd700',
+      endeks: '#00d4aa', para_piyasasi: '#8896aa', standart: '#a0a0a0', diger: '#666'
+    };
+
+    let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">';
+    const sorted = Object.entries(catStats).sort((a,b) => (b[1].totalReturn / b[1].count) - (a[1].totalReturn / a[1].count));
+
+    sorted.forEach(([cat, stats]) => {
+      const avgRet = stats.count > 0 ? (stats.totalReturn / stats.count) : 0;
+      const cc = catColors[cat] || '#8896aa';
+      const bestFund = stats.funds.sort((a,b) => {
+        const ra = Number(a.returns?.['6a'] ?? a.return6m ?? a.totalReturn ?? 0);
+        const rb = Number(b.returns?.['6a'] ?? b.return6m ?? b.totalReturn ?? 0);
+        return rb - ra;
+      })[0];
+
+      html += `<div style="background:var(--bg-input);border-radius:10px;padding:14px;border:1px solid var(--border);border-top:3px solid ${cc};">
+        <div style="font-weight:700;font-size:12px;color:${cc};margin-bottom:8px;">${catLabels[cat] || cat}</div>
+        <div style="font-size:20px;font-weight:800;color:${avgRet >= 0 ? 'var(--green)' : 'var(--red)'};">%${avgRet.toFixed(1)}</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">Ort. 6 Aylık Getiri</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:6px;">${stats.count} fon</div>
+        ${bestFund ? `<div style="font-size:10px;color:var(--accent);margin-top:4px;">En iyi: ${bestFund.code}</div>` : ''}
+      </div>`;
+    });
+    html += '</div>';
+
+    const section = document.getElementById('besCategoryOverview');
+    document.getElementById('besCategoryContent').innerHTML = html;
+    section.style.display = 'block';
+    return;
+  }
+
+  // API'den gelen kategori verileri
+  const catColors = {
+    hisse: '#00e5a0', borclanma: '#4da6ff', katilim: '#a78bfa',
+    karma: '#ffc547', doviz: '#ff9f43', altin: '#ffd700',
+    endeks: '#00d4aa', para_piyasasi: '#8896aa', standart: '#a0a0a0', diger: '#666'
+  };
+  const catLabels = {
+    hisse: 'Hisse Senedi', borclanma: 'Borçlanma', katilim: 'Katılım',
+    karma: 'Karma/Dengeli', doviz: 'Döviz', altin: 'Altın/K.Maden',
+    endeks: 'Endeks', para_piyasasi: 'Para Piyasası', standart: 'Standart', diger: 'Diğer'
+  };
+
+  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">';
+  Object.entries(categories).forEach(([cat, stats]) => {
+    const cc = catColors[cat] || '#8896aa';
+    html += `<div style="background:var(--bg-input);border-radius:10px;padding:14px;border:1px solid var(--border);border-top:3px solid ${cc};">
+      <div style="font-weight:700;font-size:12px;color:${cc};margin-bottom:8px;">${catLabels[cat] || cat}</div>
+      <div style="font-size:20px;font-weight:800;color:${(stats.avgReturn||0) >= 0 ? 'var(--green)' : 'var(--red)'};">%${Number(stats.avgReturn || 0).toFixed(1)}</div>
+      <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">Ort. Getiri</div>
+      <div style="font-size:10px;color:var(--text-muted);margin-top:6px;">${stats.count || 0} fon</div>
+      ${stats.bestFund ? `<div style="font-size:10px;color:var(--accent);margin-top:4px;">En iyi: ${stats.bestFund}</div>` : ''}
+    </div>`;
+  });
+  html += '</div>';
+
+  const section = document.getElementById('besCategoryOverview');
+  document.getElementById('besCategoryContent').innerHTML = html;
+  section.style.display = 'block';
+}
 
 // =============================================================================
 // INIT
