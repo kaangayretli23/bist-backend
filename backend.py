@@ -2772,6 +2772,13 @@ def calc_trade_plan(hist, indicators=None):
                 buy_reasons.append(f'Pivot S1 ({sf(s1)} TL) seviyesinden alis')
                 buy_strategy = 'pivot_alis'
 
+            # Giris fiyati mevcut fiyattan cok uzaksa (>%3) mevcut fiyati kullan
+            if buy_entry and float(buy_entry) < cur * 0.97:
+                buy_entry = sf(cur)
+                buy_sl = sf(cur - atr_val * atr_mult)
+                if 'destek_alis' in buy_strategy or 'bollinger_alis' in buy_strategy or 'pivot_alis' in buy_strategy:
+                    buy_reasons.append(f'Giris mevcut fiyata ({sf(cur)} TL) ayarlandi')
+
             # Alis hedefleri
             entry_price = float(buy_entry)
             sl_price = float(buy_sl)
@@ -2831,6 +2838,13 @@ def calc_trade_plan(hist, indicators=None):
                 sell_sl = sf(float(classic.get('r2', r1 + atr_val)))
                 sell_reasons.append(f'Pivot R1 ({sf(r1)} TL) seviyesinde satis')
                 sell_strategy = 'pivot_satis'
+
+            # Satis girisi mevcut fiyattan cok uzaksa (>%3 yukarda) mevcut fiyati kullan
+            if sell_entry and float(sell_entry) > cur * 1.03:
+                sell_entry = sf(cur)
+                sell_sl = sf(cur + atr_val * atr_mult)
+                if 'direnc_satis' in sell_strategy or 'bollinger_satis' in sell_strategy or 'pivot_satis' in sell_strategy:
+                    sell_reasons.append(f'Giris mevcut fiyata ({sf(cur)} TL) ayarlandi')
 
             # Satis hedefleri (asagi)
             s_entry = float(sell_entry)
