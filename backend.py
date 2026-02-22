@@ -416,19 +416,18 @@ def _fetch_isyatirim_df(symbol, days=365):
         print(f"  [ISYATIRIM] {symbol} {days}d cekiliyor...")
         resp = None
         last_err = None
-        for http_attempt in range(3):
+        for http_attempt in range(2):
             try:
-                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=15)
+                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=10)
                 resp.raise_for_status()
                 break
             except Exception as http_e:
                 last_err = http_e
-                if http_attempt < 2:
-                    wait = (http_attempt + 1) * 1.5
-                    print(f"  [ISYATIRIM] {symbol} HTTP hata ({http_e}), {wait}s sonra tekrar...")
-                    time.sleep(wait)
+                if http_attempt < 1:
+                    print(f"  [ISYATIRIM] {symbol} HTTP hata ({http_e}), 0.5s sonra tekrar...")
+                    time.sleep(0.5)
         if resp is None:
-            print(f"  [ISYATIRIM] {symbol} 3 HTTP denemesi basarisiz: {last_err}")
+            print(f"  [ISYATIRIM] {symbol} HTTP denemesi basarisiz: {last_err}")
             return None
 
         data = resp.json()
@@ -537,7 +536,7 @@ def _fetch_yahoo_http(symbol, period1_days=14):
         r = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
-        with urllib.request.urlopen(r, timeout=15) as resp:
+        with urllib.request.urlopen(r, timeout=8) as resp:
             raw = json.loads(resp.read().decode())
 
         result = raw.get('chart', {}).get('result', [])
@@ -576,7 +575,7 @@ def _fetch_yahoo_http_df(symbol, period1_days=365):
         r = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
-        with urllib.request.urlopen(r, timeout=20) as resp:
+        with urllib.request.urlopen(r, timeout=12) as resp:
             raw = json.loads(resp.read().decode())
 
         result = raw.get('chart', {}).get('result', [])
@@ -624,7 +623,7 @@ def _fetch_stock_data(sym, retry_count=2):
         # 3. yfinance (son care)
         if YF_OK:
             try:
-                h = yf.Ticker(f"{sym}.IS").history(period="5d", timeout=10)
+                h = yf.Ticker(f"{sym}.IS").history(period="5d", timeout=6)
                 if h is not None and not h.empty and len(h) >= 2:
                     cur, prev = float(h['Close'].iloc[-1]), float(h['Close'].iloc[-2])
                     if prev > 0:
@@ -636,7 +635,7 @@ def _fetch_stock_data(sym, retry_count=2):
                 print(f"  [YF] {sym}: {e}")
 
         if attempt < retry_count:
-            wait = attempt * 2
+            wait = attempt * 0.5
             print(f"  [RETRY] {sym} deneme {attempt}/{retry_count} basarisiz, {wait}s bekleniyor...")
             time.sleep(wait)
 
@@ -662,7 +661,7 @@ def _fetch_hist_df(sym, period='1y'):
     # 3. yfinance
     if YF_OK:
         try:
-            h = yf.Ticker(f"{sym}.IS").history(period=period, timeout=15)
+            h = yf.Ticker(f"{sym}.IS").history(period=period, timeout=10)
             if h is not None and not h.empty and len(h) >= 10:
                 print(f"  [YF-HIST] {sym} OK: {len(h)} bar")
                 return h
@@ -708,7 +707,7 @@ def _fetch_index_data(key, tsym, name):
 # =====================================================================
 # BACKGROUND LOADER (paralel - ThreadPoolExecutor)
 # =====================================================================
-PARALLEL_WORKERS = 6  # Ayni anda 6 hisse cek (Is Yatirim rate limit'e dikkat)
+PARALLEL_WORKERS = 12  # Paralel hisse cekme sayisi (performans iyilestirmesi)
 
 def _process_stock(sym, retry_count=2):
     """Tek hisseyi cek ve cache formatinda dondur (thread-safe)"""
@@ -760,7 +759,7 @@ def _fetch_stocks_parallel(symbols, label="STOCKS", retry_count=2):
 
 def _background_loop():
     print(f"[LOADER] Thread basliyor, YF={YF_OK}, workers={PARALLEL_WORKERS}")
-    time.sleep(3)
+    time.sleep(0.5)
 
     while True:
         t0 = time.time()
@@ -806,12 +805,12 @@ def _background_loop():
                 print(f"\n[LOADER] ====== FAZE 3: {len(remaining)} kalan hisse [paralel x{PARALLEL_WORKERS}] ======")
                 phase3_fail = _fetch_stocks_parallel(remaining, label="BIST100")
 
-            # === FAZE 4: Retry failed stocks (paralel, daha az worker) ===
+            # === FAZE 4: Retry failed stocks (paralel) ===
             all_failed = list(set(bist30_fail + phase3_fail))
             if all_failed:
                 print(f"\n[LOADER] ====== FAZE 4: {len(all_failed)} basarisiz hisse yeniden deneniyor ======")
-                time.sleep(3)
-                retry_fail = _fetch_stocks_parallel(all_failed, label="RETRY", retry_count=3)
+                time.sleep(1)
+                retry_fail = _fetch_stocks_parallel(all_failed, label="RETRY", retry_count=2)
                 print(f"[LOADER] FAZE 4: {len(all_failed) - len(retry_fail)}/{len(all_failed)} kurtarildi")
 
             elapsed = round(time.time() - t0, 1)
@@ -819,8 +818,8 @@ def _background_loop():
             _status['lastRun'] = datetime.now().isoformat()
             print(f"\n[LOADER] ====== SONUC: {len(_stock_cache)} hisse, {len(_index_cache)} endeks ({elapsed}s) ======\n")
 
-            # === FAZE 5: Tarihsel veri on-yukleme (sinyaller/firsatlar icin) ===
-            _preload_hist_data()
+            # === FAZE 5: Tarihsel veri on-yukleme (ayri thread - ana donguyu BLOKLAMAZ) ===
+            threading.Thread(target=_preload_hist_data, daemon=True).start()
 
             # === FAZE 6: Otomatik alert kontrolu (cooldown destekli) ===
             _auto_check_all_alerts()
@@ -2059,9 +2058,42 @@ def calc_market_regime():
         # XU100 tarihsel verisini al
         hist = _cget_hist("XU100_1y")
         if hist is None:
-            # Herhangi bir BIST30 hissesinden piyasa durumunu cikar
-            regime = {'regime': 'unknown', 'strength': 0, 'description': 'Piyasa verisi mevcut degil'}
-            return regime
+            # Cache'de yoksa senkron olarak cek
+            try:
+                xu_df = _fetch_isyatirim_df("XU100", 365)
+                if xu_df is not None and len(xu_df) >= 30:
+                    _cset(_hist_cache, "XU100_1y", xu_df)
+                    hist = xu_df
+                    print("[REGIME] XU100 verisi senkron olarak cekildi")
+            except Exception as xe:
+                print(f"[REGIME] XU100 senkron cekme hatasi: {xe}")
+
+        if hist is None:
+            # Hala yoksa stock cache'den basit rejim hesapla
+            stocks = _get_stocks()
+            if stocks:
+                advancing = sum(1 for s in stocks if s.get('changePct', 0) > 0)
+                declining = sum(1 for s in stocks if s.get('changePct', 0) < 0)
+                total = len(stocks)
+                ratio = advancing / max(declining, 1)
+                if ratio > 2:
+                    regime_name, desc = 'strong_bull', 'Guclu Boga Piyasasi'
+                elif ratio > 1.3:
+                    regime_name, desc = 'bull', 'Boga Piyasasi'
+                elif ratio < 0.5:
+                    regime_name, desc = 'strong_bear', 'Guclu Ayi Piyasasi'
+                elif ratio < 0.8:
+                    regime_name, desc = 'bear', 'Ayi Piyasasi'
+                else:
+                    regime_name, desc = 'sideways', 'Yatay Piyasa'
+                return {
+                    'regime': regime_name, 'strength': sf(min(abs(ratio - 1) * 50, 100)),
+                    'description': desc,
+                    'reasons': [f'Yukselen: {advancing}, Dusen: {declining} (toplam {total})',
+                                f'A/D orani: {sf(ratio)}'],
+                    'indicators': {'breadthRatio': sf(ratio)},
+                }
+            return {'regime': 'unknown', 'strength': 0, 'description': 'Piyasa verisi mevcut degil'}
 
         c = hist['Close'].values.astype(float)
         n = len(c)
@@ -5405,13 +5437,19 @@ def bes_top():
 
         pool = _bes_cache_get('bes_analysis_pool')
         if not pool:
-            # Hizli analiz: son 90 gun
+            # Daha genis tarih araligi dene (30 gun, sonra 7 gun fallback)
             today = datetime.now()
-            start = (today - timedelta(days=7)).strftime('%d.%m.%Y')
-            end = today.strftime('%d.%m.%Y')
-            raw = _fetch_tefas_funds(start, end)
+            raw = None
+            for days_back in [30, 14, 7]:
+                start = (today - timedelta(days=days_back)).strftime('%d.%m.%Y')
+                end = today.strftime('%d.%m.%Y')
+                raw = _fetch_tefas_funds(start, end)
+                if raw and isinstance(raw, list) and len(raw) > 0:
+                    print(f"[BES-TOP] TEFAS verisi alindi: {len(raw)} satir ({days_back} gun)")
+                    break
+
             if not raw:
-                return jsonify({'success': False, 'error': 'Veri alinamadi'})
+                return jsonify({'success': False, 'error': 'TEFAS API\'ye ulasilamadi. Lutfen tekrar deneyin.'})
 
             fund_sizes = []
             for row in (raw if isinstance(raw, list) else []):
@@ -5420,14 +5458,25 @@ def bes_top():
                     fund_sizes.append(parsed)
             fund_sizes.sort(key=lambda x: x.get('total_value', 0), reverse=True)
 
+            if not fund_sizes:
+                return jsonify({'success': False, 'error': 'Fon verisi parse edilemedi'})
+
             pool = []
             for f in fund_sizes[:40]:
-                history = _fetch_tefas_history_chunked(f['code'], days=180)
-                perf = _analyze_fund_performance(history, f['code'])
-                if perf:
-                    pool.append(perf)
-                time.sleep(0.15)
-            _bes_cache_set('bes_analysis_pool', pool)
+                try:
+                    history = _fetch_tefas_history_chunked(f['code'], days=180)
+                    perf = _analyze_fund_performance(history, f['code'])
+                    if perf:
+                        pool.append(perf)
+                except Exception as fe:
+                    print(f"[BES-TOP] Fon analiz hatasi {f['code']}: {fe}")
+                time.sleep(0.1)
+
+            # Bos pool'u cache'LEME - sonraki denemede tekrar denensin
+            if pool:
+                _bes_cache_set('bes_analysis_pool', pool)
+            else:
+                return jsonify({'success': False, 'error': 'Fon analizi yapilamadi, TEFAS verisi yetersiz'})
 
         # Filtrele ve sirala
         filtered = pool
@@ -5467,6 +5516,8 @@ def bes_top():
         _bes_cache_set(cache_key, result)
         return jsonify(safe_dict(result))
     except Exception as e:
+        print(f"[BES-TOP] HATA: {e}")
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
