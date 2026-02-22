@@ -1000,7 +1000,14 @@ tr:hover td { background: rgba(26,34,52,0.5); }
     <div class="card" style="border-left:3px solid var(--accent);">
       <div class="flex-between mb-16">
         <div style="font-weight:700;font-size:15px;">En Iyi Performans Gosteren Fonlar</div>
-        <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="padding:4px 12px;font-size:11px;">Yenile</button>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div style="display:flex;gap:2px;background:var(--bg-input);border-radius:8px;padding:2px;">
+            <button onclick="besLoadTopFunds(true,'1a')" class="btn btn-sm bes-period-btn" id="besPeriod1a" style="font-size:10px;padding:4px 10px;border-radius:6px;background:transparent;color:var(--text-muted);border:none;cursor:pointer;">1 Ay</button>
+            <button onclick="besLoadTopFunds(true,'3a')" class="btn btn-sm bes-period-btn" id="besPeriod3a" style="font-size:10px;padding:4px 10px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;">3 Ay</button>
+            <button onclick="besLoadTopFunds(true,'6a')" class="btn btn-sm bes-period-btn" id="besPeriod6a" style="font-size:10px;padding:4px 10px;border-radius:6px;background:transparent;color:var(--text-muted);border:none;cursor:pointer;">6 Ay</button>
+          </div>
+          <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="padding:4px 12px;font-size:11px;">Yenile</button>
+        </div>
       </div>
       <div id="besTopFundsContent">
         <div class="loading"><div class="spinner"></div>En iyi fonlar yükleniyor...</div>
@@ -1422,7 +1429,7 @@ function renderDashboard(data) {
   document.getElementById('advCount').textContent = mb.advancing || 0;
   document.getElementById('uncCount').textContent = mb.unchanged || 0;
   document.getElementById('decCount').textContent = mb.declining || 0;
-  document.getElementById('breadthStats').textContent = `A/D Oranı: ${mb.advDecRatio || '-'}`;
+  document.getElementById('breadthStats').textContent = `A/D Oranı: ${mb.advDecRatio || '-'} | Toplam: ${total} hisse`;
 
   // Movers tables
   renderMoverTable('topGainers', data.movers?.topGainers, 'changePct');
@@ -4468,26 +4475,40 @@ function sf2(v) {
 // =============================================================================
 // BES TOP FONLAR & KATEGORİ ANALİZİ
 // =============================================================================
-async function besLoadTopFunds(forceRefresh) {
-  const cached = forceRefresh ? null : _getCached('bes_top');
+let _besCurrentPeriod = '3a';
+
+async function besLoadTopFunds(forceRefresh, period) {
+  if (period) _besCurrentPeriod = period;
+  const p = _besCurrentPeriod;
+
+  // Period butonlarini guncelle
+  document.querySelectorAll('.bes-period-btn').forEach(btn => {
+    btn.style.background = 'transparent';
+    btn.style.color = 'var(--text-muted)';
+  });
+  const activeBtn = document.getElementById('besPeriod' + p);
+  if (activeBtn) { activeBtn.style.background = 'var(--accent)'; activeBtn.style.color = '#fff'; }
+
+  const cacheKey = 'bes_top_' + p;
+  const cached = forceRefresh ? null : _getCached(cacheKey);
   if (cached) {
     besRenderTopFunds(cached);
     return;
   }
 
   const el = document.getElementById('besTopFundsContent');
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>En iyi fonlar yükleniyor...</div>';
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>En iyi fonlar yükleniyor... (ilk sefer 30-60 sn sürebilir)</div>';
 
   try {
-    const data = await api('/bes/top');
+    const data = await api('/bes/top?period=' + p);
     if (!data || !data.success) {
-      el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px;">Fon verileri yüklenemedi. <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>';
+      el.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px;">${data?.error || 'Fon verileri yüklenemedi.'} <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>`;
       return;
     }
-    _setCache('bes_top', data);
+    _setCache(cacheKey, data);
     besRenderTopFunds(data);
   } catch(e) {
-    el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px;">Hata oluştu. <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>';
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px;">Hata oluştu: ' + e.message + ' <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>';
   }
 }
 

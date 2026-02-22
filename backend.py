@@ -2058,9 +2058,42 @@ def calc_market_regime():
         # XU100 tarihsel verisini al
         hist = _cget_hist("XU100_1y")
         if hist is None:
-            # Herhangi bir BIST30 hissesinden piyasa durumunu cikar
-            regime = {'regime': 'unknown', 'strength': 0, 'description': 'Piyasa verisi mevcut degil'}
-            return regime
+            # Cache'de yoksa senkron olarak cek
+            try:
+                xu_df = _fetch_isyatirim_df("XU100", 365)
+                if xu_df is not None and len(xu_df) >= 30:
+                    _cset(_hist_cache, "XU100_1y", xu_df)
+                    hist = xu_df
+                    print("[REGIME] XU100 verisi senkron olarak cekildi")
+            except Exception as xe:
+                print(f"[REGIME] XU100 senkron cekme hatasi: {xe}")
+
+        if hist is None:
+            # Hala yoksa stock cache'den basit rejim hesapla
+            stocks = _get_stocks()
+            if stocks:
+                advancing = sum(1 for s in stocks if s.get('changePct', 0) > 0)
+                declining = sum(1 for s in stocks if s.get('changePct', 0) < 0)
+                total = len(stocks)
+                ratio = advancing / max(declining, 1)
+                if ratio > 2:
+                    regime_name, desc = 'strong_bull', 'Guclu Boga Piyasasi'
+                elif ratio > 1.3:
+                    regime_name, desc = 'bull', 'Boga Piyasasi'
+                elif ratio < 0.5:
+                    regime_name, desc = 'strong_bear', 'Guclu Ayi Piyasasi'
+                elif ratio < 0.8:
+                    regime_name, desc = 'bear', 'Ayi Piyasasi'
+                else:
+                    regime_name, desc = 'sideways', 'Yatay Piyasa'
+                return {
+                    'regime': regime_name, 'strength': sf(min(abs(ratio - 1) * 50, 100)),
+                    'description': desc,
+                    'reasons': [f'Yukselen: {advancing}, Dusen: {declining} (toplam {total})',
+                                f'A/D orani: {sf(ratio)}'],
+                    'indicators': {'breadthRatio': sf(ratio)},
+                }
+            return {'regime': 'unknown', 'strength': 0, 'description': 'Piyasa verisi mevcut degil'}
 
         c = hist['Close'].values.astype(float)
         n = len(c)
@@ -5404,13 +5437,19 @@ def bes_top():
 
         pool = _bes_cache_get('bes_analysis_pool')
         if not pool:
-            # Hizli analiz: son 90 gun
+            # Daha genis tarih araligi dene (30 gun, sonra 7 gun fallback)
             today = datetime.now()
-            start = (today - timedelta(days=7)).strftime('%d.%m.%Y')
-            end = today.strftime('%d.%m.%Y')
-            raw = _fetch_tefas_funds(start, end)
+            raw = None
+            for days_back in [30, 14, 7]:
+                start = (today - timedelta(days=days_back)).strftime('%d.%m.%Y')
+                end = today.strftime('%d.%m.%Y')
+                raw = _fetch_tefas_funds(start, end)
+                if raw and isinstance(raw, list) and len(raw) > 0:
+                    print(f"[BES-TOP] TEFAS verisi alindi: {len(raw)} satir ({days_back} gun)")
+                    break
+
             if not raw:
-                return jsonify({'success': False, 'error': 'Veri alinamadi'})
+                return jsonify({'success': False, 'error': 'TEFAS API\'ye ulasilamadi. Lutfen tekrar deneyin.'})
 
             fund_sizes = []
             for row in (raw if isinstance(raw, list) else []):
@@ -5419,14 +5458,25 @@ def bes_top():
                     fund_sizes.append(parsed)
             fund_sizes.sort(key=lambda x: x.get('total_value', 0), reverse=True)
 
+            if not fund_sizes:
+                return jsonify({'success': False, 'error': 'Fon verisi parse edilemedi'})
+
             pool = []
             for f in fund_sizes[:40]:
-                history = _fetch_tefas_history_chunked(f['code'], days=180)
-                perf = _analyze_fund_performance(history, f['code'])
-                if perf:
-                    pool.append(perf)
-                time.sleep(0.15)
-            _bes_cache_set('bes_analysis_pool', pool)
+                try:
+                    history = _fetch_tefas_history_chunked(f['code'], days=180)
+                    perf = _analyze_fund_performance(history, f['code'])
+                    if perf:
+                        pool.append(perf)
+                except Exception as fe:
+                    print(f"[BES-TOP] Fon analiz hatasi {f['code']}: {fe}")
+                time.sleep(0.1)
+
+            # Bos pool'u cache'LEME - sonraki denemede tekrar denensin
+            if pool:
+                _bes_cache_set('bes_analysis_pool', pool)
+            else:
+                return jsonify({'success': False, 'error': 'Fon analizi yapilamadi, TEFAS verisi yetersiz'})
 
         # Filtrele ve sirala
         filtered = pool
@@ -5466,6 +5516,8 @@ def bes_top():
         _bes_cache_set(cache_key, result)
         return jsonify(safe_dict(result))
     except Exception as e:
+        print(f"[BES-TOP] HATA: {e}")
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
