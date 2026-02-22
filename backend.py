@@ -759,7 +759,6 @@ def _fetch_stocks_parallel(symbols, label="STOCKS", retry_count=2):
 
 def _background_loop():
     print(f"[LOADER] Thread basliyor, YF={YF_OK}, workers={PARALLEL_WORKERS}")
-    time.sleep(0.5)
 
     while True:
         t0 = time.time()
@@ -774,7 +773,7 @@ def _background_loop():
                 data = _fetch_index_data(key, tsym, name)
                 return key, tsym, name, data
 
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
                 for key, tsym, name, data in executor.map(_fetch_one_index, INDEX_TICKERS.items()):
                     if data:
                         cur, prev = sf(data['close'], 4), sf(data['prev'], 4)
@@ -809,7 +808,6 @@ def _background_loop():
             all_failed = list(set(bist30_fail + phase3_fail))
             if all_failed:
                 print(f"\n[LOADER] ====== FAZE 4: {len(all_failed)} basarisiz hisse yeniden deneniyor ======")
-                time.sleep(1)
                 retry_fail = _fetch_stocks_parallel(all_failed, label="RETRY", retry_count=2)
                 print(f"[LOADER] FAZE 4: {len(all_failed) - len(retry_fail)}/{len(all_failed)} kurtarildi")
 
@@ -3865,133 +3863,159 @@ def daily_report():
 # =====================================================================
 # SINYAL TARAMA (Tum hisseleri tarar, guclu AL/SAT sinyallerini bulur)
 # =====================================================================
+_signals_cache = {'data': None, 'ts': 0}
+_signals_cache_lock = threading.Lock()
+_opps_cache = {'data': None, 'ts': 0}
+_opps_cache_lock = threading.Lock()
+COMPUTED_CACHE_TTL = 120  # 2 dakika - agir hesaplamalar icin
+
+def _compute_signal_for_stock(stock, timeframe):
+    """Tek hisse icin sinyal hesapla (thread-safe, paralel calisir)"""
+    sym = stock['code']
+    try:
+        hist = _cget_hist(f"{sym}_1y")
+        if hist is None:
+            return None
+
+        c = hist['Close'].values.astype(float)
+        cp = float(c[-1])
+
+        ind = calc_all_indicators(hist, cp)
+        summary = ind.get('summary', {})
+        buy_count = summary.get('buySignals', 0)
+        sell_count = summary.get('sellSignals', 0)
+        total_ind = summary.get('totalIndicators', 1)
+
+        rec = calc_recommendation(hist, ind)
+        tf_rec = rec.get(timeframe, {})
+        action = tf_rec.get('action', 'NOTR')
+        score = float(tf_rec.get('score', 0))
+        confidence = float(tf_rec.get('confidence', 0))
+
+        consensus_pct = (buy_count / total_ind * 100) if total_ind > 0 else 50
+        if score < 0:
+            consensus_pct = 100 - consensus_pct
+        composite = min(100, (abs(score) / 12 * 60) + (consensus_pct * 0.4))
+
+        rsi_val = ind.get('rsi', {}).get('value', 50)
+        macd_type = ind.get('macd', {}).get('signalType', 'neutral')
+        macd_hist = ind.get('macd', {}).get('histogram', 0)
+
+        sr = calc_support_resistance(hist)
+        supports = sr.get('supports', [])[:2]
+        resistances = sr.get('resistances', [])[:2]
+        stop_loss = supports[0] if supports else sf(cp * 0.95)
+        target = resistances[0] if resistances else sf(cp * 1.10)
+
+        sig_type = 'buy' if score > 0 else 'sell'
+        ml_conf = calc_ml_confidence(hist, ind, score, sig_type)
+        candle_patterns = ind.get('candlestick', {}).get('patterns', [])
+
+        return {
+            'code': sym,
+            'name': BIST100_STOCKS.get(sym, sym),
+            'price': sf(cp),
+            'changePct': stock.get('changePct', 0),
+            'volume': stock.get('volume', 0),
+            'action': action,
+            'score': sf(score),
+            'confidence': sf(confidence),
+            'composite': sf(composite),
+            'mlConfidence': ml_conf.get('confidence', 50),
+            'mlGrade': ml_conf.get('grade', 'C'),
+            'buySignals': buy_count,
+            'sellSignals': sell_count,
+            'totalIndicators': total_ind,
+            'rsi': sf(rsi_val),
+            'macdSignal': macd_type,
+            'macdHistogram': macd_hist,
+            'stopLoss': stop_loss,
+            'target': target,
+            'supports': supports,
+            'resistances': resistances,
+            'reasons': tf_rec.get('reasons', [])[:5],
+            'reason': tf_rec.get('reason', ''),
+            'indicatorBreakdown': tf_rec.get('indicatorBreakdown', {}),
+            'strategy': tf_rec.get('strategy', ''),
+            'candlestickPatterns': candle_patterns[:3],
+            'dynamicThresholds': ind.get('dynamicThresholds', {}),
+            'tradePlan': calc_trade_plan(hist, ind),
+        }
+    except:
+        return None
+
 @app.route('/api/signals')
 def signal_scanner():
-    """Tum hisselerin sinyal taramasi - composite score ile sirali"""
+    """Tum hisselerin sinyal taramasi - composite score ile sirali (PARALEL)"""
     try:
-        timeframe = request.args.get('timeframe', 'weekly')  # weekly/monthly/yearly
+        timeframe = request.args.get('timeframe', 'weekly')
         min_score = float(request.args.get('minScore', 0))
-        signal_type = request.args.get('type', 'all')  # all/buy/sell
+        signal_type = request.args.get('type', 'all')
+
+        # Computed cache kontrol (2 dk)
+        with _signals_cache_lock:
+            sc = _signals_cache
+            if sc['data'] and (time.time() - sc['ts']) < COMPUTED_CACHE_TTL:
+                cached = sc['data']
+                # Client-side filtreleme uygula
+                filtered = cached['all_results']
+                if signal_type == 'buy':
+                    filtered = [r for r in filtered if float(r['score']) > 0]
+                elif signal_type == 'sell':
+                    filtered = [r for r in filtered if float(r['score']) < 0]
+                if min_score > 0:
+                    filtered = [r for r in filtered if abs(float(r['score'])) >= min_score]
+                return jsonify(safe_dict({
+                    'success': True, 'timeframe': timeframe,
+                    'totalScanned': cached['totalScanned'],
+                    'signalCount': len(filtered), 'signals': filtered,
+                    'marketRegime': calc_market_regime(),
+                    'timestamp': cached['timestamp'], 'meta': _api_meta(),
+                }))
 
         stocks = _get_stocks()
         if not stocks:
             return jsonify({'success': True, 'loading': True, 'signals': [], 'message': 'Veriler yukleniyor...'})
 
-        # Sadece cache'deki veriyi kullan - HTTP fetch YAPMA (background preloader halleder)
         hist_ready = sum(1 for s in stocks if _cget_hist(f"{s['code']}_1y") is not None)
         if hist_ready < 10:
             return jsonify({'success': True, 'loading': True, 'signals': [], 'message': f'Tarihsel veriler hazirlaniyor ({hist_ready}/{len(stocks)})...'})
 
+        # PARALEL sinyal hesaplama - ThreadPoolExecutor ile ~5x hiz
         results = []
-        for stock in stocks:
-            sym = stock['code']
-            try:
-                hist = _cget_hist(f"{sym}_1y")
-                if hist is None:
-                    continue
+        with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+            futures = {executor.submit(_compute_signal_for_stock, s, timeframe): s for s in stocks}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    results.append(result)
 
-                c = hist['Close'].values.astype(float)
-                h = hist['High'].values.astype(float)
-                l = hist['Low'].values.astype(float)
-                v = hist['Volume'].values.astype(float)
-                cp = float(c[-1])
-
-                # 18 indikator hesapla
-                ind = calc_all_indicators(hist, cp)
-                summary = ind.get('summary', {})
-                buy_count = summary.get('buySignals', 0)
-                sell_count = summary.get('sellSignals', 0)
-                total_ind = summary.get('totalIndicators', 1)
-
-                # Coklu zaman dilimi onerisi
-                rec = calc_recommendation(hist, ind)
-                tf_rec = rec.get(timeframe, {})
-                action = tf_rec.get('action', 'NOTR')
-                score = float(tf_rec.get('score', 0))
-                confidence = float(tf_rec.get('confidence', 0))
-
-                # Composite score (0-100): indikator konsensus + oneri gucu
-                consensus_pct = (buy_count / total_ind * 100) if total_ind > 0 else 50
-                if score < 0:
-                    consensus_pct = 100 - consensus_pct  # SAT icin ters cevir
-                composite = min(100, (abs(score) / 12 * 60) + (consensus_pct * 0.4))
-
-                # RSI, MACD bilgisi
-                rsi_val = ind.get('rsi', {}).get('value', 50)
-                macd_type = ind.get('macd', {}).get('signalType', 'neutral')
-                macd_hist = ind.get('macd', {}).get('histogram', 0)
-
-                # Destek/Direnc
-                sr = calc_support_resistance(hist)
-                supports = sr.get('supports', [])[:2]
-                resistances = sr.get('resistances', [])[:2]
-
-                # Stop-loss ve hedef
-                stop_loss = supports[0] if supports else sf(cp * 0.95)
-                target = resistances[0] if resistances else sf(cp * 1.10)
-
-                # Filtrele
-                if signal_type == 'buy' and score <= 0:
-                    continue
-                if signal_type == 'sell' and score >= 0:
-                    continue
-                if abs(score) < min_score:
-                    continue
-
-                # ML Confidence
-                sig_type = 'buy' if score > 0 else 'sell'
-                ml_conf = calc_ml_confidence(hist, ind, score, sig_type)
-
-                # Candlestick patterns
-                o_arr = hist['Open'].values.astype(float)
-                candles = ind.get('candlestick', {})
-                candle_patterns = candles.get('patterns', [])
-
-                results.append({
-                    'code': sym,
-                    'name': BIST100_STOCKS.get(sym, sym),
-                    'price': sf(cp),
-                    'changePct': stock.get('changePct', 0),
-                    'volume': stock.get('volume', 0),
-                    'action': action,
-                    'score': sf(score),
-                    'confidence': sf(confidence),
-                    'composite': sf(composite),
-                    'mlConfidence': ml_conf.get('confidence', 50),
-                    'mlGrade': ml_conf.get('grade', 'C'),
-                    'buySignals': buy_count,
-                    'sellSignals': sell_count,
-                    'totalIndicators': total_ind,
-                    'rsi': sf(rsi_val),
-                    'macdSignal': macd_type,
-                    'macdHistogram': macd_hist,
-                    'stopLoss': stop_loss,
-                    'target': target,
-                    'supports': supports,
-                    'resistances': resistances,
-                    'reasons': tf_rec.get('reasons', [])[:5],
-                    'reason': tf_rec.get('reason', ''),
-                    'indicatorBreakdown': tf_rec.get('indicatorBreakdown', {}),
-                    'strategy': tf_rec.get('strategy', ''),
-                    'candlestickPatterns': candle_patterns[:3],
-                    'dynamicThresholds': ind.get('dynamicThresholds', {}),
-                    'tradePlan': calc_trade_plan(hist, ind),
-                })
-            except Exception as e:
-                continue
-
-        # Sirala: En guclu AL sinyalleri uste
         results.sort(key=lambda x: float(x['score']), reverse=True)
 
+        # Cache'e kaydet (filtresiz tam liste)
+        with _signals_cache_lock:
+            _signals_cache['data'] = {
+                'all_results': results,
+                'totalScanned': len(stocks),
+                'timestamp': datetime.now().isoformat(),
+            }
+            _signals_cache['ts'] = time.time()
+
+        # Filtrele
+        filtered = results
+        if signal_type == 'buy':
+            filtered = [r for r in results if float(r['score']) > 0]
+        elif signal_type == 'sell':
+            filtered = [r for r in results if float(r['score']) < 0]
+        if min_score > 0:
+            filtered = [r for r in filtered if abs(float(r['score'])) >= min_score]
+
         return jsonify(safe_dict({
-            'success': True,
-            'timeframe': timeframe,
+            'success': True, 'timeframe': timeframe,
             'totalScanned': len(stocks),
-            'signalCount': len(results),
-            'signals': results,
+            'signalCount': len(filtered), 'signals': filtered,
             'marketRegime': calc_market_regime(),
-            'timestamp': datetime.now().isoformat(),
-            'meta': _api_meta(),
+            'timestamp': datetime.now().isoformat(), 'meta': _api_meta(),
         }))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -4000,154 +4024,156 @@ def signal_scanner():
 # =====================================================================
 # FIRSAT OZETI (Gunluk/Haftalik/Aylik/Yillik)
 # =====================================================================
+def _compute_opportunity_for_stock(stock):
+    """Tek hisse icin firsat analizi (thread-safe, paralel calisir)"""
+    sym = stock['code']
+    try:
+        hist = _cget_hist(f"{sym}_1y")
+        if hist is None:
+            return None
+
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)
+        l = hist['Low'].values.astype(float)
+        v = hist['Volume'].values.astype(float)
+        cp = float(c[-1])
+        n = len(c)
+
+        events = []
+        event_score = 0
+
+        rsi_val = calc_rsi(c).get('value', 50)
+        if rsi_val < 30:
+            events.append({'type': 'rsi_oversold', 'text': f'RSI {sf(rsi_val)} - Asiri satim bolgesinde, toparlanma bekleniyor', 'impact': 'positive'})
+            event_score += 3
+        elif rsi_val > 70:
+            events.append({'type': 'rsi_overbought', 'text': f'RSI {sf(rsi_val)} - Asiri alim bolgesinde, duzeltme gelebilir', 'impact': 'negative'})
+            event_score -= 3
+
+        macd = calc_macd(c)
+        if macd.get('signalType') == 'buy':
+            events.append({'type': 'macd_cross', 'text': 'MACD alis kesisimi - Yukari momentum basladi', 'impact': 'positive'})
+            event_score += 2
+        elif macd.get('signalType') == 'sell':
+            events.append({'type': 'macd_cross', 'text': 'MACD satis kesisimi - Asagi momentum basladi', 'impact': 'negative'})
+            event_score -= 2
+
+        if n >= 200:
+            ema50 = pd.Series(c).ewm(span=50).mean().values
+            ema200 = pd.Series(c).ewm(span=200).mean().values
+            if ema50[-1] > ema200[-1] and ema50[-2] <= ema200[-2]:
+                events.append({'type': 'golden_cross', 'text': 'ALTIN KESISIM! EMA50 > EMA200 - Guclu uzun vadeli alis sinyali', 'impact': 'very_positive'})
+                event_score += 5
+            elif ema50[-1] < ema200[-1] and ema50[-2] >= ema200[-2]:
+                events.append({'type': 'death_cross', 'text': 'OLUM KESISIMI! EMA50 < EMA200 - Guclu uzun vadeli satis sinyali', 'impact': 'very_negative'})
+                event_score -= 5
+
+        if n >= 20:
+            vol_avg = np.mean(v[-20:])
+            vol_today = v[-1]
+            if vol_avg > 0 and vol_today > vol_avg * 2:
+                ratio = sf(vol_today / vol_avg)
+                direction = 'yukselis' if c[-1] > c[-2] else 'dusus'
+                impact = 'positive' if c[-1] > c[-2] else 'negative'
+                events.append({'type': 'volume_spike', 'text': f'Hacim patlamasi ({ratio}x ortalama) + {direction} hareketi', 'impact': impact})
+                event_score += 2 if c[-1] > c[-2] else -2
+
+        bb = calc_bollinger(c, cp)
+        if bb.get('lower', 0) > 0 and cp < bb['lower']:
+            events.append({'type': 'bb_break_lower', 'text': f'Fiyat alt Bollinger bandinin altinda ({sf(bb["lower"])}) - Toparlanma bekleniyor', 'impact': 'positive'})
+            event_score += 2
+        elif bb.get('upper', 0) > 0 and cp > bb['upper']:
+            events.append({'type': 'bb_break_upper', 'text': f'Fiyat ust Bollinger bandini asti ({sf(bb["upper"])}) - Asiri alim', 'impact': 'negative'})
+            event_score -= 1
+
+        w52 = calc_52w(hist)
+        w52_pos = w52.get('position', 50)
+        if w52_pos < 10:
+            events.append({'type': '52w_low', 'text': f'52 haftalik dibin %{sf(w52_pos)} uzerinde - Tarihi dip bolgesi', 'impact': 'positive'})
+            event_score += 2
+        elif w52_pos > 90:
+            events.append({'type': '52w_high', 'text': f'52 haftalik zirveye %{sf(100-w52_pos)} mesafede', 'impact': 'neutral'})
+
+        sr = calc_support_resistance(hist)
+        if sr.get('resistances'):
+            nearest_res = sr['resistances'][0]
+            if cp > nearest_res * 0.99 and c[-2] < nearest_res:
+                events.append({'type': 'resistance_break', 'text': f'Direnc kirdi ({sf(nearest_res)} TL) - Yukari kirilim', 'impact': 'positive'})
+                event_score += 3
+        if sr.get('supports'):
+            nearest_sup = sr['supports'][0]
+            if cp < nearest_sup * 1.01 and c[-2] > nearest_sup:
+                events.append({'type': 'support_break', 'text': f'Destek kirildi ({sf(nearest_sup)} TL) - Asagi kirilim', 'impact': 'negative'})
+                event_score -= 3
+
+        returns = {}
+        for label, days in [('daily', 1), ('weekly', 5), ('monthly', 22), ('yearly', 252)]:
+            if n > days:
+                ret = ((c[-1] - c[-1-days]) / c[-1-days]) * 100
+                returns[label] = sf(ret)
+            else:
+                returns[label] = 0
+
+        o_arr = hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
+        candles = calc_candlestick_patterns(o_arr, h, l, c)
+        for p in candles.get('patterns', []):
+            impact = 'positive' if p['type'] == 'bullish' else ('negative' if p['type'] == 'bearish' else 'neutral')
+            events.append({'type': 'candlestick', 'text': f"Mum Formasyonu: {p['name']} - {p['description']}", 'impact': impact})
+            event_score += p['strength'] if p['type'] == 'bullish' else -p['strength']
+
+        dyn = calc_dynamic_thresholds(c, h, l, v)
+
+        if events:
+            return {
+                'code': sym,
+                'name': BIST100_STOCKS.get(sym, sym),
+                'price': sf(cp),
+                'changePct': stock.get('changePct', 0),
+                'eventScore': event_score,
+                'events': events,
+                'eventCount': len(events),
+                'returns': returns,
+                'rsi': sf(rsi_val),
+                'dynamicThresholds': dyn,
+                'candlestickPatterns': candles.get('patterns', []),
+                'tradePlan': calc_trade_plan(hist),
+            }
+        return None
+    except:
+        return None
+
 @app.route('/api/opportunities')
 def opportunities():
-    """Coklu zaman dilimli firsat raporu - onemli olaylari tespit eder"""
+    """Coklu zaman dilimli firsat raporu - PARALEL hesaplama"""
     try:
+        # Computed cache kontrol (2 dk)
+        with _opps_cache_lock:
+            oc = _opps_cache
+            if oc['data'] and (time.time() - oc['ts']) < COMPUTED_CACHE_TTL:
+                return jsonify(safe_dict(oc['data']))
+
         stocks = _get_stocks()
         if not stocks:
             return jsonify({'success': True, 'loading': True, 'message': 'Veriler yukleniyor...'})
 
-        # Sadece cache'deki veriyi kullan - HTTP fetch YAPMA
         hist_ready = sum(1 for s in stocks if _cget_hist(f"{s['code']}_1y") is not None)
         if hist_ready < 10:
             return jsonify({'success': True, 'loading': True, 'message': f'Tarihsel veriler hazirlaniyor ({hist_ready}/{len(stocks)})...'})
 
+        # PARALEL firsat hesaplama
         opportunities_list = []
-        for stock in stocks:
-            sym = stock['code']
-            try:
-                hist = _cget_hist(f"{sym}_1y")
-                if hist is None:
-                    continue
+        with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+            futures = {executor.submit(_compute_opportunity_for_stock, s): s for s in stocks}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    opportunities_list.append(result)
 
-                c = hist['Close'].values.astype(float)
-                h = hist['High'].values.astype(float)
-                l = hist['Low'].values.astype(float)
-                v = hist['Volume'].values.astype(float)
-                cp = float(c[-1])
-                n = len(c)
-
-                events = []
-                event_score = 0
-
-                # 1. RSI asiri satim/alim
-                rsi_val = calc_rsi(c).get('value', 50)
-                if rsi_val < 30:
-                    events.append({'type': 'rsi_oversold', 'text': f'RSI {sf(rsi_val)} - Asiri satim bolgesinde, toparlanma bekleniyor', 'impact': 'positive'})
-                    event_score += 3
-                elif rsi_val > 70:
-                    events.append({'type': 'rsi_overbought', 'text': f'RSI {sf(rsi_val)} - Asiri alim bolgesinde, duzeltme gelebilir', 'impact': 'negative'})
-                    event_score -= 3
-
-                # 2. MACD kesisimi
-                macd = calc_macd(c)
-                if macd.get('signalType') == 'buy':
-                    events.append({'type': 'macd_cross', 'text': 'MACD alis kesisimi - Yukari momentum basladi', 'impact': 'positive'})
-                    event_score += 2
-                elif macd.get('signalType') == 'sell':
-                    events.append({'type': 'macd_cross', 'text': 'MACD satis kesisimi - Asagi momentum basladi', 'impact': 'negative'})
-                    event_score -= 2
-
-                # 3. Altin Kesisim / Olum Kesisimi (EMA 50/200)
-                if n >= 200:
-                    ema50 = pd.Series(c).ewm(span=50).mean().values
-                    ema200 = pd.Series(c).ewm(span=200).mean().values
-                    if ema50[-1] > ema200[-1] and ema50[-2] <= ema200[-2]:
-                        events.append({'type': 'golden_cross', 'text': 'ALTIN KESISIM! EMA50 > EMA200 - Guclu uzun vadeli alis sinyali', 'impact': 'very_positive'})
-                        event_score += 5
-                    elif ema50[-1] < ema200[-1] and ema50[-2] >= ema200[-2]:
-                        events.append({'type': 'death_cross', 'text': 'OLUM KESISIMI! EMA50 < EMA200 - Guclu uzun vadeli satis sinyali', 'impact': 'very_negative'})
-                        event_score -= 5
-
-                # 4. Hacim patlamasi
-                if n >= 20:
-                    vol_avg = np.mean(v[-20:])
-                    vol_today = v[-1]
-                    if vol_avg > 0 and vol_today > vol_avg * 2:
-                        ratio = sf(vol_today / vol_avg)
-                        direction = 'yukselis' if c[-1] > c[-2] else 'dusus'
-                        impact = 'positive' if c[-1] > c[-2] else 'negative'
-                        events.append({'type': 'volume_spike', 'text': f'Hacim patlamasi ({ratio}x ortalama) + {direction} hareketi', 'impact': impact})
-                        event_score += 2 if c[-1] > c[-2] else -2
-
-                # 5. Bollinger bant kirmasi
-                bb = calc_bollinger(c, cp)
-                if bb.get('lower', 0) > 0 and cp < bb['lower']:
-                    events.append({'type': 'bb_break_lower', 'text': f'Fiyat alt Bollinger bandinin altinda ({sf(bb["lower"])}) - Toparlanma bekleniyor', 'impact': 'positive'})
-                    event_score += 2
-                elif bb.get('upper', 0) > 0 and cp > bb['upper']:
-                    events.append({'type': 'bb_break_upper', 'text': f'Fiyat ust Bollinger bandini asti ({sf(bb["upper"])}) - Asiri alim', 'impact': 'negative'})
-                    event_score -= 1
-
-                # 6. 52 haftalik dip/zirve yakinligi
-                w52 = calc_52w(hist)
-                w52_pos = w52.get('position', 50)
-                if w52_pos < 10:
-                    events.append({'type': '52w_low', 'text': f'52 haftalik dibin %{sf(w52_pos)} uzerinde - Tarihi dip bolgesi', 'impact': 'positive'})
-                    event_score += 2
-                elif w52_pos > 90:
-                    events.append({'type': '52w_high', 'text': f'52 haftalik zirveye %{sf(100-w52_pos)} mesafede', 'impact': 'neutral'})
-
-                # 7. Destek/Direnc kirmasi
-                sr = calc_support_resistance(hist)
-                if sr.get('resistances'):
-                    nearest_res = sr['resistances'][0]
-                    if cp > nearest_res * 0.99 and c[-2] < nearest_res:
-                        events.append({'type': 'resistance_break', 'text': f'Direnc kirdi ({sf(nearest_res)} TL) - Yukari kirilim', 'impact': 'positive'})
-                        event_score += 3
-                if sr.get('supports'):
-                    nearest_sup = sr['supports'][0]
-                    if cp < nearest_sup * 1.01 and c[-2] > nearest_sup:
-                        events.append({'type': 'support_break', 'text': f'Destek kirildi ({sf(nearest_sup)} TL) - Asagi kirilim', 'impact': 'negative'})
-                        event_score -= 3
-
-                # Zaman dilimi bazli getiriler
-                returns = {}
-                for label, days in [('daily', 1), ('weekly', 5), ('monthly', 22), ('yearly', 252)]:
-                    if n > days:
-                        ret = ((c[-1] - c[-1-days]) / c[-1-days]) * 100
-                        returns[label] = sf(ret)
-                    else:
-                        returns[label] = 0
-
-                # Candlestick patterns tespiti
-                o_arr = hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
-                candles = calc_candlestick_patterns(o_arr, h, l, c)
-                for p in candles.get('patterns', []):
-                    impact = 'positive' if p['type'] == 'bullish' else ('negative' if p['type'] == 'bearish' else 'neutral')
-                    events.append({'type': 'candlestick', 'text': f"Mum Formasyonu: {p['name']} - {p['description']}", 'impact': impact})
-                    event_score += p['strength'] if p['type'] == 'bullish' else -p['strength']
-
-                # Dinamik esikler
-                dyn = calc_dynamic_thresholds(c, h, l, v)
-
-                if events:
-                    opportunities_list.append({
-                        'code': sym,
-                        'name': BIST100_STOCKS.get(sym, sym),
-                        'price': sf(cp),
-                        'changePct': stock.get('changePct', 0),
-                        'eventScore': event_score,
-                        'events': events,
-                        'eventCount': len(events),
-                        'returns': returns,
-                        'rsi': sf(rsi_val),
-                        'dynamicThresholds': dyn,
-                        'candlestickPatterns': candles.get('patterns', []),
-                        'tradePlan': calc_trade_plan(hist),
-                    })
-            except:
-                continue
-
-        # En yuksek event score'a gore sirala
         opportunities_list.sort(key=lambda x: abs(x['eventScore']), reverse=True)
-
-        # Pozitif ve negatif firsatlari ayir
         buy_opps = [o for o in opportunities_list if o['eventScore'] > 0]
         sell_opps = [o for o in opportunities_list if o['eventScore'] < 0]
 
-        return jsonify(safe_dict({
+        result_data = {
             'success': True,
             'totalScanned': len(stocks),
             'buyOpportunities': buy_opps[:20],
@@ -4155,7 +4181,13 @@ def opportunities():
             'marketRegime': calc_market_regime(),
             'timestamp': datetime.now().isoformat(),
             'meta': _api_meta(),
-        }))
+        }
+
+        with _opps_cache_lock:
+            _opps_cache['data'] = result_data
+            _opps_cache['ts'] = time.time()
+
+        return jsonify(safe_dict(result_data))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -4163,10 +4195,85 @@ def opportunities():
 # =====================================================================
 # CANLI STRATEJI SIMULASYONU
 # =====================================================================
+_strat_cache = {'data': None, 'ts': 0}
+_strat_cache_lock = threading.Lock()
+
+def _compute_strategy_for_stock(stock):
+    """Tek hisse icin 3 strateji hesapla (thread-safe)"""
+    sym = stock['code']
+    try:
+        hist = _cget_hist(f"{sym}_1y")
+        if hist is None:
+            return None
+
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)
+        l = hist['Low'].values.astype(float)
+        cp = float(c[-1])
+        n = len(c)
+        result = {'ma_cross': None, 'breakout': None, 'mean_reversion': None}
+
+        if n >= 50:
+            s = pd.Series(c)
+            ema20 = s.ewm(span=20).mean().values
+            ema50 = s.ewm(span=50).mean().values
+            signal = None
+            if ema20[-1] > ema50[-1] and ema20[-2] <= ema50[-2]: signal = 'AL'
+            elif ema20[-1] < ema50[-1] and ema20[-2] >= ema50[-2]: signal = 'SAT'
+            elif ema20[-1] > ema50[-1]: signal = 'ALIS POZISYONUNDA'
+            elif ema20[-1] < ema50[-1]: signal = 'SATIS POZISYONUNDA'
+            distance = sf(((ema20[-1] - ema50[-1]) / ema50[-1]) * 100)
+            result['ma_cross'] = {
+                'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
+                'price': sf(cp), 'changePct': stock.get('changePct', 0),
+                'signal': signal, 'ema20': sf(ema20[-1]), 'ema50': sf(ema50[-1]),
+                'distance': distance, 'freshSignal': signal in ('AL', 'SAT'),
+            }
+
+        if n >= 20:
+            high_20 = float(np.max(h[-20:]))
+            low_20 = float(np.min(l[-20:]))
+            signal = None
+            if cp >= high_20 * 0.99: signal = 'YUKARI KIRILIM'
+            elif cp <= low_20 * 1.01: signal = 'ASAGI KIRILIM'
+            else:
+                pos = ((cp - low_20) / (high_20 - low_20) * 100) if high_20 != low_20 else 50
+                signal = f'BANT ICINDE (%{sf(pos)})'
+            result['breakout'] = {
+                'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
+                'price': sf(cp), 'changePct': stock.get('changePct', 0),
+                'signal': signal, 'high20': sf(high_20), 'low20': sf(low_20),
+                'freshSignal': 'KIRILIM' in (signal or ''),
+            }
+
+        if n >= 15:
+            rsi = calc_rsi(c).get('value', 50)
+            signal = None
+            if rsi < 30: signal = 'ASIRI SATIM → AL'
+            elif rsi < 40: signal = 'SATIM BOLGESI → ALIS FIRSATI'
+            elif rsi > 70: signal = 'ASIRI ALIM → SAT'
+            elif rsi > 60: signal = 'ALIM BOLGESI → DIKKAT'
+            else: signal = 'NOTR BOLGE'
+            result['mean_reversion'] = {
+                'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
+                'price': sf(cp), 'changePct': stock.get('changePct', 0),
+                'signal': signal, 'rsi': sf(rsi), 'freshSignal': rsi < 30 or rsi > 70,
+            }
+
+        return result
+    except:
+        return None
+
 @app.route('/api/strategies/live')
 def live_strategies():
-    """3 stratejiyi tum hisselere canli uygular"""
+    """3 stratejiyi tum hisselere canli uygular (PARALEL)"""
     try:
+        # Computed cache kontrol (2 dk)
+        with _strat_cache_lock:
+            sc = _strat_cache
+            if sc['data'] and (time.time() - sc['ts']) < COMPUTED_CACHE_TTL:
+                return jsonify(safe_dict(sc['data']))
+
         stocks = _get_stocks()
         if not stocks:
             return jsonify({'success': True, 'loading': True, 'message': 'Veriler yukleniyor...'})
@@ -4178,104 +4285,32 @@ def live_strategies():
             'mean_reversion': 'Ortalamaya Donus (RSI)',
         }
 
-        # Sadece cache'deki veriyi kullan - HTTP fetch YAPMA
-        for stock in stocks:
-            sym = stock['code']
-            try:
-                hist = _cget_hist(f"{sym}_1y")
-                if hist is None:
-                    continue
+        # PARALEL strateji hesaplama
+        with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+            futures = {executor.submit(_compute_strategy_for_stock, s): s for s in stocks}
+            for future in as_completed(futures):
+                r = future.result()
+                if r:
+                    for key in ('ma_cross', 'breakout', 'mean_reversion'):
+                        if r[key]:
+                            results[key].append(r[key])
 
-                c = hist['Close'].values.astype(float)
-                h = hist['High'].values.astype(float)
-                l = hist['Low'].values.astype(float)
-                cp = float(c[-1])
-                n = len(c)
-
-                # 1. MA Cross (EMA 20/50)
-                if n >= 50:
-                    s = pd.Series(c)
-                    ema20 = s.ewm(span=20).mean().values
-                    ema50 = s.ewm(span=50).mean().values
-                    signal = None
-                    if ema20[-1] > ema50[-1] and ema20[-2] <= ema50[-2]:
-                        signal = 'AL'
-                    elif ema20[-1] < ema50[-1] and ema20[-2] >= ema50[-2]:
-                        signal = 'SAT'
-                    elif ema20[-1] > ema50[-1]:
-                        signal = 'ALIS POZISYONUNDA'
-                    elif ema20[-1] < ema50[-1]:
-                        signal = 'SATIS POZISYONUNDA'
-
-                    # Ortalamalar arasi mesafe (trend gucu)
-                    distance = sf(((ema20[-1] - ema50[-1]) / ema50[-1]) * 100)
-
-                    results['ma_cross'].append({
-                        'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
-                        'price': sf(cp), 'changePct': stock.get('changePct', 0),
-                        'signal': signal,
-                        'ema20': sf(ema20[-1]), 'ema50': sf(ema50[-1]),
-                        'distance': distance,
-                        'freshSignal': signal in ('AL', 'SAT'),
-                    })
-
-                # 2. Breakout (20 gunluk)
-                if n >= 20:
-                    high_20 = float(np.max(h[-20:]))
-                    low_20 = float(np.min(l[-20:]))
-                    signal = None
-                    if cp >= high_20 * 0.99:
-                        signal = 'YUKARI KIRILIM'
-                    elif cp <= low_20 * 1.01:
-                        signal = 'ASAGI KIRILIM'
-                    else:
-                        pos = ((cp - low_20) / (high_20 - low_20) * 100) if high_20 != low_20 else 50
-                        signal = f'BANT ICINDE (%{sf(pos)})'
-
-                    results['breakout'].append({
-                        'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
-                        'price': sf(cp), 'changePct': stock.get('changePct', 0),
-                        'signal': signal,
-                        'high20': sf(high_20), 'low20': sf(low_20),
-                        'freshSignal': 'KIRILIM' in (signal or ''),
-                    })
-
-                # 3. Mean Reversion (RSI)
-                if n >= 15:
-                    rsi = calc_rsi(c).get('value', 50)
-                    signal = None
-                    if rsi < 30:
-                        signal = 'ASIRI SATIM → AL'
-                    elif rsi < 40:
-                        signal = 'SATIM BOLGESI → ALIS FIRSATI'
-                    elif rsi > 70:
-                        signal = 'ASIRI ALIM → SAT'
-                    elif rsi > 60:
-                        signal = 'ALIM BOLGESI → DIKKAT'
-                    else:
-                        signal = 'NOTR BOLGE'
-
-                    results['mean_reversion'].append({
-                        'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
-                        'price': sf(cp), 'changePct': stock.get('changePct', 0),
-                        'signal': signal,
-                        'rsi': sf(rsi),
-                        'freshSignal': rsi < 30 or rsi > 70,
-                    })
-            except:
-                continue
-
-        # Her strateji icinde freshSignal olanlari uste al
         for key in results:
             results[key].sort(key=lambda x: (not x.get('freshSignal', False), -abs(x.get('changePct', 0))))
 
-        return jsonify(safe_dict({
+        result_data = {
             'success': True,
             'strategies': results,
             'strategyNames': strategy_names,
             'totalStocks': len(stocks),
             'timestamp': datetime.now().isoformat(),
-        }))
+        }
+
+        with _strat_cache_lock:
+            _strat_cache['data'] = result_data
+            _strat_cache['ts'] = time.time()
+
+        return jsonify(safe_dict(result_data))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -4875,7 +4910,7 @@ def _fetch_tefas_history_chunked(fund_code, days=365):
         if chunk_data and isinstance(chunk_data, list):
             all_data.extend(chunk_data)
         chunk_start = chunk_end + timedelta(days=1)
-        time.sleep(0.3)  # Rate limiting
+        time.sleep(0.05)  # Minimal rate limiting
     return all_data
 
 def _parse_fund_row(row):
@@ -5291,7 +5326,6 @@ def bes_analyze():
                 if perf:
                     perf['userPct'] = uf.get('pct', 0)
                     current_analysis.append(perf)
-                time.sleep(0.2)
 
         # Genel fon havuzundan en iyileri bul
         all_funds_cache = _bes_cache_get('bes_analysis_pool')
@@ -5319,13 +5353,21 @@ def bes_analyze():
                 fund_sizes.sort(key=lambda x: x[1], reverse=True)
                 top_codes = [c for c, _, _ in fund_sizes[:60]]
 
+                # PARALEL fon analizi
+                def _analyze_fund_code(code):
+                    try:
+                        history = _fetch_tefas_history_chunked(code, days=180)
+                        return _analyze_fund_performance(history, code)
+                    except:
+                        return None
+
                 all_perfs = []
-                for code in top_codes:
-                    history = _fetch_tefas_history_chunked(code, days=180)
-                    perf = _analyze_fund_performance(history, code)
-                    if perf:
-                        all_perfs.append(perf)
-                    time.sleep(0.15)
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    futures = {executor.submit(_analyze_fund_code, code): code for code in top_codes}
+                    for future in as_completed(futures):
+                        perf = future.result()
+                        if perf:
+                            all_perfs.append(perf)
 
                 all_funds_cache = all_perfs
                 _bes_cache_set('bes_analysis_pool', all_perfs)
@@ -5410,7 +5452,6 @@ def bes_simulate():
                 perf['recommendedPct'] = pct
                 perf['return6m'] = perf.get('returns', {}).get('6a', 0)
                 fund_perfs.append(perf)
-            time.sleep(0.15)
 
         simulation = _simulate_bes(fund_perfs, monthly, months)
         return jsonify(safe_dict({
@@ -5461,16 +5502,22 @@ def bes_top():
             if not fund_sizes:
                 return jsonify({'success': False, 'error': 'Fon verisi parse edilemedi'})
 
-            pool = []
-            for f in fund_sizes[:40]:
+            # PARALEL fon analizi - 40 fonu ayni anda cek
+            def _analyze_single_fund(f):
                 try:
                     history = _fetch_tefas_history_chunked(f['code'], days=180)
-                    perf = _analyze_fund_performance(history, f['code'])
-                    if perf:
-                        pool.append(perf)
+                    return _analyze_fund_performance(history, f['code'])
                 except Exception as fe:
                     print(f"[BES-TOP] Fon analiz hatasi {f['code']}: {fe}")
-                time.sleep(0.1)
+                    return None
+
+            pool = []
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = {executor.submit(_analyze_single_fund, f): f for f in fund_sizes[:40]}
+                for future in as_completed(futures):
+                    perf = future.result()
+                    if perf:
+                        pool.append(perf)
 
             # Bos pool'u cache'LEME - sonraki denemede tekrar denensin
             if pool:
