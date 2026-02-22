@@ -4119,6 +4119,8 @@ function besGetUserFunds() {
   return funds;
 }
 
+let _besAnalyzeRetryTimer = null;
+
 async function besAnalyze() {
   const funds = besGetUserFunds();
   const monthly = parseFloat(document.getElementById('besMonthly').value) || 2000;
@@ -4141,10 +4143,18 @@ async function besAnalyze() {
       }),
     });
 
+    // Loading durumu - fon havuzu henuz hazir degil, otomatik tekrar dene
+    if (data && data.loading) {
+      document.getElementById('besLoadingText').textContent = data.message || 'Fon verileri hazırlaniyor, otomatik tekrar deneniyor...';
+      if (_besAnalyzeRetryTimer) clearTimeout(_besAnalyzeRetryTimer);
+      _besAnalyzeRetryTimer = setTimeout(() => besAnalyze(), 8000);
+      return;
+    }
+
     document.getElementById('besLoading').style.display = 'none';
 
     if (!data || !data.success) {
-      alert('Analiz yapilamadi: ' + (data?.error || 'Bilinmeyen hata'));
+      alert('Analiz yapilamadi: ' + (data?.error || 'Bilinmeyen hata. Lutfen once BES sekmesinin fonlari yuklemesini bekleyin.'));
       return;
     }
 
@@ -4496,6 +4506,8 @@ function sf2(v) {
 // BES TOP FONLAR & KATEGORİ ANALİZİ
 // =============================================================================
 let _besCurrentPeriod = '3a';
+let _besTopPollTimer = null;
+let _besTopPollCount = 0;
 
 async function besLoadTopFunds(forceRefresh, period) {
   if (period) _besCurrentPeriod = period;
@@ -4517,18 +4529,37 @@ async function besLoadTopFunds(forceRefresh, period) {
   }
 
   const el = document.getElementById('besTopFundsContent');
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>En iyi fonlar yükleniyor... (ilk sefer 30-60 sn sürebilir)</div>';
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>BES fonlari hazırlaniyor...</div>';
 
   try {
     const data = await api('/bes/top?period=' + p);
-    if (!data || !data.success) {
-      el.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px;">${data?.error || 'Fon verileri yüklenemedi.'} <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>`;
+    if (!data) {
+      el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px;">Sunucuya ulasilamadi. <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>';
+      return;
+    }
+    // Loading durumu - backend arka planda analiz ediyor, polling yap
+    if (data.loading) {
+      _besTopPollCount++;
+      const msg = data.message || 'Fonlar analiz ediliyor...';
+      el.innerHTML = `<div class="loading"><div class="spinner"></div>${msg} (${_besTopPollCount * 5}s)</div>`;
+      if (_besTopPollCount < 24) { // Max 2 dakika (24 x 5s)
+        if (_besTopPollTimer) clearTimeout(_besTopPollTimer);
+        _besTopPollTimer = setTimeout(() => besLoadTopFunds(true), 5000);
+      } else {
+        _besTopPollCount = 0;
+        el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px;">Fon analizi uzun suruyor. <button class="btn btn-sm btn-secondary" onclick="_besTopPollCount=0;besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>';
+      }
+      return;
+    }
+    _besTopPollCount = 0;
+    if (!data.success) {
+      el.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px;">${data.error || 'Fon verileri yuklenemedi.'} <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>`;
       return;
     }
     _setCache(cacheKey, data);
     besRenderTopFunds(data);
   } catch(e) {
-    el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px;">Hata oluştu: ' + e.message + ' <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>';
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px;">Hata: ' + e.message + ' <button class="btn btn-sm btn-secondary" onclick="besLoadTopFunds(true)" style="margin-left:8px;">Tekrar Dene</button></div>';
   }
 }
 

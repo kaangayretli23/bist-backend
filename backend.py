@@ -4801,6 +4801,10 @@ _bes_cache = {}
 _bes_cache_lock = threading.Lock()
 BES_CACHE_TTL = 1800  # 30 dakika
 
+# BES background analiz thread state
+_bes_bg_loading = False
+_bes_bg_error = ''
+
 TEFAS_API_URL = "https://www.tefas.gov.tr/api/DB/BindHistoryInfo"
 TEFAS_ALLOC_URL = "https://www.tefas.gov.tr/api/DB/BindHistoryAllocation"
 TEFAS_COMPARE_URL = "https://www.tefas.gov.tr/api/DB/BindComparisonFundReturns"
@@ -4835,6 +4839,87 @@ def _bes_cache_get(key):
 def _bes_cache_set(key, data):
     with _bes_cache_lock:
         _bes_cache[key] = {'data': data, 'ts': time.time()}
+
+def _bes_bg_analyze_top():
+    """Arka planda BES fon analizi yap ve cache'e kaydet (Render 30s timeout bypass)"""
+    global _bes_bg_loading, _bes_bg_error
+    _bes_bg_loading = True
+    _bes_bg_error = ''
+    try:
+        today = datetime.now()
+        raw = None
+        for days_back in [30, 14, 7]:
+            start = (today - timedelta(days=days_back)).strftime('%d.%m.%Y')
+            end = today.strftime('%d.%m.%Y')
+            raw = _fetch_tefas_funds(start, end)
+            if raw and isinstance(raw, list) and len(raw) > 0:
+                print(f"[BES-BG] TEFAS verisi alindi: {len(raw)} satir ({days_back} gun)")
+                break
+
+        if not raw:
+            _bes_bg_error = 'TEFAS API\'ye ulasilamadi'
+            print("[BES-BG] TEFAS verisi alinamadi")
+            return
+
+        fund_sizes = []
+        for row in (raw if isinstance(raw, list) else []):
+            parsed = _parse_fund_row(row)
+            if parsed and parsed['code']:
+                fund_sizes.append(parsed)
+        fund_sizes.sort(key=lambda x: x.get('total_value', 0), reverse=True)
+
+        if not fund_sizes:
+            _bes_bg_error = 'Fon verisi parse edilemedi'
+            return
+
+        # PARALEL fon analizi - en buyuk 20 fonu analiz et
+        def _analyze_single(f):
+            try:
+                history = _fetch_tefas_history_chunked(f['code'], days=120)
+                return _analyze_fund_performance(history, f['code'])
+            except Exception as fe:
+                print(f"[BES-BG] Fon analiz hatasi {f['code']}: {fe}")
+                return None
+
+        pool = []
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(_analyze_single, f): f for f in fund_sizes[:20]}
+            for future in as_completed(futures, timeout=120):
+                try:
+                    perf = future.result(timeout=30)
+                    if perf:
+                        pool.append(perf)
+                except Exception:
+                    pass
+
+        # Fallback: paralel analiz basarisiz olduysa basit veriyle doldur
+        if not pool and fund_sizes:
+            print("[BES-BG] Paralel analiz basarisiz, fallback moda geciliyor...")
+            for f in fund_sizes[:15]:
+                pool.append({
+                    'code': f['code'],
+                    'name': f.get('name', ''),
+                    'category': _classify_fund(f.get('name', '')),
+                    'currentPrice': f.get('price', 0),
+                    'firstPrice': f.get('price', 0),
+                    'totalReturn': 0, 'totalDays': 1,
+                    'returns': {'1h': None, '1a': None, '3a': None, '6a': None, '1y': None},
+                    'volatility': 0, 'maxDrawdown': 0, 'sharpe': 0,
+                    'dailyReturns': [], 'priceHistory': [],
+                })
+
+        if pool:
+            _bes_cache_set('bes_analysis_pool', pool)
+            print(f"[BES-BG] Analiz tamamlandi: {len(pool)} fon cache'e yazildi")
+        else:
+            _bes_bg_error = 'Fon analizi yapilamadi'
+            print("[BES-BG] Hicbir fon analiz edilemedi")
+    except Exception as e:
+        _bes_bg_error = str(e)
+        print(f"[BES-BG] HATA: {e}")
+        traceback.print_exc()
+    finally:
+        _bes_bg_loading = False
 
 def _classify_fund(fund_name):
     """Fon adina gore kategori tahmini"""
@@ -5323,65 +5408,34 @@ def bes_analyze():
         if risk_profile not in ('conservative', 'moderate', 'aggressive'):
             risk_profile = 'moderate'
 
-        # Kullanicinin mevcut fonlarini analiz et
+        # Genel fon havuzundan en iyileri bul (cache'den)
+        all_funds_cache = _bes_cache_get('bes_analysis_pool')
+        if not all_funds_cache:
+            # Cache yok - background thread baslatilmis mi kontrol et
+            if not _bes_bg_loading:
+                threading.Thread(target=_bes_bg_analyze_top, daemon=True).start()
+            return jsonify({'success': True, 'loading': True, 'message': 'Fon verileri hazırlaniyor. Lütfen BES sekmesini açik birakin, veriler hazir olunca otomatik yüklenecek.'})
+
+        all_perfs = all_funds_cache
+
+        # Kullanicinin mevcut fonlarini analiz et (sadece cache hazirsa)
         current_analysis = []
         if user_funds:
             for uf in user_funds:
                 code = uf.get('code', '').strip().upper()
                 if not code:
                     continue
-                history = _fetch_tefas_history_chunked(code, days=365)
-                perf = _analyze_fund_performance(history, code)
+                # Oncelikle cache pool'dan bul
+                cached_perf = next((f for f in all_perfs if f['code'] == code), None)
+                if cached_perf:
+                    perf = dict(cached_perf)
+                else:
+                    # Cache'de yoksa kisa sureli veri cek (timeout riski dusuk)
+                    history = _fetch_tefas_history_chunked(code, days=90)
+                    perf = _analyze_fund_performance(history, code)
                 if perf:
                     perf['userPct'] = uf.get('pct', 0)
                     current_analysis.append(perf)
-
-        # Genel fon havuzundan en iyileri bul
-        all_funds_cache = _bes_cache_get('bes_analysis_pool')
-        if not all_funds_cache:
-            today = datetime.now()
-            start = (today - timedelta(days=7)).strftime('%d.%m.%Y')
-            end = today.strftime('%d.%m.%Y')
-            raw = _fetch_tefas_funds(start, end)
-            if raw and isinstance(raw, list):
-                # Tekil fonlari al
-                seen = set()
-                pool_codes = []
-                for row in raw:
-                    parsed = _parse_fund_row(row)
-                    if parsed and parsed['code'] and parsed['code'] not in seen:
-                        seen.add(parsed['code'])
-                        pool_codes.append(parsed['code'])
-
-                # En buyuk 60 fonu analiz et (performans icin sinirla)
-                fund_sizes = []
-                for row in raw:
-                    parsed = _parse_fund_row(row)
-                    if parsed and parsed['code']:
-                        fund_sizes.append((parsed['code'], parsed.get('total_value', 0), parsed.get('name', '')))
-                fund_sizes.sort(key=lambda x: x[1], reverse=True)
-                top_codes = [c for c, _, _ in fund_sizes[:60]]
-
-                # PARALEL fon analizi
-                def _analyze_fund_code(code):
-                    try:
-                        history = _fetch_tefas_history_chunked(code, days=180)
-                        return _analyze_fund_performance(history, code)
-                    except:
-                        return None
-
-                all_perfs = []
-                with ThreadPoolExecutor(max_workers=8) as executor:
-                    futures = {executor.submit(_analyze_fund_code, code): code for code in top_codes}
-                    for future in as_completed(futures):
-                        perf = future.result()
-                        if perf:
-                            all_perfs.append(perf)
-
-                all_funds_cache = all_perfs
-                _bes_cache_set('bes_analysis_pool', all_perfs)
-        else:
-            all_perfs = all_funds_cache
 
         # Optimizasyon
         recommendations = _bes_optimize(all_perfs if all_perfs else current_analysis, risk_profile, horizon_months)
@@ -5474,10 +5528,11 @@ def bes_simulate():
 
 @app.route('/api/bes/top')
 def bes_top():
-    """Kategorilere gore en iyi BES fonlari"""
+    """Kategorilere gore en iyi BES fonlari - background thread ile Render timeout bypass"""
+    global _bes_bg_loading
     try:
         category = request.args.get('category', '')
-        period = request.args.get('period', '3a')  # 1h, 1a, 3a, 6a, 1y
+        period = request.args.get('period', '3a')
         limit_n = int(request.args.get('limit', 20))
 
         cache_key = f'bes_top_{category}_{period}'
@@ -5487,85 +5542,26 @@ def bes_top():
 
         pool = _bes_cache_get('bes_analysis_pool')
         if not pool:
-            # Daha genis tarih araligi dene (30 gun, sonra 7 gun fallback)
-            today = datetime.now()
-            raw = None
-            for days_back in [30, 14, 7]:
-                start = (today - timedelta(days=days_back)).strftime('%d.%m.%Y')
-                end = today.strftime('%d.%m.%Y')
-                raw = _fetch_tefas_funds(start, end)
-                if raw and isinstance(raw, list) and len(raw) > 0:
-                    print(f"[BES-TOP] TEFAS verisi alindi: {len(raw)} satir ({days_back} gun)")
-                    break
+            # Cache yok - background thread ile analiz baslat
+            if _bes_bg_loading:
+                # Zaten calisiyor, polling devam etsin
+                return jsonify({'success': True, 'loading': True, 'message': 'Fonlar analiz ediliyor, lutfen bekleyin...'})
 
-            if not raw:
-                return jsonify({'success': False, 'error': 'TEFAS API\'ye ulasilamadi. Lutfen tekrar deneyin.'})
+            if _bes_bg_error:
+                err = _bes_bg_error
+                return jsonify({'success': True, 'loading': True, 'message': f'Tekrar deneniyor... ({err})'})
 
-            fund_sizes = []
-            for row in (raw if isinstance(raw, list) else []):
-                parsed = _parse_fund_row(row)
-                if parsed and parsed['code']:
-                    fund_sizes.append(parsed)
-            fund_sizes.sort(key=lambda x: x.get('total_value', 0), reverse=True)
+            # Background thread baslat
+            print("[BES-TOP] Background analiz thread baslatiliyor...")
+            t = threading.Thread(target=_bes_bg_analyze_top, daemon=True)
+            t.start()
+            return jsonify({'success': True, 'loading': True, 'message': 'BES fon analizi baslatildi, birkaç saniye sonra hazir olacak...'})
 
-            if not fund_sizes:
-                return jsonify({'success': False, 'error': 'Fon verisi parse edilemedi'})
-
-            # PARALEL fon analizi - en buyuk 20 fonu analiz et
-            def _analyze_single_fund(f):
-                try:
-                    history = _fetch_tefas_history_chunked(f['code'], days=120)
-                    return _analyze_fund_performance(history, f['code'])
-                except Exception as fe:
-                    print(f"[BES-TOP] Fon analiz hatasi {f['code']}: {fe}")
-                    return None
-
-            pool = []
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {executor.submit(_analyze_single_fund, f): f for f in fund_sizes[:20]}
-                for future in as_completed(futures, timeout=90):
-                    try:
-                        perf = future.result(timeout=30)
-                        if perf:
-                            pool.append(perf)
-                    except Exception:
-                        pass
-
-            # Paralel analiz basarisiz olduysa fallback: mevcut veriyle basit hesaplama
-            if not pool and fund_sizes:
-                print("[BES-TOP] Paralel analiz basarisiz, fallback moda geciliyor...")
-                for f in fund_sizes[:15]:
-                    try:
-                        fallback_perf = {
-                            'code': f['code'],
-                            'name': f.get('name', ''),
-                            'category': _classify_fund(f.get('name', '')),
-                            'currentPrice': f.get('price', 0),
-                            'firstPrice': f.get('price', 0),
-                            'totalReturn': 0,
-                            'totalDays': 1,
-                            'returns': {'1h': None, '1a': None, '3a': None, '6a': None, '1y': None},
-                            'volatility': 0,
-                            'maxDrawdown': 0,
-                            'sharpe': 0,
-                            'dailyReturns': [],
-                            'priceHistory': [],
-                        }
-                        pool.append(fallback_perf)
-                    except Exception:
-                        pass
-
-            if pool:
-                _bes_cache_set('bes_analysis_pool', pool)
-            else:
-                return jsonify({'success': False, 'error': 'Fon analizi yapilamadi, TEFAS verisi yetersiz'})
-
-        # Filtrele ve sirala
+        # Pool hazir - filtrele ve sirala
         filtered = pool
         if category:
             filtered = [f for f in pool if f.get('category') == category]
 
-        # Period'a gore sirala
         def sort_key(f):
             returns = f.get('returns', {})
             return returns.get(period, 0) or 0
