@@ -4851,29 +4851,38 @@ def _classify_fund(fund_name):
     return 'diger'
 
 def _fetch_tefas_funds(start_date, end_date, fund_code=''):
-    """TEFAS API'den BES fon verisi cek (max 90 gun)"""
-    try:
-        data = {
-            'fontip': 'EMK',
-            'sfontur': '',
-            'fonkod': fund_code,
-            'fongrup': '',
-            'bastarih': start_date,
-            'bittarih': end_date,
-            'fonturkod': '',
-            'fonunvantip': '',
-        }
-        resp = req_lib.post(TEFAS_API_URL, headers=TEFAS_HEADERS, data=data, timeout=30)
-        resp.raise_for_status()
-        result = resp.json()
-        if isinstance(result, dict) and 'data' in result:
-            return result['data']
-        if isinstance(result, list):
+    """TEFAS API'den BES fon verisi cek (max 90 gun) - retry destekli"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            data = {
+                'fontip': 'EMK',
+                'sfontur': '',
+                'fonkod': fund_code,
+                'fongrup': '',
+                'bastarih': start_date,
+                'bittarih': end_date,
+                'fonturkod': '',
+                'fonunvantip': '',
+            }
+            resp = req_lib.post(TEFAS_API_URL, headers=TEFAS_HEADERS, data=data, timeout=30)
+            if resp.status_code in (403, 429, 503):
+                wait = (attempt + 1) * 2
+                print(f"[BES] TEFAS rate limit ({resp.status_code}), {wait}s bekleniyor... (deneme {attempt+1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            result = resp.json()
+            if isinstance(result, dict) and 'data' in result:
+                return result['data']
+            if isinstance(result, list):
+                return result
             return result
-        return result
-    except Exception as e:
-        print(f"[BES] TEFAS fetch hata: {e}")
-        return []
+        except Exception as e:
+            print(f"[BES] TEFAS fetch hata (deneme {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep((attempt + 1) * 1.5)
+    return []
 
 def _fetch_tefas_allocation(fund_code, start_date, end_date):
     """TEFAS API'den fon portfoy dagilimini cek"""
@@ -4910,7 +4919,7 @@ def _fetch_tefas_history_chunked(fund_code, days=365):
         if chunk_data and isinstance(chunk_data, list):
             all_data.extend(chunk_data)
         chunk_start = chunk_end + timedelta(days=1)
-        time.sleep(0.05)  # Minimal rate limiting
+        time.sleep(0.3)  # Rate limiting - TEFAS bloklamamasi icin
     return all_data
 
 def _parse_fund_row(row):
@@ -5502,24 +5511,50 @@ def bes_top():
             if not fund_sizes:
                 return jsonify({'success': False, 'error': 'Fon verisi parse edilemedi'})
 
-            # PARALEL fon analizi - 40 fonu ayni anda cek
+            # PARALEL fon analizi - en buyuk 20 fonu analiz et
             def _analyze_single_fund(f):
                 try:
-                    history = _fetch_tefas_history_chunked(f['code'], days=180)
+                    history = _fetch_tefas_history_chunked(f['code'], days=120)
                     return _analyze_fund_performance(history, f['code'])
                 except Exception as fe:
                     print(f"[BES-TOP] Fon analiz hatasi {f['code']}: {fe}")
                     return None
 
             pool = []
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                futures = {executor.submit(_analyze_single_fund, f): f for f in fund_sizes[:40]}
-                for future in as_completed(futures):
-                    perf = future.result()
-                    if perf:
-                        pool.append(perf)
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {executor.submit(_analyze_single_fund, f): f for f in fund_sizes[:20]}
+                for future in as_completed(futures, timeout=90):
+                    try:
+                        perf = future.result(timeout=30)
+                        if perf:
+                            pool.append(perf)
+                    except Exception:
+                        pass
 
-            # Bos pool'u cache'LEME - sonraki denemede tekrar denensin
+            # Paralel analiz basarisiz olduysa fallback: mevcut veriyle basit hesaplama
+            if not pool and fund_sizes:
+                print("[BES-TOP] Paralel analiz basarisiz, fallback moda geciliyor...")
+                for f in fund_sizes[:15]:
+                    try:
+                        fallback_perf = {
+                            'code': f['code'],
+                            'name': f.get('name', ''),
+                            'category': _classify_fund(f.get('name', '')),
+                            'currentPrice': f.get('price', 0),
+                            'firstPrice': f.get('price', 0),
+                            'totalReturn': 0,
+                            'totalDays': 1,
+                            'returns': {'1h': None, '1a': None, '3a': None, '6a': None, '1y': None},
+                            'volatility': 0,
+                            'maxDrawdown': 0,
+                            'sharpe': 0,
+                            'dailyReturns': [],
+                            'priceHistory': [],
+                        }
+                        pool.append(fallback_perf)
+                    except Exception:
+                        pass
+
             if pool:
                 _bes_cache_set('bes_analysis_pool', pool)
             else:
