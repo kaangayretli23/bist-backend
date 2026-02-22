@@ -8,6 +8,7 @@ from flask import Flask, jsonify, request, send_from_directory, make_response, s
 from flask_cors import CORS
 import traceback, os, time, threading, json, hashlib, sqlite3, uuid
 from datetime import datetime, timedelta
+import requests as req_lib
 
 try:
     import yfinance as yf
@@ -206,6 +207,34 @@ _loader_started = False
 _status = {'phase':'idle','loaded':0,'total':0,'lastRun':None,'error':''}
 CACHE_TTL = 600
 
+def _env_float(name, default, min_value):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+        return val if val >= min_value else default
+    except (TypeError, ValueError):
+        return default
+
+def _env_int(name, default, min_value):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        val = int(raw)
+        return val if val >= min_value else default
+    except (TypeError, ValueError):
+        return default
+
+LOADER_START_DELAY = _env_float('LOADER_START_DELAY', 1.0, 0.0)
+LOADER_INDEX_DELAY = _env_float('LOADER_INDEX_DELAY', 0.1, 0.0)
+LOADER_STOCK_DELAY = _env_float('LOADER_STOCK_DELAY', 0.1, 0.0)
+ISYATIRIM_TIMEOUT = _env_float('ISYATIRIM_TIMEOUT', 8.0, 1.0)
+ISYATIRIM_MAX_HTTP_ATTEMPTS = _env_int('ISYATIRIM_MAX_HTTP_ATTEMPTS', 2, 1)
+
+_http_session = req_lib.Session()
+
 def _cget(store, key):
     with _lock:
         item = store.get(key)
@@ -236,7 +265,6 @@ def _get_indices():
 # =====================================================================
 import urllib.request
 import urllib.error
-import requests as req_lib
 
 IS_YATIRIM_BASE = "https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/HisseTekil"
 IS_YATIRIM_HEADERS = {
@@ -258,19 +286,19 @@ def _fetch_isyatirim_df(symbol, days=365):
         print(f"  [ISYATIRIM] {symbol} {days}d cekiliyor...")
         resp = None
         last_err = None
-        for http_attempt in range(3):
+        for http_attempt in range(ISYATIRIM_MAX_HTTP_ATTEMPTS):
             try:
-                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=15)
+                resp = _http_session.get(url, headers=IS_YATIRIM_HEADERS, timeout=ISYATIRIM_TIMEOUT)
                 resp.raise_for_status()
                 break
             except Exception as http_e:
                 last_err = http_e
-                if http_attempt < 2:
+                if http_attempt < ISYATIRIM_MAX_HTTP_ATTEMPTS - 1:
                     wait = (http_attempt + 1) * 1.5
                     print(f"  [ISYATIRIM] {symbol} HTTP hata ({http_e}), {wait}s sonra tekrar...")
                     time.sleep(wait)
         if resp is None:
-            print(f"  [ISYATIRIM] {symbol} 3 HTTP denemesi basarisiz: {last_err}")
+            print(f"  [ISYATIRIM] {symbol} {ISYATIRIM_MAX_HTTP_ATTEMPTS} HTTP denemesi basarisiz: {last_err}")
             return None
 
         data = resp.json()
@@ -552,7 +580,7 @@ def _fetch_index_data(key, tsym, name):
 # =====================================================================
 def _background_loop():
     print(f"[LOADER] Thread basliyor, YF={YF_OK}")
-    time.sleep(3)
+    time.sleep(LOADER_START_DELAY)
 
     while True:
         try:
@@ -571,7 +599,7 @@ def _background_loop():
                         'changePct': sf((cur - prev) / prev * 100 if prev else 0),
                         'volume': si(data.get('volume', 0)),
                     })
-                time.sleep(0.5)
+                time.sleep(LOADER_INDEX_DELAY)
 
             print(f"[LOADER] Endeksler: {len(_index_cache)}/{len(INDEX_TICKERS)}")
 
@@ -606,7 +634,7 @@ def _background_loop():
                 _status['loaded'] = i + 1
                 if (i + 1) % 10 == 0:
                     print(f"  [BIST30] {i+1}/{len(BIST30)}, cache={len(_stock_cache)}, fail={fail_count}")
-                time.sleep(0.8)
+                time.sleep(LOADER_STOCK_DELAY)
 
             print(f"[LOADER] BIST30: {len(_stock_cache)} hisse cache'de, {fail_count} basarisiz")
             if fail_list:
@@ -644,7 +672,7 @@ def _background_loop():
                         phase3_fail += 1; phase3_fail_list.append(sym)
                     if (i + 1) % 10 == 0:
                         print(f"  [BIST100] {i+1}/{len(remaining)}, toplam cache={len(_stock_cache)}, fail={phase3_fail}")
-                    time.sleep(0.8)
+                    time.sleep(LOADER_STOCK_DELAY)
                 print(f"[LOADER] BIST100 kalan: {phase3_fail} basarisiz")
                 if phase3_fail_list:
                     print(f"[LOADER] BIST100 basarisiz: {phase3_fail_list}")
