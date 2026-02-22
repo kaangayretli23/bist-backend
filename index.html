@@ -1189,6 +1189,9 @@ let btChartInstance = null;
 let _loadingDismissed = false;
 let _loadingProgress = 0;
 
+// Safety net: auto-dismiss loading popup after 20 seconds no matter what
+setTimeout(() => { if (!_loadingDismissed) dismissLoadingPopup(); }, 20000);
+
 function updateLoadingProgress(pct, status) {
   _loadingProgress = Math.min(pct, 100);
   const bar = document.getElementById('lpProgress');
@@ -1201,6 +1204,7 @@ function updateLoadingProgress(pct, status) {
 }
 
 function dismissLoadingPopup() {
+  if (_loadingDismissed) return;
   _loadingDismissed = true;
   const overlay = document.getElementById('loadingOverlay');
   if (overlay) {
@@ -1366,10 +1370,23 @@ async function loadDashboard(forceRefresh) {
   }
 
   updateLoadingProgress(30, 'Hisse verileri çekiliyor...');
-  const data = await api('/dashboard');
+  let data;
+  try {
+    data = await api('/dashboard');
+  } catch(e) {
+    dismissLoadingPopup();
+    if (cached) { renderDashboard(cached); return; }
+    document.getElementById('indicesCards').innerHTML = `
+      <div class="index-card" style="grid-column:1/-1;text-align:center;">
+        <div style="color:var(--yellow);margin-bottom:8px;">Bağlantı hatası</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Sunucuya ulaşılamadı, lütfen tekrar deneyin.</div>
+        <button class="btn btn-primary btn-sm" onclick="loadDashboard(true)">Tekrar Dene</button>
+      </div>`;
+    return;
+  }
   if (data.error && !data.success) {
-    updateLoadingProgress(100, 'Hata oluştu, cache verisi gösteriliyor');
-    if (cached) return;
+    dismissLoadingPopup();
+    if (cached) { renderDashboard(cached); return; }
     document.getElementById('indicesCards').innerHTML = `
       <div class="index-card" style="grid-column:1/-1;text-align:center;">
         <div style="color:var(--yellow);margin-bottom:8px;">Veri yüklenirken sorun oluştu</div>
@@ -1380,7 +1397,7 @@ async function loadDashboard(forceRefresh) {
   }
 
   if (data.loading || (data.allStocks && data.allStocks.length === 0)) {
-    updateLoadingProgress(50, 'Sunucu verileri hazırlıyor...');
+    dismissLoadingPopup();
     if (cached) { renderDashboard(cached); return; }
     document.getElementById('indicesCards').innerHTML = `
       <div class="index-card" style="grid-column:1/-1;text-align:center;">
@@ -4674,7 +4691,7 @@ function besRenderCategoryOverview(data) {
 // INIT
 // =============================================================================
 document.addEventListener('DOMContentLoaded', () => {
-  loadDashboard();
+  loadDashboard().catch(() => dismissLoadingPopup());
   updateUserUI();
   validateSession(); // DB sifirlanmissa oturumu yeniden olustur
 });
