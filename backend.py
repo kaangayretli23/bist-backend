@@ -6,7 +6,7 @@ SQLite veritabani, kullanici sistemi, backtest, KAP haberleri
 """
 from flask import Flask, jsonify, request, send_from_directory, make_response, session
 from flask_cors import CORS
-import traceback, os, time, threading, json, hashlib, sqlite3, uuid
+import traceback, os, time, threading, json, hashlib, sqlite3, uuid, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
@@ -4814,6 +4814,7 @@ def signals_performance():
 _bes_cache = {}
 _bes_cache_lock = threading.Lock()
 BES_CACHE_TTL = 1800  # 30 dakika
+_tefas_semaphore = threading.Semaphore(1)  # TEFAS API rate limiter - tek seferde 1 istek
 
 # BES background analiz thread state
 _bes_bg_loading = False
@@ -4855,19 +4856,24 @@ def _bes_cache_set(key, data):
         _bes_cache[key] = {'data': data, 'ts': time.time()}
 
 def _bes_bg_analyze_top():
-    """Arka planda BES fon analizi yap ve cache'e kaydet (Render 30s timeout bypass)"""
+    """Arka planda BES fon analizi yap ve cache'e kaydet (Render 30s timeout bypass)
+    Strateji: Broad fetch ile tum fonlarin verisini tek seferde cek, grupla, analiz et.
+    Individual fetch'lere sadece gerektiginde (yetersiz veri) basvur."""
     global _bes_bg_loading, _bes_bg_error
     _bes_bg_loading = True
     _bes_bg_error = ''
     try:
         today = datetime.now()
+
+        # ADIM 1: Genis tarih araliginda tum EMK fonlarini tek seferde cek
+        # 90 gun -> tek chunk, TEFAS API'ye sadece 1 istek
         raw = None
-        for days_back in [30, 14, 7]:
+        for days_back in [90, 60, 30, 14, 7]:
             start = (today - timedelta(days=days_back)).strftime('%d.%m.%Y')
             end = today.strftime('%d.%m.%Y')
             raw = _fetch_tefas_funds(start, end)
             if raw and isinstance(raw, list) and len(raw) > 0:
-                print(f"[BES-BG] TEFAS verisi alindi: {len(raw)} satir ({days_back} gun)")
+                print(f"[BES-BG] TEFAS broad fetch basarili: {len(raw)} satir ({days_back} gun)")
                 break
 
         if not raw:
@@ -4875,41 +4881,69 @@ def _bes_bg_analyze_top():
             print("[BES-BG] TEFAS verisi alinamadi")
             return
 
-        fund_sizes = []
+        # ADIM 2: Fon koduna gore grupla (deduplication + data grouping)
+        fund_map = {}  # code -> {rows: [raw_rows], meta: {parsed latest}}
         for row in (raw if isinstance(raw, list) else []):
             parsed = _parse_fund_row(row)
             if parsed and parsed['code']:
-                fund_sizes.append(parsed)
-        fund_sizes.sort(key=lambda x: x.get('total_value', 0), reverse=True)
+                code = parsed['code']
+                if code not in fund_map:
+                    fund_map[code] = {'rows': [], 'meta': parsed}
+                fund_map[code]['rows'].append(row)
+                # En buyuk total_value'yu meta olarak tut (genelde en guncel)
+                if parsed.get('total_value', 0) >= fund_map[code]['meta'].get('total_value', 0):
+                    fund_map[code]['meta'] = parsed
 
-        if not fund_sizes:
+        if not fund_map:
             _bes_bg_error = 'Fon verisi parse edilemedi'
+            print("[BES-BG] Hicbir fon parse edilemedi")
             return
 
-        # PARALEL fon analizi - en buyuk 20 fonu analiz et
-        def _analyze_single(f):
-            try:
-                history = _fetch_tefas_history_chunked(f['code'], days=120)
-                return _analyze_fund_performance(history, f['code'])
-            except Exception as fe:
-                print(f"[BES-BG] Fon analiz hatasi {f['code']}: {fe}")
-                return None
+        # En buyuk 20 fonu sec (unique fund codes, sorted by total_value)
+        sorted_funds = sorted(fund_map.values(), key=lambda x: x['meta'].get('total_value', 0), reverse=True)
+        print(f"[BES-BG] {len(fund_map)} unique fon bulundu, en buyuk 20 analiz edilecek")
 
+        # ADIM 3: Broad fetch verisinden direkt analiz et (ek API cagrisi YOK)
         pool = []
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {executor.submit(_analyze_single, f): f for f in fund_sizes[:20]}
-            for future in as_completed(futures, timeout=120):
+        needs_individual = []
+
+        for fund_data in sorted_funds[:20]:
+            code = fund_data['meta']['code']
+            rows = fund_data['rows']
+
+            if len(rows) >= 2:
                 try:
-                    perf = future.result(timeout=30)
+                    perf = _analyze_fund_performance(rows, code)
                     if perf:
                         pool.append(perf)
-                except Exception:
-                    pass
+                        continue
+                except Exception as fe:
+                    print(f"[BES-BG] Broad analiz hatasi {code}: {fe}")
 
-        # Fallback: paralel analiz basarisiz olduysa basit veriyle doldur
-        if not pool and fund_sizes:
-            print("[BES-BG] Paralel analiz basarisiz, fallback moda geciliyor...")
-            for f in fund_sizes[:15]:
+            needs_individual.append(fund_data)
+
+        print(f"[BES-BG] Broad fetch'ten {len(pool)} fon analiz edildi, {len(needs_individual)} fon ek veri gerektiriyor")
+
+        # ADIM 4: Yetersiz veri olan fonlar icin SEQUENTIAL individual fetch (rate limited)
+        if needs_individual and len(pool) < 10:
+            for fund_data in needs_individual:
+                code = fund_data['meta']['code']
+                try:
+                    print(f"[BES-BG] Sequential fetch: {code}")
+                    history = _fetch_tefas_history_chunked(code, days=90)
+                    perf = _analyze_fund_performance(history, code)
+                    if perf:
+                        pool.append(perf)
+                    time.sleep(1.5)  # TEFAS rate limiting
+                except Exception as fe:
+                    print(f"[BES-BG] Sequential fetch hatasi {code}: {fe}")
+                    time.sleep(2)
+
+        # ADIM 5: Fallback - hala sonuc yoksa basit veriyle doldur
+        if not pool and sorted_funds:
+            print("[BES-BG] Tum analizler basarisiz, fallback moda geciliyor...")
+            for fund_data in sorted_funds[:15]:
+                f = fund_data['meta']
                 pool.append({
                     'code': f['code'],
                     'name': f.get('name', ''),
@@ -4924,7 +4958,7 @@ def _bes_bg_analyze_top():
 
         if pool:
             _bes_cache_set('bes_analysis_pool', pool)
-            print(f"[BES-BG] Analiz tamamlandi: {len(pool)} fon cache'e yazildi")
+            print(f"[BES-BG] Analiz tamamlandi: {len(pool)} fon cache'e yazildi (broad: {len(pool) - len(needs_individual) if len(pool) > len(needs_individual) else len(pool)})")
         else:
             _bes_bg_error = 'Fon analizi yapilamadi'
             print("[BES-BG] Hicbir fon analiz edilemedi")
@@ -4950,38 +4984,52 @@ def _classify_fund(fund_name):
     return 'diger'
 
 def _fetch_tefas_funds(start_date, end_date, fund_code=''):
-    """TEFAS API'den BES fon verisi cek (max 90 gun) - retry destekli"""
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            data = {
-                'fontip': 'EMK',
-                'sfontur': '',
-                'fonkod': fund_code,
-                'fongrup': '',
-                'bastarih': start_date,
-                'bittarih': end_date,
-                'fonturkod': '',
-                'fonunvantip': '',
-            }
-            resp = req_lib.post(TEFAS_API_URL, headers=TEFAS_HEADERS, data=data, timeout=30)
-            if resp.status_code in (403, 429, 503):
-                wait = (attempt + 1) * 2
-                print(f"[BES] TEFAS rate limit ({resp.status_code}), {wait}s bekleniyor... (deneme {attempt+1}/{max_retries})")
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            result = resp.json()
-            if isinstance(result, dict) and 'data' in result:
-                return result['data']
-            if isinstance(result, list):
+    """TEFAS API'den BES fon verisi cek (max 90 gun) - retry destekli, semaphore ile rate limited"""
+    _tefas_semaphore.acquire()
+    try:
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                data = {
+                    'fontip': 'EMK',
+                    'sfontur': '',
+                    'fonkod': fund_code,
+                    'fongrup': '',
+                    'bastarih': start_date,
+                    'bittarih': end_date,
+                    'fonturkod': '',
+                    'fonunvantip': '',
+                }
+                resp = req_lib.post(TEFAS_API_URL, headers=TEFAS_HEADERS, data=data, timeout=30)
+                if resp.status_code in (403, 429, 503):
+                    wait = (attempt + 1) * 3
+                    print(f"[BES] TEFAS rate limit ({resp.status_code}), {wait}s bekleniyor... (deneme {attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                result = resp.json()
+                # Debug: ilk cagrilarda API yapisini logla
+                if fund_code and isinstance(result, dict):
+                    keys = list(result.keys())[:5]
+                    print(f"[BES] TEFAS response keys ({fund_code}): {keys}")
+                if isinstance(result, dict) and 'data' in result:
+                    rows = result['data']
+                    if rows and isinstance(rows, list) and len(rows) > 0:
+                        print(f"[BES] TEFAS {fund_code or 'ALL'}: {len(rows)} satir, ornek keys: {list(rows[0].keys())[:8] if isinstance(rows[0], dict) else 'not-dict'}")
+                    return rows
+                if isinstance(result, list):
+                    if result and isinstance(result[0], dict):
+                        print(f"[BES] TEFAS {fund_code or 'ALL'}: {len(result)} satir (list), ornek keys: {list(result[0].keys())[:8]}")
+                    return result
                 return result
-            return result
-        except Exception as e:
-            print(f"[BES] TEFAS fetch hata (deneme {attempt+1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep((attempt + 1) * 1.5)
-    return []
+            except Exception as e:
+                print(f"[BES] TEFAS fetch hata (deneme {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep((attempt + 1) * 2)
+        return []
+    finally:
+        _tefas_semaphore.release()
+        time.sleep(0.8)  # Her TEFAS cagrisi arasinda 0.8s bekleme
 
 def _fetch_tefas_allocation(fund_code, start_date, end_date):
     """TEFAS API'den fon portfoy dagilimini cek"""
@@ -5005,7 +5053,7 @@ def _fetch_tefas_allocation(fund_code, start_date, end_date):
         return []
 
 def _fetch_tefas_history_chunked(fund_code, days=365):
-    """90 gunluk chunk'larla uzun sureli fon gecmisi cek"""
+    """90 gunluk chunk'larla uzun sureli fon gecmisi cek - semaphore ile rate limited"""
     all_data = []
     end = datetime.now()
     start = end - timedelta(days=days)
@@ -5018,21 +5066,69 @@ def _fetch_tefas_history_chunked(fund_code, days=365):
         if chunk_data and isinstance(chunk_data, list):
             all_data.extend(chunk_data)
         chunk_start = chunk_end + timedelta(days=1)
-        time.sleep(0.3)  # Rate limiting - TEFAS bloklamamasi icin
+        # Rate limiting artik _fetch_tefas_funds icinde semaphore ile yapiliyor
     return all_data
 
+def _get_tefas_field(row, *keys, default=None):
+    """TEFAS API field'ini case-insensitive olarak bul"""
+    for key in keys:
+        if key in row:
+            return row[key]
+    # Case-insensitive fallback
+    row_lower = {k.lower(): v for k, v in row.items()}
+    for key in keys:
+        kl = key.lower()
+        if kl in row_lower:
+            return row_lower[kl]
+    return default
+
 def _parse_fund_row(row):
-    """TEFAS API'den donen bir fund row'unu parse et"""
+    """TEFAS API'den donen bir fund row'unu parse et - genis field name destegi"""
     if isinstance(row, dict):
+        code = _get_tefas_field(row, 'FonKodu', 'fonkodu', 'FONKODU', 'FonKod', default='')
+        name = _get_tefas_field(row, 'FonUnvani', 'fonunvani', 'FONUNVANI', 'FonAdi', default='')
+        date_raw = _get_tefas_field(row, 'Tarih', 'tarih', 'TARIH', default='')
+        price = sf(_get_tefas_field(row, 'BirimPayDegeri', 'birimpay', 'BIRIMPAY', 'BirimPayDeger', default=0))
+        total_value = sf(_get_tefas_field(row, 'ToplamDeger', 'toplamdeger', 'TOPLAMDEGER', default=0))
+        investors = si(_get_tefas_field(row, 'YatirimciSayisi', 'yatirimcisayisi', 'YATIRIMCISAYISI', default=0))
+        shares = sf(_get_tefas_field(row, 'PaySayisi', 'paysayisi', 'PAYSAYISI', default=0))
+
+        # Eger price 0 ama total_value var ise, total_value/shares'den hesapla
+        if (not price or price <= 0) and total_value and total_value > 0 and shares and shares > 0:
+            price = sf(total_value / shares)
+
+        # Tarih WCF formatinda olabilir
+        if date_raw and isinstance(date_raw, str) and '/Date(' in date_raw:
+            dt = _parse_tefas_date(date_raw)
+            if dt:
+                date_raw = dt.strftime('%d.%m.%Y')
+
         return {
-            'code': row.get('FonKodu', row.get('fonkodu', row.get('FONKODU', ''))),
-            'name': row.get('FonUnvani', row.get('fonunvani', row.get('FONUNVANI', ''))),
-            'date': row.get('Tarih', row.get('tarih', row.get('TARIH', ''))),
-            'price': sf(row.get('BirimPayDegeri', row.get('birimpay', row.get('BIRIMPAY', row.get('ToplamDeger', 0))))),
-            'total_value': sf(row.get('ToplamDeger', row.get('toplamdeger', row.get('TOPLAMDEGER', 0)))),
-            'investors': si(row.get('YatirimciSayisi', row.get('yatirimcisayisi', row.get('YATIRIMCISAYISI', 0)))),
-            'shares': sf(row.get('PaySayisi', row.get('paysayisi', row.get('PAYSAYISI', 0)))),
+            'code': code or '',
+            'name': name or '',
+            'date': date_raw or '',
+            'price': price or 0,
+            'total_value': total_value or 0,
+            'investors': investors or 0,
+            'shares': shares or 0,
         }
+    return None
+
+def _parse_tefas_date(date_val):
+    """TEFAS tarih formatlarini parse et: 'dd.MM.yyyy', 'yyyy-MM-dd', '/Date(timestamp)/' """
+    if not date_val:
+        return None
+    if isinstance(date_val, str):
+        # WCF date format: /Date(1645488000000)/
+        wcf_match = re.match(r'/Date\((\-?\d+)\)/', date_val)
+        if wcf_match:
+            ts = int(wcf_match.group(1)) / 1000
+            return datetime.fromtimestamp(ts)
+        for fmt in ['%d.%m.%Y', '%Y-%m-%d', '%Y-%m-%dT%H:%M:%S']:
+            try:
+                return datetime.strptime(date_val, fmt)
+            except:
+                continue
     return None
 
 def _analyze_fund_performance(history_data, fund_code):
@@ -5045,8 +5141,10 @@ def _analyze_fund_performance(history_data, fund_code):
     for row in history_data:
         parsed = _parse_fund_row(row)
         if parsed and parsed['price'] and parsed['price'] > 0:
+            dt = _parse_tefas_date(parsed['date'])
             prices.append({
                 'date': parsed['date'],
+                'date_parsed': dt,
                 'price': parsed['price'],
                 'code': parsed['code'],
                 'name': parsed['name'],
@@ -5055,11 +5153,12 @@ def _analyze_fund_performance(history_data, fund_code):
     if len(prices) < 2:
         return None
 
-    # Tarihe gore sirala (en eski en basta)
+    # Tarihe gore sirala (en eski en basta) - datetime objeleriyle dogru siralama
     try:
-        prices.sort(key=lambda x: x['date'])
+        prices.sort(key=lambda x: x['date_parsed'] or datetime.min)
     except:
-        pass
+        # Fallback: string siralama
+        prices.sort(key=lambda x: x['date'])
 
     current_price = prices[-1]['price']
     first_price = prices[0]['price']
@@ -5563,6 +5662,11 @@ def bes_top():
 
             if _bes_bg_error:
                 err = _bes_bg_error
+                # Hata sonrasi tekrar dene - thread'i yeniden baslat
+                _bes_bg_error = ''
+                print(f"[BES-TOP] Onceki hata: {err}, yeniden deneniyor...")
+                t = threading.Thread(target=_bes_bg_analyze_top, daemon=True)
+                t.start()
                 return jsonify({'success': True, 'loading': True, 'message': f'Tekrar deneniyor... ({err})'})
 
             # Background thread baslat
