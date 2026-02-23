@@ -4306,8 +4306,10 @@ def _compute_opportunity_for_stock(stock):
 
         returns = {}
         for label, days in [('daily', 1), ('weekly', 5), ('monthly', 22), ('yearly', 252)]:
-            if n > days:
-                ret = ((c[-1] - c[-1-days]) / c[-1-days]) * 100
+            # Esnek index: yeterli veri yoksa mevcut verinin basindan hesapla
+            actual_days = min(days, n - 1)
+            if actual_days > 0:
+                ret = ((c[-1] - c[-1-actual_days]) / c[-1-actual_days]) * 100
                 returns[label] = sf(ret)
             else:
                 returns[label] = 0
@@ -5050,7 +5052,7 @@ def _bes_bg_analyze_top():
         today = datetime.now()
 
         # ADIM 1: Genis tarih araliginda tum EMK fonlarini tek seferde cek
-        # 90 gun -> tek chunk, TEFAS API'ye sadece 1 istek
+        # TEFAS API max 90 gun destekler, bu yuzden 90 ile basliyoruz
         raw = None
         for days_back in [90, 60, 30, 14, 7]:
             start = (today - timedelta(days=days_back)).strftime('%d.%m.%Y')
@@ -5114,7 +5116,7 @@ def _bes_bg_analyze_top():
                 code = fund_data['meta']['code']
                 try:
                     print(f"[BES-BG] Sequential fetch: {code}")
-                    history = _fetch_tefas_history_chunked(code, days=90)
+                    history = _fetch_tefas_history_chunked(code, days=200)
                     perf = _analyze_fund_performance(history, code)
                     if perf:
                         pool.append(perf)
@@ -5349,16 +5351,33 @@ def _analyze_fund_performance(history_data, fund_code):
     total_return = ((current_price - first_price) / first_price) * 100 if first_price > 0 else 0
     total_days = len(prices)
 
-    # Donemsel getiriler
+    # Donemsel getiriler - tarih bazli lookback (takvim gunu -> islem gunu donusumu)
     returns = {}
     period_map = {'1h': 7, '1a': 30, '3a': 90, '6a': 180, '1y': 365}
-    for label, days in period_map.items():
-        if len(prices) >= days:
-            old_price = prices[-min(days, len(prices))]['price']
-            if old_price > 0:
-                returns[label] = sf(((current_price - old_price) / old_price) * 100)
-            else:
-                returns[label] = 0
+    for label, cal_days in period_map.items():
+        # Tarih bazli lookback: en son tarihten cal_days gun oncesine en yakin veri noktasini bul
+        target_date = prices[-1]['date_parsed'] - timedelta(days=cal_days) if prices[-1].get('date_parsed') else None
+        found_price = None
+
+        if target_date:
+            # Target tarihine en yakin (ve oncesindeki) veri noktasini bul
+            for p in prices:
+                if p.get('date_parsed') and p['date_parsed'] <= target_date:
+                    found_price = p['price']
+                # Once erisince devam et (sirali oldugu icin son eslesme en yakin olacak)
+
+        # Tarih bazli bulunamadiysa, index bazli fallback
+        if not found_price:
+            # Tahmini islem gunu: takvim gunu * 5/7 (hafta ici orani)
+            approx_trading_days = max(1, int(cal_days * 5 / 7))
+            if len(prices) >= approx_trading_days:
+                found_price = prices[-min(approx_trading_days, len(prices))]['price']
+            elif len(prices) >= max(cal_days // 4, 2):
+                # En az ceyrek kadar veri varsa mevcut verinin basindan hesapla
+                found_price = prices[0]['price']
+
+        if found_price and found_price > 0:
+            returns[label] = sf(((current_price - found_price) / found_price) * 100)
         else:
             returns[label] = None
 
@@ -5426,7 +5445,8 @@ def _bes_optimize(funds_perf, risk_profile='moderate', horizon_months=12):
     for f in funds_perf:
         if not f:
             continue
-        ret_6m = f.get('returns', {}).get('6a') or f.get('returns', {}).get('3a') or 0
+        rets = f.get('returns', {})
+        ret_6m = rets.get('6a') or rets.get('3a') or rets.get('1a') or 0
         vol = f.get('volatility', 50)
         sharpe = f.get('sharpe', 0)
         category = f.get('category', 'diger')
@@ -5826,7 +5846,7 @@ def bes_simulate():
 @app.route('/api/bes/top')
 def bes_top():
     """Kategorilere gore en iyi BES fonlari - background thread ile Render timeout bypass"""
-    global _bes_bg_loading
+    global _bes_bg_loading, _bes_bg_error
     try:
         category = request.args.get('category', '')
         period = request.args.get('period', '3a')
