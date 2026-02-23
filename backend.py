@@ -430,53 +430,81 @@ def _fetch_isyatirim_df(symbol, days=365):
             print(f"  [ISYATIRIM] {symbol} HTTP denemesi basarisiz: {last_err}")
             return None
 
-        data = resp.json()
-        rows = data.get('value', [])
-        if not rows or len(rows) < 2:
-            print(f"  [ISYATIRIM] {symbol}: bos veri ({len(rows)} satir)")
+        try:
+            data = resp.json()
+        except Exception as json_e:
+            print(f"  [ISYATIRIM] {symbol}: JSON parse hatasi: {json_e}, ilk 200 karakter: {resp.text[:200]}")
             return None
 
-        # Ilk satirdaki tum kolonlari logla (ilk seferde kesfet)
+        # API yanit formatini kontrol et (value, d, veya dogrudan liste)
+        rows = data.get('value', [])
+        if not rows:
+            rows = data.get('d', [])
+        if not rows and isinstance(data, list):
+            rows = data
+
+        if not rows or len(rows) < 2:
+            print(f"  [ISYATIRIM] {symbol}: bos veri ({len(rows) if rows else 0} satir), response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+            return None
+
+        # Ilk satirdaki TUM kolonlari logla
         if len(rows) > 0:
             cols = list(rows[0].keys())
-            print(f"  [ISYATIRIM] {symbol}: {len(rows)} satir, kolonlar: {cols[:10]}")
+            print(f"  [ISYATIRIM] {symbol}: {len(rows)} satir, kolonlar: {cols}")
 
         # DataFrame olustur - kolon isimlerini otomatik kesfet
         df_raw = pd.DataFrame(rows)
 
-        # Tarih kolonu
+        # Tarih kolonu - esnek arama
         date_col = None
         for c in df_raw.columns:
-            if 'TARIH' in c.upper():
+            cu = c.upper()
+            if 'TARIH' in cu or 'DATE' in cu or 'TARH' in cu:
                 date_col = c; break
         if not date_col:
-            print(f"  [ISYATIRIM] {symbol}: tarih kolonu bulunamadi")
+            print(f"  [ISYATIRIM] {symbol}: tarih kolonu bulunamadi, kolonlar: {list(df_raw.columns)}")
             return None
 
-        # OHLCV kolonlari - esnek mapping
+        # OHLCV kolonlari - esnek mapping (API degisikliklerine karsi guclu)
         col_map = {}
         for c in df_raw.columns:
             cu = c.upper()
-            if 'KAPANIS' in cu and 'DUZELTILMIS' not in cu: col_map['Close'] = c
-            elif 'ACILIS' in cu: col_map['Open'] = c
-            elif 'YUKSEK' in cu: col_map['High'] = c
-            elif 'DUSUK' in cu: col_map['Low'] = c
-            elif 'HACIM' in cu and 'TL' not in cu and 'LOT' in cu: col_map['Volume'] = c
-            elif 'HACIM' in cu and 'LOT' not in cu and 'TL' not in cu: col_map['Volume'] = c
+            # Close: KAPANIS_FIYATI, KAPANIS, HISSE_KAPANIS, vb.
+            if 'Close' not in col_map and 'KAPANIS' in cu and 'DUZELTILMIS' not in cu:
+                col_map['Close'] = c
+            # Open: ACILIS_FIYATI, ACILIS, vb.
+            elif 'Open' not in col_map and 'ACILIS' in cu:
+                col_map['Open'] = c
+            # High: EN_YUKSEK, YUKSEK, YUKSEK_FIYAT, vb.
+            elif 'High' not in col_map and ('YUKSEK' in cu or 'EN_YUKSEK' in cu or 'HIGH' in cu):
+                col_map['High'] = c
+            # Low: EN_DUSUK, DUSUK, DUSUK_FIYAT, vb.
+            elif 'Low' not in col_map and ('DUSUK' in cu or 'EN_DUSUK' in cu or 'LOW' in cu):
+                col_map['Low'] = c
+            # Volume: HACIM_LOT, HACIM (LOT), ISLEM_HACMI, vb.
+            elif 'Volume' not in col_map and 'HACIM' in cu and 'TL' not in cu:
+                col_map['Volume'] = c
 
         # Volume bulunamadiysa HACIM iceren herhangi bir kolonu dene
         if 'Volume' not in col_map:
             for c in df_raw.columns:
-                if 'HACIM' in c.upper():
+                cu = c.upper()
+                if 'HACIM' in cu or 'VOLUME' in cu or 'ADET' in cu:
                     col_map['Volume'] = c; break
 
+        # Close bulunamadiysa DUZELTILMIS KAPANIS veya herhangi kapanis
         if 'Close' not in col_map:
-            # Son care: DUZELTILMIS KAPANIS
             for c in df_raw.columns:
                 if 'KAPANIS' in c.upper():
                     col_map['Close'] = c; break
             if 'Close' not in col_map:
-                print(f"  [ISYATIRIM] {symbol}: Close kolonu bulunamadi")
+                # Son care: numerik kolonlari dene (CLOSE, PRICE, FIYAT)
+                for c in df_raw.columns:
+                    cu = c.upper()
+                    if 'CLOSE' in cu or 'FIYAT' in cu or 'PRICE' in cu:
+                        col_map['Close'] = c; break
+            if 'Close' not in col_map:
+                print(f"  [ISYATIRIM] {symbol}: Close kolonu bulunamadi, kolonlar: {list(df_raw.columns)}")
                 return None
 
         print(f"  [ISYATIRIM] {symbol} mapping: {col_map}")
@@ -493,16 +521,38 @@ def _fetch_isyatirim_df(symbol, days=365):
         else:
             df['Volume'] = 0
 
+        # NaN degerlerini doldur: Open/High/Low icin Close kullan (kritik fix)
+        df['Open'] = df['Open'].fillna(df['Close'])
+        df['High'] = df['High'].fillna(df['Close'])
+        df['Low'] = df['Low'].fillna(df['Close'])
+
+        # High en az Close kadar, Low en fazla Close kadar olmali
+        df['High'] = df[['High', 'Close']].max(axis=1)
+        df['Low'] = df[['Low', 'Close']].min(axis=1)
+
         df = df.dropna(subset=['Close']).sort_index()
 
         if len(df) < 2:
             return None
 
-        print(f"  [ISYATIRIM] {symbol} OK: {len(df)} bar, {df.index[0].strftime('%Y-%m-%d')} -> {df.index[-1].strftime('%Y-%m-%d')}")
+        # Veri kalitesi kontrolu
+        nan_counts = df[['Open','High','Low','Close']].isna().sum()
+        total_nan = nan_counts.sum()
+        if total_nan > 0:
+            print(f"  [ISYATIRIM] {symbol} UYARI: {total_nan} NaN deger doldurulamadi: {nan_counts.to_dict()}")
+
+        # Son fiyat kontrolu
+        last_close = float(df['Close'].iloc[-1])
+        if last_close <= 0:
+            print(f"  [ISYATIRIM] {symbol} UYARI: Son kapanis fiyati 0 veya negatif: {last_close}")
+
+        print(f"  [ISYATIRIM] {symbol} OK: {len(df)} bar, {df.index[0].strftime('%Y-%m-%d')} -> {df.index[-1].strftime('%Y-%m-%d')}, son fiyat: {last_close}")
         return df
 
     except Exception as e:
-        print(f"  [ISYATIRIM] {symbol}: {e}")
+        print(f"  [ISYATIRIM] {symbol} HATA: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -554,12 +604,14 @@ def _fetch_yahoo_http(symbol, period1_days=14):
         opens = quote.get('open', []); highs = quote.get('high', [])
         lows = quote.get('low', []); volumes = quote.get('volume', [])
 
+        o_val = float(opens[last_i]) if last_i < len(opens) and opens[last_i] else float(cur)
+        h_val = float(highs[last_i]) if last_i < len(highs) and highs[last_i] else float(cur)
+        l_val = float(lows[last_i]) if last_i < len(lows) and lows[last_i] else float(cur)
+        v_val = int(volumes[last_i]) if last_i < len(volumes) and volumes[last_i] else 0
         return {
             'close': float(cur), 'prev': float(prev),
-            'open': float(opens[last_i]) if opens[last_i] else float(cur),
-            'high': float(highs[last_i]) if highs[last_i] else float(cur),
-            'low': float(lows[last_i]) if lows[last_i] else float(cur),
-            'volume': int(volumes[last_i]) if volumes[last_i] else 0,
+            'open': o_val, 'high': max(h_val, float(cur)), 'low': min(l_val, float(cur)),
+            'volume': v_val,
         }
     except Exception as e:
         print(f"  [YAHOO-HTTP] {symbol}: {e}")
@@ -595,6 +647,13 @@ def _fetch_yahoo_http_df(symbol, period1_days=365):
             'Volume': [int(v) if v else 0 for v in quote.get('volume', [])],
         }, index=pd.DatetimeIndex(dates))
         df = df.dropna(subset=['Close'])
+
+        # NaN degerlerini doldur: Open/High/Low icin Close kullan
+        df['Open'] = df['Open'].fillna(df['Close'])
+        df['High'] = df['High'].fillna(df['Close'])
+        df['Low'] = df['Low'].fillna(df['Close'])
+        df['High'] = df[['High', 'Close']].max(axis=1)
+        df['Low'] = df[['Low', 'Close']].min(axis=1)
 
         if len(df) < 10: return None
         print(f"  [YAHOO-DF] {symbol}: {len(df)} bar")
@@ -663,6 +722,13 @@ def _fetch_hist_df(sym, period='1y'):
         try:
             h = yf.Ticker(f"{sym}.IS").history(period=period, timeout=10)
             if h is not None and not h.empty and len(h) >= 10:
+                # NaN temizligi: yfinance verisi de NaN icerebilir
+                if 'Close' in h.columns:
+                    h = h.dropna(subset=['Close'])
+                    if 'Open' in h.columns: h['Open'] = h['Open'].fillna(h['Close'])
+                    if 'High' in h.columns: h['High'] = h['High'].fillna(h['Close'])
+                    if 'Low' in h.columns: h['Low'] = h['Low'].fillna(h['Close'])
+                    if 'Volume' in h.columns: h['Volume'] = h['Volume'].fillna(0)
                 print(f"  [YF-HIST] {sym} OK: {len(h)} bar")
                 return h
         except Exception as e:
@@ -1078,7 +1144,10 @@ def calc_obv(closes, volumes):
 def calc_support_resistance(hist):
     try:
         c,h,l=hist['Close'].values.astype(float),hist['High'].values.astype(float),hist['Low'].values.astype(float)
-        n=min(90,len(c)); rh,rl=h[-n:],l[-n:]; sups,ress=[],[]
+        # NaN temizligi: NaN degerleri Close ile degistir
+        h_clean = np.where(np.isnan(h), c, h)
+        l_clean = np.where(np.isnan(l), c, l)
+        n=min(90,len(c)); rh,rl=h_clean[-n:],l_clean[-n:]; sups,ress=[],[]
         for i in range(2,n-2):
             if rh[i]>rh[i-1] and rh[i]>rh[i-2] and rh[i]>rh[i+1] and rh[i]>rh[i+2]: ress.append(float(rh[i]))
             if rl[i]<rl[i-1] and rl[i]<rl[i-2] and rl[i]<rl[i+1] and rl[i]<rl[i+2]: sups.append(float(rl[i]))
@@ -1097,8 +1166,10 @@ def calc_fibonacci(hist):
             n=min(lookback, len(c))
             if n < 5: continue
             rc, rh, rl = c[-n:], h[-n:], l[-n:]
-            hi = float(np.max(rh))
-            lo = float(np.min(rl))
+            hi = float(np.nanmax(rh))
+            lo = float(np.nanmin(rl))
+            if hi != hi: hi = float(np.nanmax(rc))  # NaN fallback
+            if lo != lo: lo = float(np.nanmin(rc))
             d = hi - lo
             if d > 0: break
         else:
@@ -1248,8 +1319,14 @@ def calc_psar(closes, highs, lows, af_start=0.02, af_step=0.02, af_max=0.2):
 def calc_pivot_points(hist):
     """Klasik, Camarilla, Woodie pivot noktalari"""
     try:
-        h,l,c=float(hist['High'].iloc[-1]),float(hist['Low'].iloc[-1]),float(hist['Close'].iloc[-1])
+        c=float(hist['Close'].iloc[-1])
+        h=float(hist['High'].iloc[-1])
+        l=float(hist['Low'].iloc[-1])
         o=float(hist['Open'].iloc[-1])
+        # NaN fallback: Close kullan
+        if h != h: h = c
+        if l != l: l = c
+        if o != o: o = c
         pp=(h+l+c)/3
         classic={
             'pp':sf(pp),'r1':sf(2*pp-l),'r2':sf(pp+(h-l)),'r3':sf(h+2*(pp-l)),
@@ -1329,34 +1406,57 @@ def calc_recommendation(hist, indicators):
         l=hist['Low'].values.astype(float)
         v=hist['Volume'].values.astype(float)
         o=hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
+        # NaN temizligi: Close ile doldur
+        h=np.where(np.isnan(h), c, h)
+        l=np.where(np.isnan(l), c, l)
+        v=np.where(np.isnan(v), 0, v)
+        o=np.where(np.isnan(o), c, o)
         n=len(c)
         cur=float(c[-1])
         recommendations={}
 
         # Destek/direnc hesapla (tum periyotlar icin ortak)
-        sr = calc_support_resistance(hist)
+        try:
+            sr = calc_support_resistance(hist)
+        except:
+            sr = {'supports': [], 'resistances': [], 'current': 0}
         supports = sr.get('supports', [])
         resistances = sr.get('resistances', [])
-        fib = calc_fibonacci(hist)
+        try:
+            fib = calc_fibonacci(hist)
+        except:
+            fib = {'levels': {}}
         fib_sup = fib.get('nearestSupport')
         fib_res = fib.get('nearestResistance')
 
         # Bollinger bantlari
-        bb = calc_bollinger(c, cur)
+        try:
+            bb = calc_bollinger(c, cur)
+        except:
+            bb = {'upper': 0, 'lower': 0, 'middle': 0}
         bb_upper = bb.get('upper', 0)
         bb_lower = bb.get('lower', 0)
         bb_middle = bb.get('middle', 0)
 
         # Dinamik esikler
-        dyn = calc_dynamic_thresholds(c, h, l, v) if n >= 60 else {'rsi_oversold': 30, 'rsi_overbought': 70}
+        try:
+            dyn = calc_dynamic_thresholds(c, h, l, v) if n >= 60 else {'rsi_oversold': 30, 'rsi_overbought': 70}
+        except:
+            dyn = {'rsi_oversold': 30, 'rsi_overbought': 70}
         dyn_oversold = float(dyn.get('rsi_oversold', 30))
         dyn_overbought = float(dyn.get('rsi_overbought', 70))
 
         # Mum formasyonlari
-        candle_data = calc_candlestick_patterns(o, h, l, c) if n >= 5 else {'patterns': [], 'signal': 'neutral'}
+        try:
+            candle_data = calc_candlestick_patterns(o, h, l, c) if n >= 5 else {'patterns': [], 'signal': 'neutral'}
+        except:
+            candle_data = {'patterns': [], 'signal': 'neutral'}
 
         # Piyasa rejimi
-        regime = calc_market_regime()
+        try:
+            regime = calc_market_regime()
+        except:
+            regime = {'regime': 'unknown', 'description': ''}
         regime_type = regime.get('regime', 'unknown')
 
         for label, days in [('weekly',5),('monthly',22),('yearly',252)]:
@@ -1641,6 +1741,10 @@ def calc_fundamentals(hist, symbol):
         v = hist['Volume'].values.astype(float)
         h = hist['High'].values.astype(float)
         l = hist['Low'].values.astype(float)
+        # NaN temizligi
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        v = np.where(np.isnan(v), 0, v)
         n = len(c)
         cur = float(c[-1])
 
@@ -1668,22 +1772,25 @@ def calc_fundamentals(hist, symbol):
                 ret = sf(((cur - float(c[-days])) / float(c[-days])) * 100)
                 returns[label] = ret
 
-        # Gunluk ortalama aralik (ATR benzeri)
+        # Gunluk ortalama aralik (ATR benzeri) - NaN-safe
         if n >= 14:
-            daily_range = [(float(h[i]) - float(l[i])) for i in range(-14, 0)]
-            avg_daily_range = sf(np.mean(daily_range))
-            avg_daily_range_pct = sf(avg_daily_range / cur * 100)
+            daily_range = [(float(h[i]) - float(l[i])) for i in range(-14, 0) if h[i] == h[i] and l[i] == l[i]]
+            avg_daily_range = sf(np.mean(daily_range)) if daily_range else 0
+            avg_daily_range_pct = sf(avg_daily_range / cur * 100) if cur > 0 else 0
         else:
             avg_daily_range = 0
             avg_daily_range_pct = 0
 
-        # 52 haftalik high/low'dan uzaklik
+        # 52 haftalik high/low'dan uzaklik (NaN-safe)
         if n >= 252:
-            hi52 = float(np.max(h[-252:]))
-            lo52 = float(np.min(l[-252:]))
+            hi52 = float(np.nanmax(h[-252:]))
+            lo52 = float(np.nanmin(l[-252:]))
         else:
-            hi52 = float(np.max(h))
-            lo52 = float(np.min(l))
+            hi52 = float(np.nanmax(h))
+            lo52 = float(np.nanmin(l))
+        # NaN kontrolu
+        if hi52 != hi52: hi52 = cur  # NaN ise cur kullan
+        if lo52 != lo52: lo52 = cur
         dist_from_high = sf(((cur - hi52) / hi52) * 100) if hi52 else 0
         dist_from_low = sf(((cur - lo52) / lo52) * 100) if lo52 else 0
 
@@ -1704,12 +1811,15 @@ def calc_fundamentals(hist, symbol):
         return {}
 
 def calc_52w(hist):
-    """52 hafta (veya mevcut veri) high/low hesapla"""
+    """52 hafta (veya mevcut veri) high/low hesapla - NaN-safe"""
     try:
         h=hist['High'].values.astype(float)
         l=hist['Low'].values.astype(float)
         c=float(hist['Close'].iloc[-1])
-        hi52=sf(np.max(h)); lo52=sf(np.min(l))
+        hi52=sf(float(np.nanmax(h))); lo52=sf(float(np.nanmin(l)))
+        # NaN fallback
+        if hi52 == 0 and c > 0: hi52 = sf(c)
+        if lo52 == 0 and c > 0: lo52 = sf(c)
         rng=hi52-lo52
         pos=sf((c-lo52)/rng*100 if rng>0 else 50)
         return {'high52w':hi52,'low52w':lo52,'currentPct':pos,'range':sf(rng)}
@@ -1718,6 +1828,9 @@ def calc_52w(hist):
 def calc_all_indicators(hist, cp):
     c,h,l,v=hist['Close'].values.astype(float),hist['High'].values.astype(float),hist['Low'].values.astype(float),hist['Volume'].values.astype(float)
     o=hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
+    # NaN temizligi
+    h=np.where(np.isnan(h), c, h); l=np.where(np.isnan(l), c, l)
+    v=np.where(np.isnan(v), 0, v); o=np.where(np.isnan(o), c, o)
     cp=float(cp)
     rsi_h=[{'date':hist.index[i].strftime('%Y-%m-%d'),'value':rv} for i in range(14,len(c)) if (rv:=calc_rsi_single(c[:i+1])) is not None]
 
@@ -1776,6 +1889,10 @@ def calc_signal_backtest(hist, lookback_days=252):
         h = hist['High'].values.astype(float)
         l = hist['Low'].values.astype(float)
         v = hist['Volume'].values.astype(float)
+        # NaN temizligi
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        v = np.where(np.isnan(v), 0, v)
         n = len(c)
         if n < 60:
             return {'totalSignals': 0, 'message': 'Yeterli veri yok'}
@@ -2649,6 +2766,10 @@ def calc_trade_plan(hist, indicators=None):
         h = hist['High'].values.astype(float)
         l = hist['Low'].values.astype(float)
         v = hist['Volume'].values.astype(float)
+        # NaN temizligi
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        v = np.where(np.isnan(v), 0, v)
         n = len(c)
         cur = float(c[-1])
 
@@ -3007,6 +3128,62 @@ def debug():
         'time': datetime.now().isoformat(),
     })
 
+@app.route('/api/test-fetch/<symbol>')
+def test_fetch(symbol):
+    """Veri cekme pipeline'ini test et - debug icin"""
+    symbol = symbol.upper()
+    results = {}
+
+    # 1. Is Yatirim quick
+    try:
+        data = _fetch_isyatirim_quick(symbol)
+        results['isyatirim_quick'] = {'success': data is not None, 'data': data}
+    except Exception as e:
+        results['isyatirim_quick'] = {'success': False, 'error': str(e)}
+
+    # 2. Is Yatirim DF (30 gun)
+    try:
+        df = _fetch_isyatirim_df(symbol, days=30)
+        if df is not None:
+            nan_counts = df[['Open','High','Low','Close','Volume']].isna().sum().to_dict()
+            results['isyatirim_df'] = {
+                'success': True, 'rows': len(df),
+                'last_close': float(df['Close'].iloc[-1]),
+                'last_high': float(df['High'].iloc[-1]),
+                'last_low': float(df['Low'].iloc[-1]),
+                'nan_counts': nan_counts,
+                'date_range': f"{df.index[0].strftime('%Y-%m-%d')} -> {df.index[-1].strftime('%Y-%m-%d')}",
+            }
+        else:
+            results['isyatirim_df'] = {'success': False, 'data': None}
+    except Exception as e:
+        results['isyatirim_df'] = {'success': False, 'error': str(e)}
+
+    # 3. Yahoo HTTP
+    try:
+        data = _fetch_yahoo_http(f"{symbol}.IS")
+        results['yahoo_http'] = {'success': data is not None, 'data': data}
+    except Exception as e:
+        results['yahoo_http'] = {'success': False, 'error': str(e)}
+
+    # 4. Yahoo DF
+    try:
+        df = _fetch_yahoo_http_df(f"{symbol}.IS", period1_days=30)
+        if df is not None:
+            results['yahoo_df'] = {'success': True, 'rows': len(df), 'last_close': float(df['Close'].iloc[-1])}
+        else:
+            results['yahoo_df'] = {'success': False, 'data': None}
+    except Exception as e:
+        results['yahoo_df'] = {'success': False, 'error': str(e)}
+
+    # 5. Cache durumu
+    cached = _cget(_stock_cache, symbol)
+    results['cache'] = {'has_cache': cached is not None}
+    if cached:
+        results['cache']['data'] = cached
+
+    return jsonify(safe_dict(results))
+
 @app.route('/')
 def index():
     try: return send_from_directory(BASE_DIR, 'index.html')
@@ -3126,6 +3303,13 @@ def stock_detail(symbol):
             return jsonify({'error':f'{symbol} verisi bulunamadi'}),404
 
         # 4. Hist var - TAM ANALIZ yap
+        # Son NaN temizligi (guvenlik katmani)
+        if hist[['Open','High','Low']].isna().any().any():
+            hist['Open'] = hist['Open'].fillna(hist['Close'])
+            hist['High'] = hist['High'].fillna(hist['Close'])
+            hist['Low'] = hist['Low'].fillna(hist['Close'])
+            hist['Volume'] = hist['Volume'].fillna(0)
+
         cp=float(hist['Close'].iloc[-1])
         prev=float(hist['Close'].iloc[-2]) if len(hist)>1 else cp
         w52=calc_52w(hist)
