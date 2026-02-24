@@ -6,7 +6,7 @@ SQLite veritabani, kullanici sistemi, backtest, KAP haberleri
 """
 from flask import Flask, jsonify, request, send_from_directory, make_response, session
 from flask_cors import CORS
-import traceback, os, time, threading, json, hashlib, sqlite3, uuid, re
+import traceback, os, time, threading, json, hashlib, sqlite3, uuid, re, gzip, io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
@@ -198,10 +198,28 @@ def hash_password(pw):
     return hashlib.sha256((pw + app.secret_key).encode()).hexdigest()
 
 @app.after_request
-def force_json(resp):
+def after_req(resp):
+    # 4xx/5xx HTML -> JSON
     if resp.status_code >= 400 and 'text/html' in (resp.content_type or ''):
         resp = make_response(json.dumps({"error": f"HTTP {resp.status_code}"}), resp.status_code)
         resp.headers['Content-Type'] = 'application/json'
+    # gzip sikistirma (>1KB ve henuz sikistirilmamis)
+    if (resp.status_code == 200
+        and 'Content-Encoding' not in resp.headers
+        and resp.content_length and resp.content_length > 1024
+        and 'gzip' in request.headers.get('Accept-Encoding', '')):
+        ct = resp.content_type or ''
+        if 'json' in ct or 'javascript' in ct or 'text/' in ct:
+            data = resp.get_data()
+            buf = io.BytesIO()
+            with gzip.GzipFile(fileobj=buf, mode='wb', compresslevel=6) as gz:
+                gz.write(data)
+            compressed = buf.getvalue()
+            if len(compressed) < len(data):
+                resp.set_data(compressed)
+                resp.headers['Content-Encoding'] = 'gzip'
+                resp.headers['Content-Length'] = len(compressed)
+                resp.headers['Vary'] = 'Accept-Encoding'
     return resp
 
 @app.errorhandler(404)
@@ -3184,10 +3202,48 @@ def test_fetch(symbol):
 
     return jsonify(safe_dict(results))
 
+# --- index.html bellekte gzipli cache ---
+_index_cache = {'raw': None, 'gz': None, 'mtime': 0}
+
+def _load_index_html():
+    """index.html'i diskten oku, gziple, bellekte tut"""
+    fpath = os.path.join(BASE_DIR, 'index.html')
+    try:
+        mt = os.path.getmtime(fpath)
+        if _index_cache['raw'] and _index_cache['mtime'] == mt:
+            return True
+        with open(fpath, 'rb') as f:
+            raw = f.read()
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode='wb', compresslevel=6) as gz:
+            gz.write(raw)
+        _index_cache['raw'] = raw
+        _index_cache['gz'] = buf.getvalue()
+        _index_cache['mtime'] = mt
+        print(f"[INDEX] Cached: {len(raw)} bytes -> gzip {len(_index_cache['gz'])} bytes")
+        return True
+    except Exception as e:
+        print(f"[INDEX] Load error: {e}")
+        return False
+
+_load_index_html()
+
 @app.route('/')
 def index():
-    try: return send_from_directory(BASE_DIR, 'index.html')
-    except: return jsonify({'error':'index.html bulunamadi'}),500
+    if not _index_cache['raw']:
+        if not _load_index_html():
+            return jsonify({'error':'index.html bulunamadi'}), 500
+    # gzip destegi varsa sikistirilmis gonder
+    ae = request.headers.get('Accept-Encoding', '')
+    if 'gzip' in ae and _index_cache['gz']:
+        resp = make_response(_index_cache['gz'])
+        resp.headers['Content-Encoding'] = 'gzip'
+    else:
+        resp = make_response(_index_cache['raw'])
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+    resp.headers['Cache-Control'] = 'public, max-age=300'
+    resp.headers['Vary'] = 'Accept-Encoding'
+    return resp
 
 @app.route('/api/dashboard')
 def dashboard():
