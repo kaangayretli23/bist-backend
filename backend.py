@@ -4279,7 +4279,8 @@ def signal_scanner():
 # FIRSAT OZETI (Gunluk/Haftalik/Aylik/Yillik)
 # =====================================================================
 def _compute_opportunity_for_stock(stock):
-    """Tek hisse icin firsat analizi (thread-safe, paralel calisir)"""
+    """Tek hisse icin firsat analizi - gelismis versiyon:
+    ADX trend gucu, RSI divergence, Stochastic, trend alignment, confluence filtresi"""
     sym = stock['code']
     try:
         hist = _cget_hist(f"{sym}_1y")
@@ -4293,35 +4294,111 @@ def _compute_opportunity_for_stock(stock):
         cp = float(c[-1])
         n = len(c)
 
+        if n < 30:
+            return None
+
         events = []
         event_score = 0
+        buy_count = 0
+        sell_count = 0
 
+        # === 1. RSI Oversold/Overbought ===
         rsi_val = calc_rsi(c).get('value', 50)
         if rsi_val < 30:
             events.append({'type': 'rsi_oversold', 'text': f'RSI {sf(rsi_val)} - Asiri satim bolgesinde, toparlanma bekleniyor', 'impact': 'positive'})
             event_score += 3
+            buy_count += 1
         elif rsi_val > 70:
             events.append({'type': 'rsi_overbought', 'text': f'RSI {sf(rsi_val)} - Asiri alim bolgesinde, duzeltme gelebilir', 'impact': 'negative'})
             event_score -= 3
+            sell_count += 1
 
+        # === 2. RSI Divergence (en guvenilir sinyallerden biri) ===
+        # Onceki 30 bar ile son 30 bar arasinda fiyat vs RSI uyumsuzlugu
+        if n >= 60:
+            recent_start = n - 30
+            prior_start = n - 60
+            # Bullish divergence: fiyat daha dusuk dip, RSI daha yuksek dip
+            recent_min_abs = recent_start + int(np.argmin(c[recent_start:]))
+            prior_min_abs = prior_start + int(np.argmin(c[prior_start:recent_start]))
+            if recent_min_abs > 14 and prior_min_abs > 14:
+                rsi_at_recent_low = calc_rsi_single(c[:recent_min_abs+1]) or 50
+                rsi_at_prior_low = calc_rsi_single(c[:prior_min_abs+1]) or 50
+                price_lower_low = float(c[recent_min_abs]) < float(c[prior_min_abs]) * 0.99
+                rsi_higher_low = rsi_at_recent_low > rsi_at_prior_low + 3
+                if price_lower_low and rsi_higher_low and rsi_val < 50:
+                    events.append({'type': 'bullish_divergence', 'text': f'RSI Yukselis Uyumsuzlugu: Fiyat dip yaparken RSI yukseldi ({sf(rsi_at_prior_low)}->{sf(rsi_at_recent_low)}) - Guclu alis sinyali', 'impact': 'very_positive'})
+                    event_score += 4
+                    buy_count += 1
+            # Bearish divergence: fiyat daha yuksek tepe, RSI daha dusuk tepe
+            recent_max_abs = recent_start + int(np.argmax(c[recent_start:]))
+            prior_max_abs = prior_start + int(np.argmax(c[prior_start:recent_start]))
+            if recent_max_abs > 14 and prior_max_abs > 14:
+                rsi_at_recent_high = calc_rsi_single(c[:recent_max_abs+1]) or 50
+                rsi_at_prior_high = calc_rsi_single(c[:prior_max_abs+1]) or 50
+                price_higher_high = float(c[recent_max_abs]) > float(c[prior_max_abs]) * 1.01
+                rsi_lower_high = rsi_at_recent_high < rsi_at_prior_high - 3
+                if price_higher_high and rsi_lower_high and rsi_val > 50:
+                    events.append({'type': 'bearish_divergence', 'text': f'RSI Dusus Uyumsuzlugu: Fiyat zirve yaparken RSI dustü ({sf(rsi_at_prior_high)}->{sf(rsi_at_recent_high)}) - Guclu satis sinyali', 'impact': 'very_negative'})
+                    event_score -= 4
+                    sell_count += 1
+
+        # === 3. MACD Crossover ===
         macd = calc_macd(c)
         if macd.get('signalType') == 'buy':
             events.append({'type': 'macd_cross', 'text': 'MACD alis kesisimi - Yukari momentum basladi', 'impact': 'positive'})
             event_score += 2
+            buy_count += 1
         elif macd.get('signalType') == 'sell':
             events.append({'type': 'macd_cross', 'text': 'MACD satis kesisimi - Asagi momentum basladi', 'impact': 'negative'})
             event_score -= 2
+            sell_count += 1
 
+        # === 4. Golden/Death Cross ===
         if n >= 200:
             ema50 = pd.Series(c).ewm(span=50).mean().values
             ema200 = pd.Series(c).ewm(span=200).mean().values
             if ema50[-1] > ema200[-1] and ema50[-2] <= ema200[-2]:
                 events.append({'type': 'golden_cross', 'text': 'ALTIN KESISIM! EMA50 > EMA200 - Guclu uzun vadeli alis sinyali', 'impact': 'very_positive'})
                 event_score += 5
+                buy_count += 1
             elif ema50[-1] < ema200[-1] and ema50[-2] >= ema200[-2]:
                 events.append({'type': 'death_cross', 'text': 'OLUM KESISIMI! EMA50 < EMA200 - Guclu uzun vadeli satis sinyali', 'impact': 'very_negative'})
                 event_score -= 5
+                sell_count += 1
 
+        # === 5. ADX - Trend Gucu ve Yonu (yeni!) ===
+        adx_data = calc_adx(h, l, c)
+        adx_val = float(adx_data.get('value', 25))
+        plus_di = float(adx_data.get('plusDI', 0))
+        minus_di = float(adx_data.get('minusDI', 0))
+        sideways_market = adx_val < 15  # Yatay piyasa - sinyaller daha az guvenilir
+        if adx_val > 30:
+            if plus_di > minus_di:
+                events.append({'type': 'adx_strong_bull', 'text': f'ADX={sf(adx_val)} - Guclu yukselis trendi (+DI={sf(plus_di)} > -DI={sf(minus_di)})', 'impact': 'positive'})
+                event_score += 2
+                buy_count += 1
+            else:
+                events.append({'type': 'adx_strong_bear', 'text': f'ADX={sf(adx_val)} - Guclu dusus trendi (-DI={sf(minus_di)} > +DI={sf(plus_di)})', 'impact': 'negative'})
+                event_score -= 2
+                sell_count += 1
+        elif sideways_market:
+            # Yatay piyasada tum skor %30 azalt (sinyaller daha az guvenilir)
+            event_score = int(event_score * 0.7)
+
+        # === 6. Stochastic Oversold/Overbought (yeni!) ===
+        stoch = calc_stochastic(c, h, l)
+        stoch_k = float(stoch.get('k', 50))
+        if stoch_k < 20:
+            events.append({'type': 'stoch_oversold', 'text': f'Stochastic %K={sf(stoch_k)} - Asiri satim bolgesinde, donus bekleniyor', 'impact': 'positive'})
+            event_score += 2
+            buy_count += 1
+        elif stoch_k > 80:
+            events.append({'type': 'stoch_overbought', 'text': f'Stochastic %K={sf(stoch_k)} - Asiri alim bolgesinde', 'impact': 'negative'})
+            event_score -= 2
+            sell_count += 1
+
+        # === 7. Volume Spike ===
         if n >= 20:
             vol_avg = np.mean(v[-20:])
             vol_today = v[-1]
@@ -4330,39 +4407,96 @@ def _compute_opportunity_for_stock(stock):
                 direction = 'yukselis' if c[-1] > c[-2] else 'dusus'
                 impact = 'positive' if c[-1] > c[-2] else 'negative'
                 events.append({'type': 'volume_spike', 'text': f'Hacim patlamasi ({ratio}x ortalama) + {direction} hareketi', 'impact': impact})
-                event_score += 2 if c[-1] > c[-2] else -2
+                if c[-1] > c[-2]:
+                    event_score += 2; buy_count += 1
+                else:
+                    event_score -= 2; sell_count += 1
 
+        # === 8. Bollinger Band ===
         bb = calc_bollinger(c, cp)
         if bb.get('lower', 0) > 0 and cp < bb['lower']:
             events.append({'type': 'bb_break_lower', 'text': f'Fiyat alt Bollinger bandinin altinda ({sf(bb["lower"])}) - Toparlanma bekleniyor', 'impact': 'positive'})
             event_score += 2
+            buy_count += 1
         elif bb.get('upper', 0) > 0 and cp > bb['upper']:
             events.append({'type': 'bb_break_upper', 'text': f'Fiyat ust Bollinger bandini asti ({sf(bb["upper"])}) - Asiri alim', 'impact': 'negative'})
             event_score -= 1
+            sell_count += 1
 
+        # === 9. 52-Week High/Low (duzeltildi: 'position' -> 'currentPct') ===
         w52 = calc_52w(hist)
-        w52_pos = w52.get('position', 50)
+        w52_pos = w52.get('currentPct', 50)
         if w52_pos < 10:
             events.append({'type': '52w_low', 'text': f'52 haftalik dibin %{sf(w52_pos)} uzerinde - Tarihi dip bolgesi', 'impact': 'positive'})
             event_score += 2
+            buy_count += 1
         elif w52_pos > 90:
             events.append({'type': '52w_high', 'text': f'52 haftalik zirveye %{sf(100-w52_pos)} mesafede', 'impact': 'neutral'})
 
+        # === 10. Support/Resistance Breakout ===
         sr = calc_support_resistance(hist)
         if sr.get('resistances'):
             nearest_res = sr['resistances'][0]
             if cp > nearest_res * 0.99 and c[-2] < nearest_res:
                 events.append({'type': 'resistance_break', 'text': f'Direnc kirdi ({sf(nearest_res)} TL) - Yukari kirilim', 'impact': 'positive'})
                 event_score += 3
+                buy_count += 1
         if sr.get('supports'):
             nearest_sup = sr['supports'][0]
             if cp < nearest_sup * 1.01 and c[-2] > nearest_sup:
                 events.append({'type': 'support_break', 'text': f'Destek kirildi ({sf(nearest_sup)} TL) - Asagi kirilim', 'impact': 'negative'})
                 event_score -= 3
+                sell_count += 1
+
+        # === 11. Trend Alignment - sinyal trend ile uyumlu mu? (yeni!) ===
+        if n >= 50:
+            s_pd = pd.Series(c)
+            ema20_val = float(s_pd.ewm(span=20).mean().iloc[-1])
+            ema50_val = float(s_pd.ewm(span=50).mean().iloc[-1])
+            uptrend = cp > ema20_val > ema50_val
+            downtrend = cp < ema20_val < ema50_val
+            if event_score > 0 and uptrend:
+                events.append({'type': 'trend_aligned_bull', 'text': f'Trend teyidi: Yukselis trendinde alis sinyali (EMA20 > EMA50) - Guclu uyum', 'impact': 'positive'})
+                event_score += 2
+            elif event_score > 0 and downtrend:
+                events.append({'type': 'trend_counter_bull', 'text': f'Trend uyarisi: Dusus trendinde alis denemesi (EMA20 < EMA50) - Dikkat!', 'impact': 'neutral'})
+                event_score -= 1
+            elif event_score < 0 and downtrend:
+                events.append({'type': 'trend_aligned_bear', 'text': f'Trend teyidi: Dusus trendinde satis sinyali (EMA20 < EMA50) - Guclu uyum', 'impact': 'negative'})
+                event_score -= 2
+            elif event_score < 0 and uptrend:
+                events.append({'type': 'trend_counter_bear', 'text': f'Trend uyarisi: Yukselis trendinde satis denemesi (EMA20 > EMA50) - Dikkat!', 'impact': 'neutral'})
+                event_score += 1
+
+        # === 12. Candlestick Patterns ===
+        o_arr = hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
+        candles = calc_candlestick_patterns(o_arr, h, l, c)
+        for p in candles.get('patterns', []):
+            impact = 'positive' if p['type'] == 'bullish' else ('negative' if p['type'] == 'bearish' else 'neutral')
+            events.append({'type': 'candlestick', 'text': f"Mum Formasyonu: {p['name']} - {p['description']}", 'impact': impact})
+            if p['type'] == 'bullish':
+                event_score += p['strength']; buy_count += 1
+            elif p['type'] == 'bearish':
+                event_score -= p['strength']; sell_count += 1
+
+        # === 13. Confluence Filtresi - minimum 2 bagimsiz sinyal gerekli ===
+        dominant_count = max(buy_count, sell_count)
+        if dominant_count < 2:
+            return None
+
+        # === 14. Minimum Score Filtresi - zayif firsatlari elemsek ===
+        MIN_SCORE = 4
+        if abs(event_score) < MIN_SCORE:
+            return None
+
+        # === 15. Opportunity Score (0-100 normalize) ===
+        # Maksimum teorik skor ~28 (tum sinyaller + divergence + golden cross + trend)
+        MAX_POSSIBLE = 28
+        opp_score = min(100, int(abs(event_score) / MAX_POSSIBLE * 100))
+        opp_direction = 'buy' if event_score > 0 else 'sell'
 
         returns = {}
         for label, days in [('daily', 1), ('weekly', 5), ('monthly', 22), ('yearly', 252)]:
-            # Esnek index: yeterli veri yoksa mevcut verinin basindan hesapla
             actual_days = min(days, n - 1)
             if actual_days > 0:
                 ret = ((c[-1] - c[-1-actual_days]) / c[-1-actual_days]) * 100
@@ -4370,31 +4504,30 @@ def _compute_opportunity_for_stock(stock):
             else:
                 returns[label] = 0
 
-        o_arr = hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
-        candles = calc_candlestick_patterns(o_arr, h, l, c)
-        for p in candles.get('patterns', []):
-            impact = 'positive' if p['type'] == 'bullish' else ('negative' if p['type'] == 'bearish' else 'neutral')
-            events.append({'type': 'candlestick', 'text': f"Mum Formasyonu: {p['name']} - {p['description']}", 'impact': impact})
-            event_score += p['strength'] if p['type'] == 'bullish' else -p['strength']
-
         dyn = calc_dynamic_thresholds(c, h, l, v)
 
-        if events:
-            return {
-                'code': sym,
-                'name': BIST100_STOCKS.get(sym, sym),
-                'price': sf(cp),
-                'changePct': stock.get('changePct', 0),
-                'eventScore': event_score,
-                'events': events,
-                'eventCount': len(events),
-                'returns': returns,
-                'rsi': sf(rsi_val),
-                'dynamicThresholds': dyn,
-                'candlestickPatterns': candles.get('patterns', []),
-                'tradePlan': calc_trade_plan(hist),
-            }
-        return None
+        return {
+            'code': sym,
+            'name': BIST100_STOCKS.get(sym, sym),
+            'price': sf(cp),
+            'changePct': stock.get('changePct', 0),
+            'eventScore': event_score,
+            'opportunityScore': opp_score,
+            'direction': opp_direction,
+            'events': events,
+            'eventCount': len(events),
+            'buySignals': buy_count,
+            'sellSignals': sell_count,
+            'returns': returns,
+            'rsi': sf(rsi_val),
+            'adx': sf(adx_val),
+            'stochastic': sf(stoch_k),
+            'macdSignal': macd.get('signalType', 'neutral'),
+            'sidewaysMarket': sideways_market,
+            'dynamicThresholds': dyn,
+            'candlestickPatterns': candles.get('patterns', []),
+            'tradePlan': calc_trade_plan(hist),
+        }
     except:
         return None
 
@@ -4425,7 +4558,7 @@ def opportunities():
                 if result:
                     opportunities_list.append(result)
 
-        opportunities_list.sort(key=lambda x: abs(x['eventScore']), reverse=True)
+        opportunities_list.sort(key=lambda x: x.get('opportunityScore', abs(x['eventScore'])), reverse=True)
         buy_opps = [o for o in opportunities_list if o['eventScore'] > 0]
         sell_opps = [o for o in opportunities_list if o['eventScore'] < 0]
 
