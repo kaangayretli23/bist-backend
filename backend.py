@@ -1901,13 +1901,12 @@ def calc_all_indicators(hist, cp):
 # FEATURE 1: SIGNAL BACKTESTING & PERFORMANCE TRACKING
 # =====================================================================
 def calc_signal_backtest(hist, lookback_days=252):
-    """Gecmis sinyallerin performansini olc: her sinyal sonrasi 5/10/20 gun getiri"""
+    """Enhanced backtest: 9 indikatör, Profit Factor / Sharpe / benchmark, BIST RSI kalibrasyonu"""
     try:
         c = hist['Close'].values.astype(float)
         h = hist['High'].values.astype(float)
         l = hist['Low'].values.astype(float)
         v = hist['Volume'].values.astype(float)
-        # NaN temizligi
         h = np.where(np.isnan(h), c, h)
         l = np.where(np.isnan(l), c, l)
         v = np.where(np.isnan(v), 0, v)
@@ -1915,112 +1914,308 @@ def calc_signal_backtest(hist, lookback_days=252):
         if n < 60:
             return {'totalSignals': 0, 'message': 'Yeterli veri yok'}
 
+        # ---- Metrik yardimcilari ----
+        def _pf(rets):
+            """Profit Factor = toplam kazanc / toplam kayip"""
+            wins   = sum(r for r in rets if r > 0)
+            losses = sum(-r for r in rets if r < 0)
+            if losses == 0:
+                return sf(99.0 if wins > 0 else 0.0)
+            return sf(wins / losses)
+
+        def _sharpe(rets, period_days=10):
+            """Yillik Sharpe orani"""
+            if len(rets) < 3:
+                return 0.0
+            m = float(np.mean(rets))
+            s = float(np.std(rets))
+            return sf(m / s * float(np.sqrt(252.0 / period_days)) if s > 0 else 0.0)
+
+        def calc_stats_v2(sigs):
+            if not sigs:
+                return {
+                    'count': 0,
+                    'winRate5d': 0, 'winRate10d': 0, 'winRate20d': 0,
+                    'avgRet5d': 0, 'avgRet10d': 0, 'avgRet20d': 0,
+                    'profitFactor5d': 0, 'profitFactor10d': 0, 'profitFactor20d': 0,
+                    'sharpe5d': 0, 'sharpe10d': 0, 'sharpe20d': 0,
+                    'avgWin10d': 0, 'avgLoss10d': 0, 'grade': '-',
+                }
+            r5  = [float(s['ret5d'])  for s in sigs]
+            r10 = [float(s['ret10d']) for s in sigs]
+            r20 = [float(s['ret20d']) for s in sigs]
+            wr5  = sf(sum(1 for s in sigs if s['win5d'])  / len(sigs) * 100)
+            wr10 = sf(sum(1 for s in sigs if s['win10d']) / len(sigs) * 100)
+            wr20 = sf(sum(1 for s in sigs if s['win20d']) / len(sigs) * 100)
+            pf10 = _pf(r10)
+            sh10 = _sharpe(r10, 10)
+            avg_win  = sf(float(np.mean([r for r in r10 if r > 0])) if any(r > 0 for r in r10) else 0.0)
+            avg_loss = sf(float(np.mean([r for r in r10 if r < 0])) if any(r < 0 for r in r10) else 0.0)
+            grade = ('Guclu' if float(pf10) >= 1.5 and float(wr10) >= 55
+                     else ('Orta' if float(pf10) >= 1.0 and float(wr10) >= 50 else 'Zayif'))
+            return {
+                'count': len(sigs),
+                'winRate5d': wr5, 'winRate10d': wr10, 'winRate20d': wr20,
+                'avgRet5d':  sf(float(np.mean(r5))),
+                'avgRet10d': sf(float(np.mean(r10))),
+                'avgRet20d': sf(float(np.mean(r20))),
+                'profitFactor5d':  _pf(r5),
+                'profitFactor10d': pf10,
+                'profitFactor20d': _pf(r20),
+                'sharpe5d':  _sharpe(r5, 5),
+                'sharpe10d': sh10,
+                'sharpe20d': _sharpe(r20, 20),
+                'avgWin10d':  avg_win,
+                'avgLoss10d': avg_loss,
+                'grade': grade,
+            }
+
+        # ---- Indikatör dizilerini onceden hesapla (vektörel) ----
+
+        # 1. RSI (Wilder smoothing)
+        def _rsi_arr(closes, period=14):
+            delta = np.diff(closes)
+            g  = np.where(delta > 0, delta, 0.0)
+            lo = np.where(delta < 0, -delta, 0.0)
+            arr = np.full(len(closes), 50.0)
+            if len(delta) < period:
+                return arr
+            ag, al = float(np.mean(g[:period])), float(np.mean(lo[:period]))
+            for i in range(period, len(delta)):
+                ag = (ag*(period-1) + g[i]) / period
+                al = (al*(period-1) + lo[i]) / period
+                rs = ag/al if al > 0 else 100.0
+                arr[i+1] = 100.0 - (100.0/(1.0+rs))
+            return arr
+
+        # 2. MACD
+        def _macd_arr(closes):
+            s = pd.Series(closes)
+            mv = (s.ewm(span=12, adjust=False).mean() - s.ewm(span=26, adjust=False).mean()).values
+            sv = pd.Series(mv).ewm(span=9, adjust=False).mean().values
+            return mv, sv
+
+        # 3. Bollinger Bands
+        def _boll_arr(closes, period=20, mult=2.0):
+            s   = pd.Series(closes)
+            mid = s.rolling(period).mean().values
+            std = s.rolling(period).std(ddof=1).values
+            return mid + mult*std, mid, mid - mult*std
+
+        # 4. Stochastic %K
+        def _stoch_arr(closes, highs, lows, period=14):
+            k = np.full(len(closes), 50.0)
+            for i in range(period-1, len(closes)):
+                hi = float(np.max(highs[i-period+1:i+1]))
+                lo = float(np.min(lows[i-period+1:i+1]))
+                k[i] = ((closes[i]-lo)/(hi-lo))*100.0 if hi != lo else 50.0
+            return k
+
+        # 5. EMA
+        def _ema(closes, span):
+            return pd.Series(closes).ewm(span=span, adjust=False).mean().values
+
+        # 6. Williams %R
+        def _wpr_arr(closes, highs, lows, period=14):
+            w = np.full(len(closes), -50.0)
+            for i in range(period-1, len(closes)):
+                hh = float(np.max(highs[i-period+1:i+1]))
+                ll = float(np.min(lows[i-period+1:i+1]))
+                w[i] = ((hh-closes[i])/(hh-ll))*-100.0 if hh != ll else -50.0
+            return w
+
+        # 7. CCI
+        def _cci_arr(closes, highs, lows, period=20):
+            tp  = (highs + lows + closes) / 3.0
+            arr = np.zeros(len(closes))
+            for i in range(period-1, len(closes)):
+                tp_w = tp[i-period+1:i+1]
+                sma  = float(np.mean(tp_w))
+                md   = float(np.mean(np.abs(tp_w - sma)))
+                arr[i] = (tp[i]-sma)/(0.015*md) if md > 0 else 0.0
+            return arr
+
+        # 8. MFI
+        def _mfi_arr(closes, highs, lows, volumes, period=14):
+            tp  = (highs + lows + closes) / 3.0
+            mf  = tp * volumes
+            arr = np.full(len(closes), 50.0)
+            for i in range(period, len(closes)):
+                # w_tp ve w_prev ayni boyutta olmali
+                w_tp   = tp[i-period+1:i+1]   # [i-period+1 .. i]  shape=(period,)
+                w_prev = tp[i-period:i]         # [i-period   .. i-1] shape=(period,)
+                w_mf   = mf[i-period+1:i+1]
+                pmf = float(np.sum(w_mf[w_tp > w_prev]))
+                nmf = float(np.sum(w_mf[w_tp <= w_prev]))
+                arr[i] = 100.0 - (100.0/(1.0+pmf/nmf)) if nmf > 0 else 100.0
+            return arr
+
+        # 9. OBV
+        def _obv_arr(closes, volumes):
+            obv = np.zeros(len(closes))
+            for i in range(1, len(closes)):
+                if   closes[i] > closes[i-1]: obv[i] = obv[i-1] + volumes[i]
+                elif closes[i] < closes[i-1]: obv[i] = obv[i-1] - volumes[i]
+                else:                          obv[i] = obv[i-1]
+            return obv
+
+        rsi_a          = _rsi_arr(c)
+        macd_v, macd_s = _macd_arr(c)
+        bb_u, _bb_m, bb_l = _boll_arr(c)
+        stoch_k        = _stoch_arr(c, h, l)
+        ema20          = _ema(c, 20)
+        ema50          = _ema(c, 50)
+        wpr_a          = _wpr_arr(c, h, l)
+        cci_a          = _cci_arr(c, h, l)
+        mfi_a          = _mfi_arr(c, h, l, v)
+        obv_a          = _obv_arr(c, v)
+
+        # ---- Sinyal uretimi ----
+        start_i = 60     # 60 bar stabilite suresi
+        end_i   = n - 20 # 20 bar gelecegi gormek icin
         signals = []
-        # Her gunde geriye donuk indikatoru hesapla ve sinyal uret
-        for i in range(50, n - 20):  # 20 gun sonrasini gormek icin -20
-            sc = c[:i+1]
-            sh = h[:i+1]
-            sl = l[:i+1]
-            sv = v[:i+1]
 
-            rsi = calc_rsi(sc)
-            macd = calc_macd(sc)
+        for i in range(start_i, end_i):
+            ep  = float(c[i])
+            r5  = ((float(c[min(i+5,  n-1)]) - ep) / ep) * 100.0
+            r10 = ((float(c[min(i+10, n-1)]) - ep) / ep) * 100.0
+            r20 = ((float(c[min(i+20, n-1)]) - ep) / ep) * 100.0
 
-            signal_type = None
-            signal_reason = ''
-
-            # RSI asiri satim
-            if rsi.get('value', 50) < 30:
-                signal_type = 'buy'
-                signal_reason = 'RSI < 30'
-            elif rsi.get('value', 50) > 70:
-                signal_type = 'sell'
-                signal_reason = 'RSI > 70'
-            # MACD kesisim
-            elif macd.get('signalType') == 'buy' and len(sc) > 26:
-                prev_macd = calc_macd(sc[:-1])
-                if prev_macd.get('signalType') != 'buy':
-                    signal_type = 'buy'
-                    signal_reason = 'MACD Kesisim'
-            elif macd.get('signalType') == 'sell' and len(sc) > 26:
-                prev_macd = calc_macd(sc[:-1])
-                if prev_macd.get('signalType') != 'sell':
-                    signal_type = 'sell'
-                    signal_reason = 'MACD Kesisim'
-            # Bollinger alt bant
-            elif len(sc) >= 20:
-                bb = calc_bollinger(sc, float(sc[-1]))
-                if bb.get('lower', 0) > 0 and float(sc[-1]) < bb['lower']:
-                    signal_type = 'buy'
-                    signal_reason = 'Bollinger Alt Bant'
-                elif bb.get('upper', 0) > 0 and float(sc[-1]) > bb['upper']:
-                    signal_type = 'sell'
-                    signal_reason = 'Bollinger Ust Bant'
-
-            if signal_type:
-                entry_price = float(c[i])
-                ret_5d = sf(((float(c[min(i+5, n-1)]) - entry_price) / entry_price) * 100)
-                ret_10d = sf(((float(c[min(i+10, n-1)]) - entry_price) / entry_price) * 100)
-                ret_20d = sf(((float(c[min(i+20, n-1)]) - entry_price) / entry_price) * 100)
-
-                # Satis sinyali icin getiriyi ters cevir
-                if signal_type == 'sell':
-                    ret_5d, ret_10d, ret_20d = -ret_5d, -ret_10d, -ret_20d
-
+            def _add(stype, reason):
+                m5, m10, m20 = r5, r10, r20
+                if stype == 'sell':
+                    m5, m10, m20 = -m5, -m10, -m20
                 signals.append({
-                    'day': i,
-                    'type': signal_type,
-                    'reason': signal_reason,
-                    'price': sf(entry_price),
-                    'ret5d': float(ret_5d),
-                    'ret10d': float(ret_10d),
-                    'ret20d': float(ret_20d),
-                    'win5d': float(ret_5d) > 0,
-                    'win10d': float(ret_10d) > 0,
-                    'win20d': float(ret_20d) > 0,
+                    'day': i, 'type': stype, 'reason': reason,
+                    'price': sf(ep),
+                    'ret5d':  sf(m5),  'ret10d': sf(m10), 'ret20d': sf(m20),
+                    'win5d':  m5 > 0, 'win10d': m10 > 0, 'win20d': m20 > 0,
                 })
+
+            # RSI
+            rsi = rsi_a[i]
+            if   rsi < 30: _add('buy',  'RSI < 30')
+            elif rsi > 70: _add('sell', 'RSI > 70')
+
+            # MACD kesisim
+            if i > 0:
+                if   macd_v[i] > macd_s[i] and macd_v[i-1] <= macd_s[i-1]: _add('buy',  'MACD Kesisim')
+                elif macd_v[i] < macd_s[i] and macd_v[i-1] >= macd_s[i-1]: _add('sell', 'MACD Kesisim')
+
+            # Bollinger Bantlari
+            if not np.isnan(bb_l[i]) and bb_l[i] > 0:
+                if   ep < bb_l[i]: _add('buy',  'Bollinger Alt Bant')
+                elif ep > bb_u[i]: _add('sell', 'Bollinger Ust Bant')
+
+            # Stochastic
+            if   stoch_k[i] < 20: _add('buy',  'Stochastic Asiri Satim')
+            elif stoch_k[i] > 80: _add('sell', 'Stochastic Asiri Alim')
+
+            # EMA kesisim (yeni kesisim aninda tetikle)
+            if i > 0:
+                now_bull = ep > ema20[i] and ema20[i] > ema50[i]
+                now_bear = ep < ema20[i] and ema20[i] < ema50[i]
+                prv_bull = float(c[i-1]) > ema20[i-1] and ema20[i-1] > ema50[i-1]
+                prv_bear = float(c[i-1]) < ema20[i-1] and ema20[i-1] < ema50[i-1]
+                if   now_bull and not prv_bull: _add('buy',  'EMA Yukari Kesisim')
+                elif now_bear and not prv_bear: _add('sell', 'EMA Asagi Kesisim')
+
+            # Williams %R
+            if   wpr_a[i] < -80: _add('buy',  'Williams %R Asiri Satim')
+            elif wpr_a[i] > -20: _add('sell', 'Williams %R Asiri Alim')
+
+            # CCI
+            if   cci_a[i] < -100: _add('buy',  'CCI Asiri Satim')
+            elif cci_a[i] >  100: _add('sell', 'CCI Asiri Alim')
+
+            # MFI
+            if   mfi_a[i] < 20: _add('buy',  'MFI Asiri Satim')
+            elif mfi_a[i] > 80: _add('sell', 'MFI Asiri Alim')
+
+            # OBV diverjans (10-gunluk egim)
+            if i >= 10:
+                obv_slope   = float(obv_a[i]  - obv_a[i-10])
+                price_slope = float(c[i]) - float(c[i-10])
+                if   obv_slope > 0 and price_slope < 0: _add('buy',  'OBV Pozitif Diverjans')
+                elif obv_slope < 0 and price_slope > 0: _add('sell', 'OBV Negatif Diverjans')
 
         if not signals:
             return {'totalSignals': 0, 'message': 'Sinyal bulunamadi'}
 
-        buy_signals = [s for s in signals if s['type'] == 'buy']
-        sell_signals = [s for s in signals if s['type'] == 'sell']
+        buy_sigs  = [s for s in signals if s['type'] == 'buy']
+        sell_sigs = [s for s in signals if s['type'] == 'sell']
 
-        def calc_stats(sigs):
-            if not sigs:
-                return {'count': 0, 'winRate5d': 0, 'winRate10d': 0, 'winRate20d': 0, 'avgRet5d': 0, 'avgRet10d': 0, 'avgRet20d': 0}
-            return {
-                'count': len(sigs),
-                'winRate5d': sf(sum(1 for s in sigs if s['win5d']) / len(sigs) * 100),
-                'winRate10d': sf(sum(1 for s in sigs if s['win10d']) / len(sigs) * 100),
-                'winRate20d': sf(sum(1 for s in sigs if s['win20d']) / len(sigs) * 100),
-                'avgRet5d': sf(np.mean([s['ret5d'] for s in sigs])),
-                'avgRet10d': sf(np.mean([s['ret10d'] for s in sigs])),
-                'avgRet20d': sf(np.mean([s['ret20d'] for s in sigs])),
-            }
-
-        # Sinyal tiplerine gore istatistik
+        # Her indikatör için istatistik
         by_reason = {}
         for s in signals:
-            r = s['reason']
-            if r not in by_reason:
-                by_reason[r] = []
-            by_reason[r].append(s)
+            by_reason.setdefault(s['reason'], []).append(s)
 
-        reason_stats = {}
-        for reason, sigs in by_reason.items():
-            reason_stats[reason] = calc_stats(sigs)
+        reason_stats = {r: {**calc_stats_v2(sigs), 'reason': r}
+                        for r, sigs in by_reason.items()}
+
+        # Profit Factor'a göre sırala
+        ranked = sorted(
+            reason_stats.values(),
+            key=lambda x: (float(x.get('profitFactor10d', 0)),
+                           float(x.get('winRate10d', 0))),
+            reverse=True,
+        )
+
+        # ---- Buy-and-Hold Benchmark ----
+        # Rastgele giris yapilsaydi ortalama 10-gunluk getiri ne olurdu?
+        baseline_rets = [
+            ((float(c[min(i+10, n-1)]) - float(c[i])) / float(c[i])) * 100.0
+            for i in range(start_i, end_i)
+        ]
+        baseline_avg  = sf(float(np.mean(baseline_rets))) if baseline_rets else 0
+        full_period_r = sf(((float(c[-1]) - float(c[start_i])) / float(c[start_i])) * 100.0)
+
+        # ---- BIST RSI Kalibrasyonu ----
+        # Hangi RSI esigi BIST'te daha iyi calisıyor?
+        rsi_calib = {}
+        for lo_th, hi_th in [(25, 75), (30, 70), (35, 65)]:
+            cal = []
+            for i in range(start_i, end_i):
+                rv = rsi_a[i]
+                if   rv < lo_th: st = 'buy'
+                elif rv > hi_th: st = 'sell'
+                else: continue
+                ep_c = float(c[i])
+                r = ((float(c[min(i+10, n-1)]) - ep_c) / ep_c) * 100.0
+                if st == 'sell':
+                    r = -r
+                cal.append(r)
+            if cal:
+                wins   = [r for r in cal if r > 0]
+                losses = [abs(r) for r in cal if r < 0]
+                rsi_calib[f'{lo_th}/{hi_th}'] = {
+                    'signalCount':     len(cal),
+                    'winRate10d':      sf(len(wins)/len(cal)*100),
+                    'profitFactor10d': sf(sum(wins)/sum(losses) if losses else 99.0),
+                    'avgReturn10d':    sf(float(np.mean(cal))),
+                }
+        best_rsi = (max(rsi_calib, key=lambda k: float(rsi_calib[k].get('profitFactor10d', 0)))
+                    if rsi_calib else '30/70')
 
         return {
             'totalSignals': len(signals),
-            'buySignals': calc_stats(buy_signals),
-            'sellSignals': calc_stats(sell_signals),
-            'overall': calc_stats(signals),
-            'byReason': reason_stats,
+            'buySignals':   calc_stats_v2(buy_sigs),
+            'sellSignals':  calc_stats_v2(sell_sigs),
+            'overall':      calc_stats_v2(signals),
+            'byReason':     reason_stats,
+            'rankedIndicators': ranked,
             'recentSignals': signals[-10:],
+            'benchmark': {
+                'avgRandom10dReturn': baseline_avg,
+                'fullPeriodReturn':   full_period_r,
+                'note': 'avgRandom10dReturn: rastgele giris olsaydi beklenen 10-gunluk ortalama getiri',
+            },
+            'rsiCalibration':  rsi_calib,
+            'bestRsiThreshold': best_rsi,
         }
     except Exception as e:
         print(f"  [BACKTEST] Hata: {e}")
+        import traceback; traceback.print_exc()
         return {'totalSignals': 0, 'error': str(e)}
 
 
@@ -5176,6 +5371,106 @@ def signals_performance():
         return jsonify(safe_dict({
             'success': True,
             'performance': results,
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/signals/calibration')
+def signals_calibration():
+    """
+    BIST indikatör kalibrasyonu:
+    - Tekli hisse: ?symbol=THYAO
+    - Toplu (ilk 20 hisse): parametre yok
+    Döndürür: RSI en iyi eşik, en iyi performans gösteren indikatörler (Profit Factor bazli)
+    """
+    try:
+        symbol = request.args.get('symbol', '').upper().strip()
+
+        # Tek hisse modu
+        if symbol:
+            hist = _cget_hist(f"{symbol}_1y")
+            if hist is None:
+                hist = _fetch_hist_df(symbol, '1y')
+            if hist is None or len(hist) < 60:
+                return jsonify({'error': f'{symbol} icin yeterli veri yok'}), 400
+            bt = calc_signal_backtest(hist)
+            return jsonify(safe_dict({
+                'success': True,
+                'symbol': symbol,
+                'rsiCalibration': bt.get('rsiCalibration', {}),
+                'bestRsiThreshold': bt.get('bestRsiThreshold', '30/70'),
+                'rankedIndicators': bt.get('rankedIndicators', [])[:5],
+                'benchmark': bt.get('benchmark', {}),
+                'totalSignals': bt.get('totalSignals', 0),
+                'timestamp': datetime.now().isoformat(),
+            }))
+
+        # Toplu mod: ilk 20 hisse üzerinden RSI kalibrasyon ortalaması
+        stocks = _get_stocks()
+        if not stocks:
+            return jsonify({'success': True, 'loading': True})
+
+        agg_rsi = {}   # { '30/70': [profitFactor, ...], ... }
+        agg_ind = {}   # { 'RSI < 30': [profitFactor, ...], ... }
+        processed = 0
+
+        for stock in stocks[:20]:
+            sym = stock['code']
+            try:
+                hist = _cget_hist(f"{sym}_1y")
+                if hist is None or len(hist) < 60:
+                    continue
+                bt = calc_signal_backtest(hist)
+                if bt.get('totalSignals', 0) < 5:
+                    continue
+
+                # RSI kalibrasyon topla
+                for thresh, stats in bt.get('rsiCalibration', {}).items():
+                    agg_rsi.setdefault(thresh, []).append(float(stats.get('profitFactor10d', 0)))
+
+                # Indikatör sıralaması topla
+                for ind in bt.get('rankedIndicators', []):
+                    name = ind.get('reason', '')
+                    if name:
+                        agg_ind.setdefault(name, []).append(float(ind.get('profitFactor10d', 0)))
+
+                processed += 1
+            except Exception:
+                continue
+
+        if processed == 0:
+            return jsonify({'success': True, 'loading': True, 'message': 'Veri hazırlanıyor'})
+
+        # RSI eşik özeti
+        rsi_summary = {}
+        for thresh, pfs in agg_rsi.items():
+            avg_pf = float(np.mean(pfs)) if pfs else 0
+            rsi_summary[thresh] = {
+                'avgProfitFactor10d': sf(avg_pf),
+                'stockCount': len(pfs),
+            }
+        best_rsi_bulk = max(rsi_summary, key=lambda k: float(rsi_summary[k]['avgProfitFactor10d'])) if rsi_summary else '30/70'
+
+        # Indikatör özeti
+        ind_summary = []
+        for name, pfs in agg_ind.items():
+            avg_pf = float(np.mean(pfs)) if pfs else 0
+            ind_summary.append({
+                'reason': name,
+                'avgProfitFactor10d': sf(avg_pf),
+                'stockCount': len(pfs),
+            })
+        ind_summary.sort(key=lambda x: float(x['avgProfitFactor10d']), reverse=True)
+
+        return jsonify(safe_dict({
+            'success': True,
+            'processedStocks': processed,
+            'rsiCalibrationSummary': rsi_summary,
+            'bestRsiThreshold': best_rsi_bulk,
+            'topIndicators': ind_summary[:5],
+            'allIndicators': ind_summary,
             'timestamp': datetime.now().isoformat(),
         }))
     except Exception as e:
