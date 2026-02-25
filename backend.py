@@ -755,6 +755,42 @@ def _fetch_hist_df(sym, period='1y'):
     return None
 
 
+def _resample_to_tf(hist_daily, tf):
+    """
+    Gunluk OHLCV verisini haftalik ('weekly') veya aylik ('monthly') bara donustur.
+    Portabl yaklasim: pandas groupby + Period kullanır (resample versiyonuna bagli degil).
+    """
+    try:
+        df = hist_daily.copy()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+
+        period_code = 'W' if tf == 'weekly' else 'M'
+        df['_p'] = df.index.to_period(period_code)
+
+        agg = {'Close': 'last', 'High': 'max', 'Low': 'min', 'Volume': 'sum'}
+        if 'Open' in df.columns:
+            agg['Open'] = 'first'
+
+        resampled = df.groupby('_p').agg(agg)
+        resampled.index = resampled.index.to_timestamp()
+        resampled = resampled.dropna(subset=['Close'])
+
+        # Son bar tamamlanmamis olabilir (suanki hafta/ay) — cikar
+        if len(resampled) > 2:
+            resampled = resampled.iloc[:-1]
+
+        if 'High' not in resampled.columns:
+            resampled['High'] = resampled['Close']
+        if 'Low' not in resampled.columns:
+            resampled['Low'] = resampled['Close']
+
+        return resampled if len(resampled) >= 5 else None
+    except Exception as e:
+        print(f"  [MTF-RESAMPLE] {tf}: {e}")
+        return None
+
+
 def _fetch_index_data(key, tsym, name):
     """Endeks verisi cek"""
     # Endeksler icin Is Yatirim: XU100 = BIST100 endeksi
@@ -1895,6 +1931,121 @@ def calc_all_indicators(hist, cp):
     bc,sc=sigs.count('buy'),sigs.count('sell'); t=len(sigs)
     ind['summary']={'overall':'buy' if bc>sc and bc>=t*0.4 else ('sell' if sc>bc and sc>=t*0.4 else 'neutral'),'buySignals':bc,'sellSignals':sc,'neutralSignals':t-bc-sc,'totalIndicators':t}
     return ind
+
+
+# =====================================================================
+# FAZ 2: COKLU ZAMAN DILIMI (MTF) ANALIZI
+# Gunluk, haftalik, aylik barlarda ayni indikatorleri hesapla.
+# Kac zaman dilimi ayni yonde → MTF skoru (0-3)
+# =====================================================================
+def calc_mtf_signal(hist_daily):
+    """
+    Gercek coklu zaman dilimi sinyali:
+      - daily  : mevcut gunluk bar verisi
+      - weekly : gunluk veriyi haftalik bara resample et
+      - monthly: gunluk veriyi aylik bara resample et
+    Her zaman dilimi icin RSI / MACD / EMA / Bollinger → al/sat/notr karar.
+    Kac tanesinin ayni yonde oldugunu say → mtfScore (0-3).
+    """
+    def _tf_signal(hist):
+        """Bir OHLCV DataFrame'i icin basit al/sat/notr uret"""
+        if hist is None or len(hist) < 10:
+            return {'signal': 'neutral', 'score': 0, 'rsi': 50,
+                    'macd': 'neutral', 'ema': 'neutral', 'bars': 0}
+        try:
+            c = hist['Close'].values.astype(float)
+            h = hist['High'].values.astype(float) if 'High' in hist.columns else c.copy()
+            l = hist['Low'].values.astype(float) if 'Low' in hist.columns else c.copy()
+            h = np.where(np.isnan(h), c, h)
+            l = np.where(np.isnan(l), c, l)
+            n = len(c)
+            score = 0
+
+            # RSI
+            rsi_d   = calc_rsi(c)
+            rsi_val = float(rsi_d.get('value', 50))
+            if   rsi_val < 35: score += 2
+            elif rsi_val < 45: score += 1
+            elif rsi_val > 65: score -= 2
+            elif rsi_val > 55: score -= 1
+
+            # MACD (histogram yonu)
+            macd_sig = 'neutral'
+            if n >= 26:
+                md = calc_macd(c)
+                hist_val = float(md.get('histogram', 0))
+                if   hist_val > 0: score += 1; macd_sig = 'buy'
+                elif hist_val < 0: score -= 1; macd_sig = 'sell'
+
+            # EMA 20 / 50 hizalaması
+            ema_sig = 'neutral'
+            if n >= 50:
+                s     = pd.Series(c)
+                e20   = float(s.ewm(span=20, adjust=False).mean().iloc[-1])
+                e50   = float(s.ewm(span=50, adjust=False).mean().iloc[-1])
+                cur   = float(c[-1])
+                if   cur > e20 and e20 > e50: score += 1; ema_sig = 'buy'
+                elif cur < e20 and e20 < e50: score -= 1; ema_sig = 'sell'
+
+            # Bollinger bantları
+            if n >= 20:
+                bb  = calc_bollinger(c, float(c[-1]))
+                bbl = float(bb.get('lower', 0))
+                bbu = float(bb.get('upper', 0))
+                cp  = float(c[-1])
+                if bbl > 0 and cp < bbl: score += 1
+                elif bbu > 0 and cp > bbu: score -= 1
+
+            signal = 'buy' if score >= 2 else ('sell' if score <= -2 else 'neutral')
+            return {
+                'signal': signal, 'score': sf(score),
+                'rsi': sf(rsi_val), 'macd': macd_sig, 'ema': ema_sig,
+                'bars': n, 'currentPrice': sf(float(c[-1])),
+            }
+        except Exception as e:
+            return {'signal': 'neutral', 'score': 0, 'rsi': 50,
+                    'macd': 'neutral', 'ema': 'neutral', 'bars': 0, 'error': str(e)}
+
+    try:
+        daily_sig   = _tf_signal(hist_daily)
+        weekly_sig  = _tf_signal(_resample_to_tf(hist_daily, 'weekly'))
+        monthly_sig = _tf_signal(_resample_to_tf(hist_daily, 'monthly'))
+
+        sigs = [daily_sig['signal'], weekly_sig['signal'], monthly_sig['signal']]
+        buy_c  = sigs.count('buy')
+        sell_c = sigs.count('sell')
+
+        if   buy_c >= 2:  dominant = 'buy';  mtf_score = buy_c
+        elif sell_c >= 2: dominant = 'sell'; mtf_score = sell_c
+        else:             dominant = 'neutral'; mtf_score = 0
+
+        alignment = f'{max(buy_c, sell_c)}/3'
+        strength  = ('Guclu' if max(buy_c, sell_c) == 3
+                     else ('Orta' if max(buy_c, sell_c) == 2 else 'Uyumsuz'))
+
+        return {
+            'daily':   daily_sig,
+            'weekly':  weekly_sig,
+            'monthly': monthly_sig,
+            'mtfScore':     mtf_score,
+            'mtfAlignment': alignment,
+            'mtfDirection': dominant,
+            'mtfStrength':  strength,
+            'description': (
+                f'Gunluk: {daily_sig["signal"]} | '
+                f'Haftalik: {weekly_sig["signal"]} | '
+                f'Aylik: {monthly_sig["signal"]} '
+                f'→ {alignment} uyum ({strength})'
+            ),
+        }
+    except Exception as e:
+        print(f"  [MTF] Hata: {e}")
+        return {
+            'daily': {'signal': 'neutral'}, 'weekly': {'signal': 'neutral'},
+            'monthly': {'signal': 'neutral'}, 'mtfScore': 0,
+            'mtfAlignment': '0/3', 'mtfDirection': 'neutral',
+            'mtfStrength': 'Uyumsuz', 'error': str(e),
+        }
 
 
 # =====================================================================
@@ -4360,6 +4511,20 @@ def _compute_signal_for_stock(stock, timeframe):
         ml_conf = calc_ml_confidence(hist, ind, score, sig_type)
         candle_patterns = ind.get('candlestick', {}).get('patterns', [])
 
+        # MTF: gercek coklu zaman dilimi analizi
+        try:
+            mtf = calc_mtf_signal(hist)
+        except Exception:
+            mtf = {'mtfScore': 0, 'mtfAlignment': '0/3',
+                   'mtfDirection': 'neutral', 'mtfStrength': 'Uyumsuz'}
+
+        # MTF filtresi: sinyal ile MTF yonu uyumsuzsa composite skoru zayiflat
+        mtf_direction = mtf.get('mtfDirection', 'neutral')
+        if mtf_direction != 'neutral' and mtf_direction != sig_type:
+            composite = composite * 0.6   # Uyumsuz MTF → skoru %40 dusur
+        elif mtf_direction == sig_type and mtf.get('mtfScore', 0) == 3:
+            composite = min(100, composite * 1.2)  # 3/3 uyum → %20 artir
+
         return {
             'code': sym,
             'name': BIST100_STOCKS.get(sym, sym),
@@ -4389,6 +4554,12 @@ def _compute_signal_for_stock(stock, timeframe):
             'candlestickPatterns': candle_patterns[:3],
             'dynamicThresholds': ind.get('dynamicThresholds', {}),
             'tradePlan': calc_trade_plan(hist, ind),
+            # MTF alanları
+            'mtfScore':     mtf.get('mtfScore', 0),
+            'mtfAlignment': mtf.get('mtfAlignment', '0/3'),
+            'mtfDirection': mtf_direction,
+            'mtfStrength':  mtf.get('mtfStrength', 'Uyumsuz'),
+            'mtfDescription': mtf.get('description', ''),
         }
     except:
         return None
@@ -5309,6 +5480,32 @@ def stock_signal_backtest(symbol):
             return jsonify({'error': f'{symbol} icin yeterli veri yok'}), 400
         result = calc_signal_backtest(hist)
         return jsonify(safe_dict({'success': True, 'symbol': symbol, **result}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/mtf')
+def stock_mtf(symbol):
+    """
+    Hisse icin gercek coklu zaman dilimi (MTF) analizi.
+    Gunluk OHLCV verisini haftalik ve aylik bara resample ederek
+    her zaman diliminde RSI/MACD/EMA/Bollinger indikatörlerini hesaplar.
+    Kac zaman diliminin ayni yonde oldugunu MTF skoru olarak doner (0-3).
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 30:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 30 bar gerekli)'}), 400
+
+        mtf = calc_mtf_signal(hist)
+        return jsonify(safe_dict({
+            'success': True,
+            'symbol': symbol,
+            'mtf': mtf,
+            'timestamp': datetime.now().isoformat(),
+        }))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
