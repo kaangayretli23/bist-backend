@@ -2049,6 +2049,314 @@ def calc_mtf_signal(hist_daily):
 
 
 # =====================================================================
+# FAZ 3: UYUMSUZLUK (DIVERGENCE) TESPİTİ
+# RSI ve MACD tabanlı klasik/gizli divergence tespiti.
+# =====================================================================
+def _rsi_series(closes, period=14):
+    """Wilder yumuşatma ile tam RSI serisi (vektörel)"""
+    c = np.array(closes, dtype=float)
+    if len(c) < period + 1:
+        return np.full(len(c), 50.0)
+    delta = np.diff(c)
+    gains  = np.where(delta > 0,  delta, 0.0)
+    losses = np.where(delta < 0, -delta, 0.0)
+    avg_g  = np.zeros(len(delta))
+    avg_l  = np.zeros(len(delta))
+    avg_g[period - 1] = np.mean(gains[:period])
+    avg_l[period - 1] = np.mean(losses[:period])
+    for i in range(period, len(delta)):
+        avg_g[i] = (avg_g[i-1] * (period-1) + gains[i])  / period
+        avg_l[i] = (avg_l[i-1] * (period-1) + losses[i]) / period
+    rs  = np.where(avg_l == 0, np.inf, avg_g / avg_l)
+    rsi = np.where(avg_l == 0, 100.0, 100 - 100 / (1 + rs))
+    result = np.full(len(c), np.nan)
+    result[period:] = rsi[period - 1:]
+    return result
+
+def _find_peaks(arr, window=5):
+    """Lokal zirve indekslerini döndür"""
+    peaks = []
+    for i in range(window, len(arr) - window):
+        if arr[i] == max(arr[i-window:i+window+1]):
+            peaks.append(i)
+    return peaks
+
+def _find_troughs(arr, window=5):
+    """Lokal dip indekslerini döndür"""
+    troughs = []
+    for i in range(window, len(arr) - window):
+        if arr[i] == min(arr[i-window:i+window+1]):
+            troughs.append(i)
+    return troughs
+
+def calc_divergence(hist, lookback=90):
+    """
+    RSI + MACD uyumsuzluk (divergence) tespiti.
+      Regular Bullish : Fiyat LL, RSI HL  → Al
+      Regular Bearish : Fiyat HH, RSI LH  → Sat
+      Hidden Bullish  : Fiyat HL, RSI LL  → Uptrend devam (Al)
+      Hidden Bearish  : Fiyat LH, RSI HH  → Downtrend devam (Sat)
+    MACD histogram uyumsuzlukları da eklenir.
+    """
+    try:
+        c  = hist['Close'].values.astype(float)
+        n  = len(c)
+        if n < 50:
+            return {'divergences': [], 'recentDivergences': [],
+                    'summary': {'bullish': 0, 'bearish': 0, 'signal': 'neutral', 'count': 0, 'hasRecent': False}}
+
+        lb   = min(lookback, n)
+        c_lb = c[-lb:]
+
+        # RSI serisi
+        rsi_arr  = _rsi_series(c_lb)
+        rsi_vals = np.where(np.isnan(rsi_arr), 50.0, rsi_arr)
+
+        # MACD histogram serisi
+        s          = pd.Series(c_lb, dtype=float)
+        macd_line  = s.ewm(span=12, adjust=False).mean() - s.ewm(span=26, adjust=False).mean()
+        sig_line   = macd_line.ewm(span=9, adjust=False).mean()
+        macd_hist_arr = (macd_line - sig_line).values
+
+        divergences = []
+        window = 5
+
+        price_peaks   = _find_peaks(c_lb, window)
+        price_troughs = _find_troughs(c_lb, window)
+
+        # --- Regular Bearish: Fiyat HH, RSI LH ---
+        if len(price_peaks) >= 2:
+            p1, p2 = price_peaks[-2], price_peaks[-1]
+            if c_lb[p2] > c_lb[p1] and rsi_vals[p2] < rsi_vals[p1]:
+                divergences.append({
+                    'type': 'regular_bearish', 'label': 'Klasik Ayı Uyumsuzluğu', 'signal': 'sell',
+                    'description': f'Fiyat yeni zirve ({sf(c_lb[p2])}) ama RSI düşüyor '
+                                   f'({sf(rsi_vals[p2])} < {sf(rsi_vals[p1])})',
+                    'strength': sf(abs(rsi_vals[p1] - rsi_vals[p2])),
+                    'recency': int(lb - p2),
+                    'priceBar1': sf(c_lb[p1]), 'priceBar2': sf(c_lb[p2]),
+                    'rsiBar1':   sf(rsi_vals[p1]), 'rsiBar2': sf(rsi_vals[p2]),
+                })
+
+        # --- Regular Bullish: Fiyat LL, RSI HL ---
+        if len(price_troughs) >= 2:
+            t1, t2 = price_troughs[-2], price_troughs[-1]
+            if c_lb[t2] < c_lb[t1] and rsi_vals[t2] > rsi_vals[t1]:
+                divergences.append({
+                    'type': 'regular_bullish', 'label': 'Klasik Boğa Uyumsuzluğu', 'signal': 'buy',
+                    'description': f'Fiyat yeni dip ({sf(c_lb[t2])}) ama RSI yükseliyor '
+                                   f'({sf(rsi_vals[t2])} > {sf(rsi_vals[t1])})',
+                    'strength': sf(abs(rsi_vals[t2] - rsi_vals[t1])),
+                    'recency': int(lb - t2),
+                    'priceBar1': sf(c_lb[t1]), 'priceBar2': sf(c_lb[t2]),
+                    'rsiBar1':   sf(rsi_vals[t1]), 'rsiBar2': sf(rsi_vals[t2]),
+                })
+
+        # --- Hidden Bullish: Fiyat HL, RSI LL (uptrend devam) ---
+        if len(price_troughs) >= 2:
+            t1, t2 = price_troughs[-2], price_troughs[-1]
+            if c_lb[t2] > c_lb[t1] and rsi_vals[t2] < rsi_vals[t1]:
+                divergences.append({
+                    'type': 'hidden_bullish', 'label': 'Gizli Boğa Uyumsuzluğu', 'signal': 'buy',
+                    'description': f'Fiyat yüksek dip ({sf(c_lb[t2])}) ama RSI düşük → Uptrend devam',
+                    'strength': sf(abs(rsi_vals[t2] - rsi_vals[t1])),
+                    'recency': int(lb - t2),
+                    'priceBar1': sf(c_lb[t1]), 'priceBar2': sf(c_lb[t2]),
+                    'rsiBar1':   sf(rsi_vals[t1]), 'rsiBar2': sf(rsi_vals[t2]),
+                })
+
+        # --- Hidden Bearish: Fiyat LH, RSI HH (downtrend devam) ---
+        if len(price_peaks) >= 2:
+            p1, p2 = price_peaks[-2], price_peaks[-1]
+            if c_lb[p2] < c_lb[p1] and rsi_vals[p2] > rsi_vals[p1]:
+                divergences.append({
+                    'type': 'hidden_bearish', 'label': 'Gizli Ayı Uyumsuzluğu', 'signal': 'sell',
+                    'description': f'Fiyat düşük zirve ({sf(c_lb[p2])}) ama RSI yükseliyor → Downtrend devam',
+                    'strength': sf(abs(rsi_vals[p2] - rsi_vals[p1])),
+                    'recency': int(lb - p2),
+                    'priceBar1': sf(c_lb[p1]), 'priceBar2': sf(c_lb[p2]),
+                    'rsiBar1':   sf(rsi_vals[p1]), 'rsiBar2': sf(rsi_vals[p2]),
+                })
+
+        # --- MACD Bearish Divergence ---
+        if len(price_peaks) >= 2:
+            p1, p2 = price_peaks[-2], price_peaks[-1]
+            if (p1 < len(macd_hist_arr) and p2 < len(macd_hist_arr) and
+                    c_lb[p2] > c_lb[p1] and macd_hist_arr[p2] < macd_hist_arr[p1]):
+                divergences.append({
+                    'type': 'macd_bearish', 'label': 'MACD Ayı Uyumsuzluğu', 'signal': 'sell',
+                    'description': f'Fiyat HH ama MACD histogram düşük '
+                                   f'({sf(float(macd_hist_arr[p2]))} < {sf(float(macd_hist_arr[p1]))})',
+                    'strength': sf(abs(float(macd_hist_arr[p1]) - float(macd_hist_arr[p2]))),
+                    'recency': int(lb - p2),
+                })
+
+        # --- MACD Bullish Divergence ---
+        if len(price_troughs) >= 2:
+            t1, t2 = price_troughs[-2], price_troughs[-1]
+            if (t1 < len(macd_hist_arr) and t2 < len(macd_hist_arr) and
+                    c_lb[t2] < c_lb[t1] and macd_hist_arr[t2] > macd_hist_arr[t1]):
+                divergences.append({
+                    'type': 'macd_bullish', 'label': 'MACD Boğa Uyumsuzluğu', 'signal': 'buy',
+                    'description': f'Fiyat LL ama MACD histogram yükseliyor '
+                                   f'({sf(float(macd_hist_arr[t2]))} > {sf(float(macd_hist_arr[t1]))})',
+                    'strength': sf(abs(float(macd_hist_arr[t2]) - float(macd_hist_arr[t1]))),
+                    'recency': int(lb - t2),
+                })
+
+        recent    = [d for d in divergences if d.get('recency', 999) <= 20]
+        bull_cnt  = sum(1 for d in divergences if d['signal'] == 'buy')
+        bear_cnt  = sum(1 for d in divergences if d['signal'] == 'sell')
+        overall   = 'buy' if bull_cnt > bear_cnt else ('sell' if bear_cnt > bull_cnt else 'neutral')
+
+        return {
+            'divergences':       divergences,
+            'recentDivergences': recent,
+            'summary': {
+                'bullish':   bull_cnt,
+                'bearish':   bear_cnt,
+                'signal':    overall,
+                'count':     len(divergences),
+                'hasRecent': len(recent) > 0,
+            },
+            'currentRsi':      sf(float(rsi_vals[-1])),
+            'currentMacdHist': sf(float(macd_hist_arr[-1])),
+        }
+    except Exception as e:
+        print(f"  [DIVERGENCE] Hata: {e}")
+        return {'divergences': [], 'recentDivergences': [],
+                'summary': {'bullish': 0, 'bearish': 0, 'signal': 'neutral', 'count': 0, 'hasRecent': False},
+                'error': str(e)}
+
+
+# =====================================================================
+# FAZ 4: HACİM PROFİLİ & VWAP
+# POC / VAH / VAL (Hacim Profili), VWAP, Hacim Anomali tespiti
+# =====================================================================
+def calc_volume_profile(hist, bins=20):
+    """
+    Hacim Profili ve VWAP analizi:
+      VWAP : Hacimle ağırlıklı ortalama fiyat
+      POC  : Point of Control — en yüksek hacim bin'i
+      VAH  : Value Area High  — hacmin %70'i üst sınırı
+      VAL  : Value Area Low   — hacmin %70'i alt sınırı
+      Anomaly: Son mum hacmi 20 günlük ortalamanın 2x üzerindeyse uyar
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High'   in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'    in hist.columns else c.copy()
+        v = hist['Volume'].values.astype(float) if 'Volume' in hist.columns else np.ones(len(c))
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        v = np.where(np.isnan(v) | (v <= 0), 0, v)
+        n = len(c)
+
+        # VWAP
+        typical   = (h + l + c) / 3
+        cum_vol   = np.cumsum(v)
+        cum_tpv   = np.cumsum(typical * v)
+        vwap_ser  = np.where(cum_vol > 0, cum_tpv / cum_vol, typical)
+        vwap      = float(vwap_ser[-1])
+        cur_price = float(c[-1])
+        vwap_pct  = sf((cur_price - vwap) / vwap * 100) if vwap > 0 else 0
+        vwap_sig  = ('buy' if cur_price < vwap * 0.99
+                     else ('sell' if cur_price > vwap * 1.01 else 'neutral'))
+
+        # Fiyat aralığı → bins
+        price_min = float(np.min(l))
+        price_max = float(np.max(h))
+        if price_max <= price_min:
+            price_max = price_min * 1.01
+        bin_edges   = np.linspace(price_min, price_max, bins + 1)
+        bin_volumes = np.zeros(bins)
+
+        for i in range(n):
+            bar_range = h[i] - l[i]
+            if bar_range <= 0:
+                idx = min(max(int(np.searchsorted(bin_edges, c[i], side='right') - 1), 0), bins - 1)
+                bin_volumes[idx] += v[i]
+            else:
+                for b in range(bins):
+                    ov_lo = max(l[i], bin_edges[b])
+                    ov_hi = min(h[i], bin_edges[b + 1])
+                    if ov_hi > ov_lo:
+                        bin_volumes[b] += v[i] * (ov_hi - ov_lo) / bar_range
+
+        # POC
+        poc_idx    = int(np.argmax(bin_volumes))
+        poc_price  = sf((bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2)
+        poc_volume = sf(bin_volumes[poc_idx])
+
+        # Value Area (toplam hacmin %70'i)
+        total_vol  = float(np.sum(bin_volumes))
+        va_target  = total_vol * 0.70
+        va_vol     = bin_volumes[poc_idx]
+        lo, hi     = poc_idx, poc_idx
+
+        while va_vol < va_target and (lo > 0 or hi < bins - 1):
+            add_lo = bin_volumes[lo - 1] if lo > 0        else 0.0
+            add_hi = bin_volumes[hi + 1] if hi < bins - 1 else 0.0
+            if add_hi >= add_lo and hi < bins - 1:
+                hi += 1; va_vol += bin_volumes[hi]
+            elif lo > 0:
+                lo -= 1; va_vol += bin_volumes[lo]
+            else:
+                hi += 1; va_vol += bin_volumes[hi]
+
+        vah = sf((bin_edges[hi] + bin_edges[hi + 1]) / 2)
+        val = sf((bin_edges[lo] + bin_edges[lo + 1]) / 2)
+
+        # Hacim anomalisi
+        avg_vol_20  = float(np.mean(v[-20:])) if n >= 20 else float(np.mean(v))
+        last_vol    = float(v[-1])
+        vol_ratio   = sf(last_vol / avg_vol_20) if avg_vol_20 > 0 else 0
+        vol_anomaly = last_vol > avg_vol_20 * 2
+
+        # Hacim trendi (son 3 vs önceki 3)
+        vol_trend = ('artiyor' if n >= 6 and float(np.mean(v[-3:])) > float(np.mean(v[-6:-3]))
+                     else 'azaliyor')
+
+        # Frontend için profil listesi
+        profile = [
+            {
+                'priceLevel': sf((bin_edges[i] + bin_edges[i + 1]) / 2),
+                'volume':     sf(bin_volumes[i]),
+                'isPOC':      i == poc_idx,
+                'isVAH':      i == hi,
+                'isVAL':      i == lo,
+                'inValueArea': lo <= i <= hi,
+            }
+            for i in range(bins)
+        ]
+
+        return {
+            'vwap':         sf(vwap),
+            'vwapSignal':   vwap_sig,
+            'vwapPct':      vwap_pct,
+            'poc':          poc_price,
+            'pocVolume':    poc_volume,
+            'vah':          vah,
+            'val':          val,
+            'profile':      profile,
+            'volumeAnomaly': vol_anomaly,
+            'volumeRatio':  vol_ratio,
+            'volumeTrend':  vol_trend,
+            'avgVolume20':  sf(avg_vol_20),
+            'lastVolume':   sf(last_vol),
+            'currentPrice': sf(cur_price),
+            'priceVsVwap':  vwap_pct,
+            'priceVsVAH':   sf((cur_price - float(vah)) / float(vah) * 100) if float(vah) > 0 else 0,
+            'priceVsVAL':   sf((cur_price - float(val)) / float(val) * 100) if float(val) > 0 else 0,
+            'priceVsPOC':   sf((cur_price - float(poc_price)) / float(poc_price) * 100) if float(poc_price) > 0 else 0,
+        }
+    except Exception as e:
+        print(f"  [VOL-PROFILE] Hata: {e}")
+        return {'error': str(e), 'vwap': 0, 'poc': 0, 'vah': 0, 'val': 0,
+                'volumeAnomaly': False, 'volumeRatio': 0}
+
+
+# =====================================================================
 # FEATURE 1: SIGNAL BACKTESTING & PERFORMANCE TRACKING
 # =====================================================================
 def calc_signal_backtest(hist, lookback_days=252):
@@ -4525,6 +4833,38 @@ def _compute_signal_for_stock(stock, timeframe):
         elif mtf_direction == sig_type and mtf.get('mtfScore', 0) == 3:
             composite = min(100, composite * 1.2)  # 3/3 uyum → %20 artir
 
+        # Faz 3: Divergence analizi
+        try:
+            div = calc_divergence(hist)
+        except Exception:
+            div = {'summary': {'signal': 'neutral', 'bullish': 0, 'bearish': 0, 'hasRecent': False}}
+        div_summary = div.get('summary', {})
+        div_signal  = div_summary.get('signal', 'neutral')
+
+        # Divergence + composite uyum bonusu / penaltısı
+        if div_summary.get('hasRecent', False):
+            if div_signal == sig_type:
+                composite = min(100, composite * 1.10)  # Uyumlu recent divergence → +%10
+            elif div_signal != 'neutral':
+                composite = composite * 0.85            # Ters divergence → -%15
+
+        # Faz 4: Hacim Profili & VWAP
+        try:
+            vp = calc_volume_profile(hist)
+        except Exception:
+            vp = {'vwap': 0, 'poc': 0, 'vah': 0, 'val': 0, 'volumeAnomaly': False, 'vwapSignal': 'neutral'}
+
+        # VWAP + composite uyum
+        vwap_sig = vp.get('vwapSignal', 'neutral')
+        if vwap_sig == sig_type:
+            composite = min(100, composite * 1.05)  # Uyumlu VWAP → +%5
+        elif vwap_sig != 'neutral':
+            composite = composite * 0.95            # Ters VWAP → -%5
+
+        # Hacim anomalisi → belirsizlik: composite'i hafif düşür
+        if vp.get('volumeAnomaly', False) and sig_type == 'sell':
+            composite = min(100, composite * 1.08)  # Yüksek hacim + sat → güçlü satış
+
         return {
             'code': sym,
             'name': BIST100_STOCKS.get(sym, sym),
@@ -4555,11 +4895,28 @@ def _compute_signal_for_stock(stock, timeframe):
             'dynamicThresholds': ind.get('dynamicThresholds', {}),
             'tradePlan': calc_trade_plan(hist, ind),
             # MTF alanları
-            'mtfScore':     mtf.get('mtfScore', 0),
-            'mtfAlignment': mtf.get('mtfAlignment', '0/3'),
-            'mtfDirection': mtf_direction,
-            'mtfStrength':  mtf.get('mtfStrength', 'Uyumsuz'),
+            'mtfScore':       mtf.get('mtfScore', 0),
+            'mtfAlignment':   mtf.get('mtfAlignment', '0/3'),
+            'mtfDirection':   mtf_direction,
+            'mtfStrength':    mtf.get('mtfStrength', 'Uyumsuz'),
             'mtfDescription': mtf.get('description', ''),
+            # Faz 3: Divergence
+            'divergenceSignal':  div_signal,
+            'divergenceCount':   div_summary.get('count', 0),
+            'divergenceBullish': div_summary.get('bullish', 0),
+            'divergenceBearish': div_summary.get('bearish', 0),
+            'hasRecentDivergence': div_summary.get('hasRecent', False),
+            'divergences':       div.get('recentDivergences', [])[:3],
+            # Faz 4: Hacim Profili & VWAP
+            'vwap':           vp.get('vwap', 0),
+            'vwapSignal':     vwap_sig,
+            'vwapPct':        vp.get('vwapPct', 0),
+            'poc':            vp.get('poc', 0),
+            'vah':            vp.get('vah', 0),
+            'val':            vp.get('val', 0),
+            'volumeAnomaly':  vp.get('volumeAnomaly', False),
+            'volumeRatio':    vp.get('volumeRatio', 0),
+            'volumeTrend':    vp.get('volumeTrend', ''),
         }
     except:
         return None
@@ -5506,6 +5863,45 @@ def stock_mtf(symbol):
             'mtf': mtf,
             'timestamp': datetime.now().isoformat(),
         }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/divergence')
+def stock_divergence(symbol):
+    """
+    Hisse icin RSI ve MACD uyumsuzluk (divergence) analizi.
+    Klasik Boğa/Ayı + Gizli Boğa/Ayı + MACD divergence tespit eder.
+    Son 90 barda tarama yapar; son 20 barda tespit edilenleri 'recentDivergences' olarak isaretler.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 50:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 50 bar)'}), 400
+        result = calc_divergence(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/volume-profile')
+def stock_volume_profile(symbol):
+    """
+    Hisse icin Hacim Profili ve VWAP analizi.
+    POC (Point of Control), VAH/VAL (Value Area), VWAP, hacim anomalisi döner.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 20:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 20 bar)'}), 400
+        result = calc_volume_profile(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
