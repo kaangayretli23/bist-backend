@@ -513,6 +513,9 @@ tr:hover td { background: rgba(26,34,52,0.5); }
     </div>
   </div>
 
+  <!-- Dashboard yükleme/hata durumu — endeks kartlarından AYRI -->
+  <div id="dashboardStatus" style="display:none;" class="mb-24"></div>
+
   <!-- Meta Bar: lastUpdated + stale badge -->
   <div id="dashboardMeta" class="card mb-24" style="padding:10px 16px;display:flex;align-items:center;justify-content:space-between;background:var(--bg-secondary);border:1px solid var(--border);">
     <div style="display:flex;align-items:center;gap:12px;">
@@ -1355,64 +1358,64 @@ function _setCache(key, data) {
   _pageCache[key] = { data, ts: Date.now() };
 }
 
+function _dashboardStatusMsg(html) {
+  // Hata/yükleme mesajlarını endeks kartlarına DEĞİL, ayrı div'e yaz
+  const el = document.getElementById('dashboardStatus');
+  if (!el) return;
+  el.style.display = html ? '' : 'none';
+  el.innerHTML = html || '';
+}
+
 async function loadDashboard(forceRefresh) {
-  // Indices (paralel başlat, cache'li)
+  // Endeks kartları: tamamen bağımsız yükle, dashboard ile karışmasın
   updateLoadingProgress(10, 'Endeksler yükleniyor...');
   loadIndices();
 
-  // Dashboard regime & watchlist (paralel)
+  // Piyasa Rejimi + Favoriler (bağımsız paralel)
   _loadDashboardRegime();
   _loadDashboardWatchlist();
 
-  // Onceki veri varsa hemen render et, arka planda guncelle
+  // Önceki veri varsa hemen render et
   const cached = forceRefresh ? null : _getCached('dashboard');
   if (cached && cached.allStocks && cached.allStocks.length > 0) {
+    _dashboardStatusMsg('');
     renderDashboard(cached);
     updateLoadingProgress(100, 'Veriler hazır!');
-    if (!forceRefresh) return; // Cache taze, tekrar çekmeye gerek yok
+    if (!forceRefresh) return;
   }
 
   updateLoadingProgress(30, 'Hisse verileri çekiliyor...');
   let data;
-  try {
-    data = await api('/dashboard');
-  } catch(e) {
-    dismissLoadingPopup();
-    if (cached) { renderDashboard(cached); return; }
-    document.getElementById('indicesCards').innerHTML = `
-      <div class="index-card" style="grid-column:1/-1;text-align:center;">
-        <div style="color:var(--yellow);margin-bottom:8px;">Bağlantı hatası</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Sunucuya ulaşılamadı, lütfen tekrar deneyin.</div>
-        <button class="btn btn-primary btn-sm" onclick="loadDashboard(true)">Tekrar Dene</button>
-      </div>`;
-    return;
-  }
+  // api() kendi içinde hataları yakalar ve {error:...} döner — fırlatmaz
+  data = await api('/dashboard');
+
   if (data.error && !data.success) {
     dismissLoadingPopup();
     if (cached) { renderDashboard(cached); return; }
-    document.getElementById('indicesCards').innerHTML = `
-      <div class="index-card" style="grid-column:1/-1;text-align:center;">
-        <div style="color:var(--yellow);margin-bottom:8px;">Veri yüklenirken sorun oluştu</div>
+    _dashboardStatusMsg(`
+      <div class="card" style="text-align:center;padding:20px;">
+        <div style="color:var(--yellow);margin-bottom:8px;font-weight:600;">⚠️ Veri yüklenirken sorun oluştu</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${data.error}</div>
         <button class="btn btn-primary btn-sm" onclick="loadDashboard(true)">Tekrar Dene</button>
-      </div>`;
+      </div>`);
     return;
   }
 
   if (data.loading || (data.allStocks && data.allStocks.length === 0)) {
     dismissLoadingPopup();
-    if (cached) { renderDashboard(cached); return; }
-    document.getElementById('indicesCards').innerHTML = `
-      <div class="index-card" style="grid-column:1/-1;text-align:center;">
+    if (cached) { _dashboardStatusMsg(''); renderDashboard(cached); return; }
+    _dashboardStatusMsg(`
+      <div class="card" style="text-align:center;padding:20px;">
         <div class="spinner" style="margin:0 auto 12px;"></div>
-        <div style="color:var(--yellow);margin-bottom:8px;">${data.message || 'Veriler yükleniyor...'}</div>
+        <div style="color:var(--yellow);margin-bottom:8px;font-weight:600;">${data.message || 'Hisse verileri yükleniyor...'}</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Sunucu arka planda veri çekiyor, otomatik yenilenecek...</div>
         <button class="btn btn-primary btn-sm" onclick="loadDashboard(true)">Şimdi Yenile</button>
-      </div>`;
+      </div>`);
     setTimeout(() => loadDashboard(), 10000);
     return;
   }
 
+  _dashboardStatusMsg(''); // Başarılı veri: status div'i temizle
   updateLoadingProgress(90, 'Dashboard render ediliyor...');
   _setCache('dashboard', data);
   renderDashboard(data);
@@ -1503,20 +1506,34 @@ async function _loadDashboardWatchlist() {
 }
 
 async function loadIndices() {
-  // Cache'den göster
   const cached = _getCached('indices');
   if (cached && cached.indices && Object.keys(cached.indices).length > 0) {
     renderIndicesCards(cached.indices);
-    updateLoadingProgress(25, 'Endeksler cache\'den yüklendi');
+    updateLoadingProgress(25, "Endeksler cache'den yüklendi");
     return;
   }
 
-  const data = await api('/indices');
-  if (!data.success || !data.indices || Object.keys(data.indices).length === 0) {
+  let data;
+  try {
+    data = await api('/indices');
+  } catch(e) {
+    // Ağ hatası — önce cache'den dene, yoksa yenile butonu göster
+    if (cached && cached.indices) { renderIndicesCards(cached.indices); return; }
     document.getElementById('indicesCards').innerHTML = `
-      <div class="index-card" style="grid-column:1/-1;text-align:center;">
-        <div class="spinner" style="margin:0 auto 8px;"></div>
-        <div style="color:var(--text-muted);">Endeks verileri yükleniyor... <button class="btn btn-sm btn-secondary" onclick="loadIndices()" style="margin-left:8px;">Yenile</button></div>
+      <div class="index-card" style="grid-column:1/-1;text-align:center;padding:16px;">
+        <div style="color:var(--yellow);margin-bottom:8px;">⚠️ Endeks verisi alınamadı</div>
+        <button class="btn btn-sm btn-secondary" onclick="loadIndices()">Tekrar Dene</button>
+      </div>`;
+    return;
+  }
+
+  if (!data.success || !data.indices || Object.keys(data.indices).length === 0) {
+    // Henüz yükleniyor
+    document.getElementById('indicesCards').innerHTML = `
+      <div class="index-card" style="grid-column:1/-1;text-align:center;padding:16px;">
+        <div class="spinner" style="margin:0 auto 8px;width:20px;height:20px;border-width:2px;"></div>
+        <div style="color:var(--text-muted);margin-bottom:8px;">Endeks verileri yükleniyor...</div>
+        <button class="btn btn-sm btn-secondary" onclick="loadIndices()">Yenile</button>
       </div>`;
     setTimeout(() => loadIndices(), 8000);
     return;
@@ -1524,8 +1541,7 @@ async function loadIndices() {
 
   _setCache('indices', data);
   updateLoadingProgress(25, 'Endeksler yüklendi');
-  const idx = data.indices;
-  renderIndicesCards(idx);
+  renderIndicesCards(data.indices);
 }
 
 function renderIndicesCards(idx) {
