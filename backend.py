@@ -755,6 +755,42 @@ def _fetch_hist_df(sym, period='1y'):
     return None
 
 
+def _resample_to_tf(hist_daily, tf):
+    """
+    Gunluk OHLCV verisini haftalik ('weekly') veya aylik ('monthly') bara donustur.
+    Portabl yaklasim: pandas groupby + Period kullanır (resample versiyonuna bagli degil).
+    """
+    try:
+        df = hist_daily.copy()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+
+        period_code = 'W' if tf == 'weekly' else 'M'
+        df['_p'] = df.index.to_period(period_code)
+
+        agg = {'Close': 'last', 'High': 'max', 'Low': 'min', 'Volume': 'sum'}
+        if 'Open' in df.columns:
+            agg['Open'] = 'first'
+
+        resampled = df.groupby('_p').agg(agg)
+        resampled.index = resampled.index.to_timestamp()
+        resampled = resampled.dropna(subset=['Close'])
+
+        # Son bar tamamlanmamis olabilir (suanki hafta/ay) — cikar
+        if len(resampled) > 2:
+            resampled = resampled.iloc[:-1]
+
+        if 'High' not in resampled.columns:
+            resampled['High'] = resampled['Close']
+        if 'Low' not in resampled.columns:
+            resampled['Low'] = resampled['Close']
+
+        return resampled if len(resampled) >= 5 else None
+    except Exception as e:
+        print(f"  [MTF-RESAMPLE] {tf}: {e}")
+        return None
+
+
 def _fetch_index_data(key, tsym, name):
     """Endeks verisi cek"""
     # Endeksler icin Is Yatirim: XU100 = BIST100 endeksi
@@ -1898,16 +1934,1151 @@ def calc_all_indicators(hist, cp):
 
 
 # =====================================================================
+# FAZ 2: COKLU ZAMAN DILIMI (MTF) ANALIZI
+# Gunluk, haftalik, aylik barlarda ayni indikatorleri hesapla.
+# Kac zaman dilimi ayni yonde → MTF skoru (0-3)
+# =====================================================================
+def calc_mtf_signal(hist_daily):
+    """
+    Gercek coklu zaman dilimi sinyali:
+      - daily  : mevcut gunluk bar verisi
+      - weekly : gunluk veriyi haftalik bara resample et
+      - monthly: gunluk veriyi aylik bara resample et
+    Her zaman dilimi icin RSI / MACD / EMA / Bollinger → al/sat/notr karar.
+    Kac tanesinin ayni yonde oldugunu say → mtfScore (0-3).
+    """
+    def _tf_signal(hist):
+        """Bir OHLCV DataFrame'i icin basit al/sat/notr uret"""
+        if hist is None or len(hist) < 10:
+            return {'signal': 'neutral', 'score': 0, 'rsi': 50,
+                    'macd': 'neutral', 'ema': 'neutral', 'bars': 0}
+        try:
+            c = hist['Close'].values.astype(float)
+            h = hist['High'].values.astype(float) if 'High' in hist.columns else c.copy()
+            l = hist['Low'].values.astype(float) if 'Low' in hist.columns else c.copy()
+            h = np.where(np.isnan(h), c, h)
+            l = np.where(np.isnan(l), c, l)
+            n = len(c)
+            score = 0
+
+            # RSI
+            rsi_d   = calc_rsi(c)
+            rsi_val = float(rsi_d.get('value', 50))
+            if   rsi_val < 35: score += 2
+            elif rsi_val < 45: score += 1
+            elif rsi_val > 65: score -= 2
+            elif rsi_val > 55: score -= 1
+
+            # MACD (histogram yonu)
+            macd_sig = 'neutral'
+            if n >= 26:
+                md = calc_macd(c)
+                hist_val = float(md.get('histogram', 0))
+                if   hist_val > 0: score += 1; macd_sig = 'buy'
+                elif hist_val < 0: score -= 1; macd_sig = 'sell'
+
+            # EMA 20 / 50 hizalaması
+            ema_sig = 'neutral'
+            if n >= 50:
+                s     = pd.Series(c)
+                e20   = float(s.ewm(span=20, adjust=False).mean().iloc[-1])
+                e50   = float(s.ewm(span=50, adjust=False).mean().iloc[-1])
+                cur   = float(c[-1])
+                if   cur > e20 and e20 > e50: score += 1; ema_sig = 'buy'
+                elif cur < e20 and e20 < e50: score -= 1; ema_sig = 'sell'
+
+            # Bollinger bantları
+            if n >= 20:
+                bb  = calc_bollinger(c, float(c[-1]))
+                bbl = float(bb.get('lower', 0))
+                bbu = float(bb.get('upper', 0))
+                cp  = float(c[-1])
+                if bbl > 0 and cp < bbl: score += 1
+                elif bbu > 0 and cp > bbu: score -= 1
+
+            signal = 'buy' if score >= 2 else ('sell' if score <= -2 else 'neutral')
+            return {
+                'signal': signal, 'score': sf(score),
+                'rsi': sf(rsi_val), 'macd': macd_sig, 'ema': ema_sig,
+                'bars': n, 'currentPrice': sf(float(c[-1])),
+            }
+        except Exception as e:
+            return {'signal': 'neutral', 'score': 0, 'rsi': 50,
+                    'macd': 'neutral', 'ema': 'neutral', 'bars': 0, 'error': str(e)}
+
+    try:
+        daily_sig   = _tf_signal(hist_daily)
+        weekly_sig  = _tf_signal(_resample_to_tf(hist_daily, 'weekly'))
+        monthly_sig = _tf_signal(_resample_to_tf(hist_daily, 'monthly'))
+
+        sigs = [daily_sig['signal'], weekly_sig['signal'], monthly_sig['signal']]
+        buy_c  = sigs.count('buy')
+        sell_c = sigs.count('sell')
+
+        if   buy_c >= 2:  dominant = 'buy';  mtf_score = buy_c
+        elif sell_c >= 2: dominant = 'sell'; mtf_score = sell_c
+        else:             dominant = 'neutral'; mtf_score = 0
+
+        alignment = f'{max(buy_c, sell_c)}/3'
+        strength  = ('Guclu' if max(buy_c, sell_c) == 3
+                     else ('Orta' if max(buy_c, sell_c) == 2 else 'Uyumsuz'))
+
+        return {
+            'daily':   daily_sig,
+            'weekly':  weekly_sig,
+            'monthly': monthly_sig,
+            'mtfScore':     mtf_score,
+            'mtfAlignment': alignment,
+            'mtfDirection': dominant,
+            'mtfStrength':  strength,
+            'description': (
+                f'Gunluk: {daily_sig["signal"]} | '
+                f'Haftalik: {weekly_sig["signal"]} | '
+                f'Aylik: {monthly_sig["signal"]} '
+                f'→ {alignment} uyum ({strength})'
+            ),
+        }
+    except Exception as e:
+        print(f"  [MTF] Hata: {e}")
+        return {
+            'daily': {'signal': 'neutral'}, 'weekly': {'signal': 'neutral'},
+            'monthly': {'signal': 'neutral'}, 'mtfScore': 0,
+            'mtfAlignment': '0/3', 'mtfDirection': 'neutral',
+            'mtfStrength': 'Uyumsuz', 'error': str(e),
+        }
+
+
+# =====================================================================
+# FAZ 3: UYUMSUZLUK (DIVERGENCE) TESPİTİ
+# RSI ve MACD tabanlı klasik/gizli divergence tespiti.
+# =====================================================================
+def _rsi_series(closes, period=14):
+    """Wilder yumuşatma ile tam RSI serisi (vektörel)"""
+    c = np.array(closes, dtype=float)
+    if len(c) < period + 1:
+        return np.full(len(c), 50.0)
+    delta = np.diff(c)
+    gains  = np.where(delta > 0,  delta, 0.0)
+    losses = np.where(delta < 0, -delta, 0.0)
+    avg_g  = np.zeros(len(delta))
+    avg_l  = np.zeros(len(delta))
+    avg_g[period - 1] = np.mean(gains[:period])
+    avg_l[period - 1] = np.mean(losses[:period])
+    for i in range(period, len(delta)):
+        avg_g[i] = (avg_g[i-1] * (period-1) + gains[i])  / period
+        avg_l[i] = (avg_l[i-1] * (period-1) + losses[i]) / period
+    rs  = np.where(avg_l == 0, np.inf, avg_g / avg_l)
+    rsi = np.where(avg_l == 0, 100.0, 100 - 100 / (1 + rs))
+    result = np.full(len(c), np.nan)
+    result[period:] = rsi[period - 1:]
+    return result
+
+def _find_peaks(arr, window=5):
+    """Lokal zirve indekslerini döndür"""
+    peaks = []
+    for i in range(window, len(arr) - window):
+        if arr[i] == max(arr[i-window:i+window+1]):
+            peaks.append(i)
+    return peaks
+
+def _find_troughs(arr, window=5):
+    """Lokal dip indekslerini döndür"""
+    troughs = []
+    for i in range(window, len(arr) - window):
+        if arr[i] == min(arr[i-window:i+window+1]):
+            troughs.append(i)
+    return troughs
+
+def calc_divergence(hist, lookback=90):
+    """
+    RSI + MACD uyumsuzluk (divergence) tespiti.
+      Regular Bullish : Fiyat LL, RSI HL  → Al
+      Regular Bearish : Fiyat HH, RSI LH  → Sat
+      Hidden Bullish  : Fiyat HL, RSI LL  → Uptrend devam (Al)
+      Hidden Bearish  : Fiyat LH, RSI HH  → Downtrend devam (Sat)
+    MACD histogram uyumsuzlukları da eklenir.
+    """
+    try:
+        c  = hist['Close'].values.astype(float)
+        n  = len(c)
+        if n < 50:
+            return {'divergences': [], 'recentDivergences': [],
+                    'summary': {'bullish': 0, 'bearish': 0, 'signal': 'neutral', 'count': 0, 'hasRecent': False}}
+
+        lb   = min(lookback, n)
+        c_lb = c[-lb:]
+
+        # RSI serisi
+        rsi_arr  = _rsi_series(c_lb)
+        rsi_vals = np.where(np.isnan(rsi_arr), 50.0, rsi_arr)
+
+        # MACD histogram serisi
+        s          = pd.Series(c_lb, dtype=float)
+        macd_line  = s.ewm(span=12, adjust=False).mean() - s.ewm(span=26, adjust=False).mean()
+        sig_line   = macd_line.ewm(span=9, adjust=False).mean()
+        macd_hist_arr = (macd_line - sig_line).values
+
+        divergences = []
+        window = 5
+
+        price_peaks   = _find_peaks(c_lb, window)
+        price_troughs = _find_troughs(c_lb, window)
+
+        # --- Regular Bearish: Fiyat HH, RSI LH ---
+        if len(price_peaks) >= 2:
+            p1, p2 = price_peaks[-2], price_peaks[-1]
+            if c_lb[p2] > c_lb[p1] and rsi_vals[p2] < rsi_vals[p1]:
+                divergences.append({
+                    'type': 'regular_bearish', 'label': 'Klasik Ayı Uyumsuzluğu', 'signal': 'sell',
+                    'description': f'Fiyat yeni zirve ({sf(c_lb[p2])}) ama RSI düşüyor '
+                                   f'({sf(rsi_vals[p2])} < {sf(rsi_vals[p1])})',
+                    'strength': sf(abs(rsi_vals[p1] - rsi_vals[p2])),
+                    'recency': int(lb - p2),
+                    'priceBar1': sf(c_lb[p1]), 'priceBar2': sf(c_lb[p2]),
+                    'rsiBar1':   sf(rsi_vals[p1]), 'rsiBar2': sf(rsi_vals[p2]),
+                })
+
+        # --- Regular Bullish: Fiyat LL, RSI HL ---
+        if len(price_troughs) >= 2:
+            t1, t2 = price_troughs[-2], price_troughs[-1]
+            if c_lb[t2] < c_lb[t1] and rsi_vals[t2] > rsi_vals[t1]:
+                divergences.append({
+                    'type': 'regular_bullish', 'label': 'Klasik Boğa Uyumsuzluğu', 'signal': 'buy',
+                    'description': f'Fiyat yeni dip ({sf(c_lb[t2])}) ama RSI yükseliyor '
+                                   f'({sf(rsi_vals[t2])} > {sf(rsi_vals[t1])})',
+                    'strength': sf(abs(rsi_vals[t2] - rsi_vals[t1])),
+                    'recency': int(lb - t2),
+                    'priceBar1': sf(c_lb[t1]), 'priceBar2': sf(c_lb[t2]),
+                    'rsiBar1':   sf(rsi_vals[t1]), 'rsiBar2': sf(rsi_vals[t2]),
+                })
+
+        # --- Hidden Bullish: Fiyat HL, RSI LL (uptrend devam) ---
+        if len(price_troughs) >= 2:
+            t1, t2 = price_troughs[-2], price_troughs[-1]
+            if c_lb[t2] > c_lb[t1] and rsi_vals[t2] < rsi_vals[t1]:
+                divergences.append({
+                    'type': 'hidden_bullish', 'label': 'Gizli Boğa Uyumsuzluğu', 'signal': 'buy',
+                    'description': f'Fiyat yüksek dip ({sf(c_lb[t2])}) ama RSI düşük → Uptrend devam',
+                    'strength': sf(abs(rsi_vals[t2] - rsi_vals[t1])),
+                    'recency': int(lb - t2),
+                    'priceBar1': sf(c_lb[t1]), 'priceBar2': sf(c_lb[t2]),
+                    'rsiBar1':   sf(rsi_vals[t1]), 'rsiBar2': sf(rsi_vals[t2]),
+                })
+
+        # --- Hidden Bearish: Fiyat LH, RSI HH (downtrend devam) ---
+        if len(price_peaks) >= 2:
+            p1, p2 = price_peaks[-2], price_peaks[-1]
+            if c_lb[p2] < c_lb[p1] and rsi_vals[p2] > rsi_vals[p1]:
+                divergences.append({
+                    'type': 'hidden_bearish', 'label': 'Gizli Ayı Uyumsuzluğu', 'signal': 'sell',
+                    'description': f'Fiyat düşük zirve ({sf(c_lb[p2])}) ama RSI yükseliyor → Downtrend devam',
+                    'strength': sf(abs(rsi_vals[p2] - rsi_vals[p1])),
+                    'recency': int(lb - p2),
+                    'priceBar1': sf(c_lb[p1]), 'priceBar2': sf(c_lb[p2]),
+                    'rsiBar1':   sf(rsi_vals[p1]), 'rsiBar2': sf(rsi_vals[p2]),
+                })
+
+        # --- MACD Bearish Divergence ---
+        if len(price_peaks) >= 2:
+            p1, p2 = price_peaks[-2], price_peaks[-1]
+            if (p1 < len(macd_hist_arr) and p2 < len(macd_hist_arr) and
+                    c_lb[p2] > c_lb[p1] and macd_hist_arr[p2] < macd_hist_arr[p1]):
+                divergences.append({
+                    'type': 'macd_bearish', 'label': 'MACD Ayı Uyumsuzluğu', 'signal': 'sell',
+                    'description': f'Fiyat HH ama MACD histogram düşük '
+                                   f'({sf(float(macd_hist_arr[p2]))} < {sf(float(macd_hist_arr[p1]))})',
+                    'strength': sf(abs(float(macd_hist_arr[p1]) - float(macd_hist_arr[p2]))),
+                    'recency': int(lb - p2),
+                })
+
+        # --- MACD Bullish Divergence ---
+        if len(price_troughs) >= 2:
+            t1, t2 = price_troughs[-2], price_troughs[-1]
+            if (t1 < len(macd_hist_arr) and t2 < len(macd_hist_arr) and
+                    c_lb[t2] < c_lb[t1] and macd_hist_arr[t2] > macd_hist_arr[t1]):
+                divergences.append({
+                    'type': 'macd_bullish', 'label': 'MACD Boğa Uyumsuzluğu', 'signal': 'buy',
+                    'description': f'Fiyat LL ama MACD histogram yükseliyor '
+                                   f'({sf(float(macd_hist_arr[t2]))} > {sf(float(macd_hist_arr[t1]))})',
+                    'strength': sf(abs(float(macd_hist_arr[t2]) - float(macd_hist_arr[t1]))),
+                    'recency': int(lb - t2),
+                })
+
+        recent    = [d for d in divergences if d.get('recency', 999) <= 20]
+        bull_cnt  = sum(1 for d in divergences if d['signal'] == 'buy')
+        bear_cnt  = sum(1 for d in divergences if d['signal'] == 'sell')
+        overall   = 'buy' if bull_cnt > bear_cnt else ('sell' if bear_cnt > bull_cnt else 'neutral')
+
+        return {
+            'divergences':       divergences,
+            'recentDivergences': recent,
+            'summary': {
+                'bullish':   bull_cnt,
+                'bearish':   bear_cnt,
+                'signal':    overall,
+                'count':     len(divergences),
+                'hasRecent': len(recent) > 0,
+            },
+            'currentRsi':      sf(float(rsi_vals[-1])),
+            'currentMacdHist': sf(float(macd_hist_arr[-1])),
+        }
+    except Exception as e:
+        print(f"  [DIVERGENCE] Hata: {e}")
+        return {'divergences': [], 'recentDivergences': [],
+                'summary': {'bullish': 0, 'bearish': 0, 'signal': 'neutral', 'count': 0, 'hasRecent': False},
+                'error': str(e)}
+
+
+# =====================================================================
+# FAZ 4: HACİM PROFİLİ & VWAP
+# POC / VAH / VAL (Hacim Profili), VWAP, Hacim Anomali tespiti
+# =====================================================================
+def calc_volume_profile(hist, bins=20):
+    """
+    Hacim Profili ve VWAP analizi:
+      VWAP : Hacimle ağırlıklı ortalama fiyat
+      POC  : Point of Control — en yüksek hacim bin'i
+      VAH  : Value Area High  — hacmin %70'i üst sınırı
+      VAL  : Value Area Low   — hacmin %70'i alt sınırı
+      Anomaly: Son mum hacmi 20 günlük ortalamanın 2x üzerindeyse uyar
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High'   in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'    in hist.columns else c.copy()
+        v = hist['Volume'].values.astype(float) if 'Volume' in hist.columns else np.ones(len(c))
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        v = np.where(np.isnan(v) | (v <= 0), 0, v)
+        n = len(c)
+
+        # VWAP
+        typical   = (h + l + c) / 3
+        cum_vol   = np.cumsum(v)
+        cum_tpv   = np.cumsum(typical * v)
+        vwap_ser  = np.where(cum_vol > 0, cum_tpv / cum_vol, typical)
+        vwap      = float(vwap_ser[-1])
+        cur_price = float(c[-1])
+        vwap_pct  = sf((cur_price - vwap) / vwap * 100) if vwap > 0 else 0
+        vwap_sig  = ('buy' if cur_price < vwap * 0.99
+                     else ('sell' if cur_price > vwap * 1.01 else 'neutral'))
+
+        # Fiyat aralığı → bins
+        price_min = float(np.min(l))
+        price_max = float(np.max(h))
+        if price_max <= price_min:
+            price_max = price_min * 1.01
+        bin_edges   = np.linspace(price_min, price_max, bins + 1)
+        bin_volumes = np.zeros(bins)
+
+        for i in range(n):
+            bar_range = h[i] - l[i]
+            if bar_range <= 0:
+                idx = min(max(int(np.searchsorted(bin_edges, c[i], side='right') - 1), 0), bins - 1)
+                bin_volumes[idx] += v[i]
+            else:
+                for b in range(bins):
+                    ov_lo = max(l[i], bin_edges[b])
+                    ov_hi = min(h[i], bin_edges[b + 1])
+                    if ov_hi > ov_lo:
+                        bin_volumes[b] += v[i] * (ov_hi - ov_lo) / bar_range
+
+        # POC
+        poc_idx    = int(np.argmax(bin_volumes))
+        poc_price  = sf((bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2)
+        poc_volume = sf(bin_volumes[poc_idx])
+
+        # Value Area (toplam hacmin %70'i)
+        total_vol  = float(np.sum(bin_volumes))
+        va_target  = total_vol * 0.70
+        va_vol     = bin_volumes[poc_idx]
+        lo, hi     = poc_idx, poc_idx
+
+        while va_vol < va_target and (lo > 0 or hi < bins - 1):
+            add_lo = bin_volumes[lo - 1] if lo > 0        else 0.0
+            add_hi = bin_volumes[hi + 1] if hi < bins - 1 else 0.0
+            if add_hi >= add_lo and hi < bins - 1:
+                hi += 1; va_vol += bin_volumes[hi]
+            elif lo > 0:
+                lo -= 1; va_vol += bin_volumes[lo]
+            else:
+                hi += 1; va_vol += bin_volumes[hi]
+
+        vah = sf((bin_edges[hi] + bin_edges[hi + 1]) / 2)
+        val = sf((bin_edges[lo] + bin_edges[lo + 1]) / 2)
+
+        # Hacim anomalisi
+        avg_vol_20  = float(np.mean(v[-20:])) if n >= 20 else float(np.mean(v))
+        last_vol    = float(v[-1])
+        vol_ratio   = sf(last_vol / avg_vol_20) if avg_vol_20 > 0 else 0
+        vol_anomaly = last_vol > avg_vol_20 * 2
+
+        # Hacim trendi (son 3 vs önceki 3)
+        vol_trend = ('artiyor' if n >= 6 and float(np.mean(v[-3:])) > float(np.mean(v[-6:-3]))
+                     else 'azaliyor')
+
+        # Frontend için profil listesi
+        profile = [
+            {
+                'priceLevel': sf((bin_edges[i] + bin_edges[i + 1]) / 2),
+                'volume':     sf(bin_volumes[i]),
+                'isPOC':      i == poc_idx,
+                'isVAH':      i == hi,
+                'isVAL':      i == lo,
+                'inValueArea': lo <= i <= hi,
+            }
+            for i in range(bins)
+        ]
+
+        return {
+            'vwap':         sf(vwap),
+            'vwapSignal':   vwap_sig,
+            'vwapPct':      vwap_pct,
+            'poc':          poc_price,
+            'pocVolume':    poc_volume,
+            'vah':          vah,
+            'val':          val,
+            'profile':      profile,
+            'volumeAnomaly': vol_anomaly,
+            'volumeRatio':  vol_ratio,
+            'volumeTrend':  vol_trend,
+            'avgVolume20':  sf(avg_vol_20),
+            'lastVolume':   sf(last_vol),
+            'currentPrice': sf(cur_price),
+            'priceVsVwap':  vwap_pct,
+            'priceVsVAH':   sf((cur_price - float(vah)) / float(vah) * 100) if float(vah) > 0 else 0,
+            'priceVsVAL':   sf((cur_price - float(val)) / float(val) * 100) if float(val) > 0 else 0,
+            'priceVsPOC':   sf((cur_price - float(poc_price)) / float(poc_price) * 100) if float(poc_price) > 0 else 0,
+        }
+    except Exception as e:
+        print(f"  [VOL-PROFILE] Hata: {e}")
+        return {'error': str(e), 'vwap': 0, 'poc': 0, 'vah': 0, 'val': 0,
+                'volumeAnomaly': False, 'volumeRatio': 0}
+
+
+# =====================================================================
+# FAZ 5: SMART MONEY CONCEPTS (SMC)
+# FVG (Fair Value Gap), Order Block, BOS, CHoCH tespiti
+# =====================================================================
+def calc_smc(hist, lookback=120):
+    """
+    Smart Money Concepts (SMC) analizi:
+      FVG   : 3-mum imbalance bölgeleri (dolmamış boşluklar)
+      OB    : Order Block — kurumsal momentum öncesi zıt mum
+      BOS   : Break of Structure — swing high/low kırılması
+      CHoCH : Change of Character — karşı yönlü BOS (trend değişimi)
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High'  in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'   in hist.columns else c.copy()
+        o = hist['Open'].values.astype(float)  if 'Open'  in hist.columns else c.copy()
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        o = np.where(np.isnan(o), c, o)
+        n = len(c)
+        lb = min(lookback, n)
+        c_lb, h_lb, l_lb, o_lb = c[-lb:], h[-lb:], l[-lb:], o[-lb:]
+
+        # ---- Fair Value Gaps (FVG) ----
+        fvgs = []
+        for i in range(2, lb):
+            # Bullish FVG: mum[i-2].high < mum[i].low
+            if h_lb[i - 2] < l_lb[i]:
+                gap_pct = (l_lb[i] - h_lb[i - 2]) / h_lb[i - 2] * 100
+                filled  = float(np.min(l_lb[i:])) < h_lb[i - 2]
+                fvgs.append({
+                    'type': 'bullish_fvg', 'label': 'Boğa FVG',
+                    'top':      sf(l_lb[i]),
+                    'bottom':   sf(h_lb[i - 2]),
+                    'midpoint': sf((l_lb[i] + h_lb[i - 2]) / 2),
+                    'sizePct':  sf(gap_pct),
+                    'filled':   filled,
+                    'barsAgo':  int(lb - i),
+                })
+            # Bearish FVG: mum[i-2].low > mum[i].high
+            elif l_lb[i - 2] > h_lb[i]:
+                gap_pct = (l_lb[i - 2] - h_lb[i]) / h_lb[i] * 100
+                filled  = float(np.max(h_lb[i:])) > l_lb[i - 2]
+                fvgs.append({
+                    'type': 'bearish_fvg', 'label': 'Ayı FVG',
+                    'top':      sf(l_lb[i - 2]),
+                    'bottom':   sf(h_lb[i]),
+                    'midpoint': sf((l_lb[i - 2] + h_lb[i]) / 2),
+                    'sizePct':  sf(gap_pct),
+                    'filled':   filled,
+                    'barsAgo':  int(lb - i),
+                })
+
+        # Dolmamış, son 30 bardaki FVG'ler (en yakın 5'i)
+        active_fvgs = sorted(
+            [f for f in fvgs if not f['filled'] and f['barsAgo'] <= 30],
+            key=lambda x: x['barsAgo']
+        )[:5]
+
+        # ---- Order Blocks (OB) ----
+        obs = []
+        imp_thr = 0.015  # %1.5 impulse eşiği
+        for i in range(1, lb - 3):
+            # Bullish OB: Ayı mumu + ardından güçlü yukarı hareket
+            if c_lb[i] < o_lb[i]:
+                nxt_hi = float(np.max(h_lb[i + 1:min(i + 4, lb)]))
+                if (nxt_hi - c_lb[i]) / c_lb[i] > imp_thr:
+                    obs.append({
+                        'type': 'bullish_ob', 'label': 'Boğa Order Block',
+                        'top':    sf(max(o_lb[i], c_lb[i])),
+                        'bottom': sf(min(o_lb[i], c_lb[i])),
+                        'midpoint': sf((o_lb[i] + c_lb[i]) / 2),
+                        'impulseStrength': sf((nxt_hi - c_lb[i]) / c_lb[i] * 100),
+                        'barsAgo': int(lb - i),
+                    })
+            # Bearish OB: Boğa mumu + ardından güçlü aşağı hareket
+            elif c_lb[i] > o_lb[i]:
+                nxt_lo = float(np.min(l_lb[i + 1:min(i + 4, lb)]))
+                if (c_lb[i] - nxt_lo) / c_lb[i] > imp_thr:
+                    obs.append({
+                        'type': 'bearish_ob', 'label': 'Ayı Order Block',
+                        'top':    sf(max(o_lb[i], c_lb[i])),
+                        'bottom': sf(min(o_lb[i], c_lb[i])),
+                        'midpoint': sf((o_lb[i] + c_lb[i]) / 2),
+                        'impulseStrength': sf((c_lb[i] - nxt_lo) / c_lb[i] * 100),
+                        'barsAgo': int(lb - i),
+                    })
+
+        # Son 40 bardaki OB'lar (en yakın 5'i)
+        recent_obs = sorted(
+            [ob for ob in obs if ob['barsAgo'] <= 40],
+            key=lambda x: x['barsAgo']
+        )[:5]
+
+        # ---- Break of Structure (BOS) ----
+        swing_highs = _find_peaks(h_lb, 5)
+        swing_lows  = _find_troughs(l_lb, 5)
+        bos_events  = []
+        structure_trend = 'neutral'
+
+        if len(swing_highs) >= 1:
+            last_sh = swing_highs[-1]
+            if c_lb[-1] > h_lb[last_sh]:
+                bos_events.append({
+                    'type': 'bullish_bos', 'label': 'Yukarı BOS',
+                    'description': f'Kapanış ({sf(c_lb[-1])}) swing high kırdı ({sf(h_lb[last_sh])})',
+                    'level': sf(h_lb[last_sh]),
+                    'barsAgo': int(lb - 1 - last_sh),
+                })
+                structure_trend = 'bullish'
+
+        if len(swing_lows) >= 1:
+            last_sl = swing_lows[-1]
+            if c_lb[-1] < l_lb[last_sl]:
+                bos_events.append({
+                    'type': 'bearish_bos', 'label': 'Aşağı BOS',
+                    'description': f'Kapanış ({sf(c_lb[-1])}) swing low kırdı ({sf(l_lb[last_sl])})',
+                    'level': sf(l_lb[last_sl]),
+                    'barsAgo': int(lb - 1 - last_sl),
+                })
+                structure_trend = 'bearish'
+
+        # ---- Change of Character (CHoCH) ----
+        choch_events = []
+        if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+            sh1, sh2 = swing_highs[-2], swing_highs[-1]
+            sl1, sl2 = swing_lows[-2],  swing_lows[-1]
+            # Bullish CHoCH: Downtrend (LH + LL) iken swing high kırılması
+            if h_lb[sh2] < h_lb[sh1] and l_lb[sl2] < l_lb[sl1] and c_lb[-1] > h_lb[sh2]:
+                choch_events.append({
+                    'type': 'bullish_choch', 'label': 'Boğa CHoCH',
+                    'description': "Downtrend'te swing high kirildi - Olasi trend degisimi",
+                    'level': sf(h_lb[sh2]),
+                })
+            # Bearish CHoCH: Uptrend (HH + HL) iken swing low kırılması
+            elif h_lb[sh2] > h_lb[sh1] and l_lb[sl2] > l_lb[sl1] and c_lb[-1] < l_lb[sl2]:
+                choch_events.append({
+                    'type': 'bearish_choch', 'label': 'Ayı CHoCH',
+                    'description': 'Uptrend\'de swing low kırıldı → Olası trend değişimi',
+                    'level': sf(l_lb[sl2]),
+                })
+
+        # ---- Giriş Bölgeleri ----
+        cur = float(c_lb[-1])
+        entry_zones = []
+        for ob in recent_obs:
+            if ob['type'] == 'bullish_ob' and float(ob['bottom']) < cur:
+                entry_zones.append({'source': 'bullish_ob', 'level': ob['midpoint'],
+                                    'top': ob['top'], 'bottom': ob['bottom']})
+            elif ob['type'] == 'bearish_ob' and float(ob['top']) > cur:
+                entry_zones.append({'source': 'bearish_ob', 'level': ob['midpoint'],
+                                    'top': ob['top'], 'bottom': ob['bottom']})
+        for fg in active_fvgs:
+            if fg['type'] == 'bullish_fvg' and float(fg['bottom']) < cur:
+                entry_zones.append({'source': 'fvg_support', 'level': fg['midpoint'],
+                                    'top': fg['top'], 'bottom': fg['bottom']})
+            elif fg['type'] == 'bearish_fvg' and float(fg['top']) > cur:
+                entry_zones.append({'source': 'fvg_resistance', 'level': fg['midpoint'],
+                                    'top': fg['top'], 'bottom': fg['bottom']})
+
+        bull_score = (sum(1 for f in active_fvgs if f['type'] == 'bullish_fvg') +
+                      sum(1 for ob in recent_obs if ob['type'] == 'bullish_ob') +
+                      sum(1 for b in bos_events if b['type'] == 'bullish_bos') +
+                      sum(1 for cc in choch_events if cc['type'] == 'bullish_choch'))
+        bear_score = (sum(1 for f in active_fvgs if f['type'] == 'bearish_fvg') +
+                      sum(1 for ob in recent_obs if ob['type'] == 'bearish_ob') +
+                      sum(1 for b in bos_events if b['type'] == 'bearish_bos') +
+                      sum(1 for cc in choch_events if cc['type'] == 'bearish_choch'))
+        smc_signal = ('buy' if bull_score > bear_score
+                      else ('sell' if bear_score > bull_score else 'neutral'))
+
+        return {
+            'signal':         smc_signal,
+            'structureTrend': structure_trend,
+            'bullScore':      bull_score,
+            'bearScore':      bear_score,
+            'fvgs':           active_fvgs,
+            'orderBlocks':    recent_obs,
+            'bosEvents':      bos_events,
+            'chochEvents':    choch_events,
+            'entryZones':     entry_zones[:4],
+            'summary': {
+                'activeFvgCount': len(active_fvgs),
+                'activeObCount':  len(recent_obs),
+                'hasBOS':         len(bos_events) > 0,
+                'hasCHoCH':       len(choch_events) > 0,
+            },
+        }
+    except Exception as e:
+        print(f"  [SMC] Hata: {e}")
+        return {'signal': 'neutral', 'error': str(e),
+                'fvgs': [], 'orderBlocks': [], 'bosEvents': [], 'chochEvents': [],
+                'summary': {'activeFvgCount': 0, 'activeObCount': 0,
+                            'hasBOS': False, 'hasCHoCH': False}}
+
+
+# =====================================================================
+# FAZ 6: KLASİK GRAFİK FORMASYON TESPİTİ
+# Double Top/Bottom, H&S, Triangle, Flag/Pennant
+# =====================================================================
+def calc_chart_patterns(hist, lookback=120):
+    """
+    Klasik grafik formasyonları:
+      - Çift Tepe / Çift Dip
+      - Omuz-Baş-Omuz / Ters OBO
+      - Yükselen / Alçalan / Simetrik Üçgen
+      - Boğa / Ayı Bayrağı
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High' in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'  in hist.columns else c.copy()
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        n = len(c)
+        lb = min(lookback, n)
+        c_lb, h_lb, l_lb = c[-lb:], h[-lb:], l[-lb:]
+
+        patterns = []
+        tol = 0.03  # %3 tolerans
+        peaks   = _find_peaks(h_lb, 5)
+        troughs = _find_troughs(l_lb, 5)
+
+        # ---- Çift Tepe ----
+        if len(peaks) >= 2:
+            p1, p2 = peaks[-2], peaks[-1]
+            if abs(h_lb[p2] - h_lb[p1]) / h_lb[p1] <= tol and p2 - p1 >= 10:
+                neckline = float(np.min(l_lb[p1:p2 + 1]))
+                completed = bool(c_lb[-1] < neckline)
+                height = float(h_lb[p2]) - neckline
+                patterns.append({
+                    'type': 'double_top', 'label': 'Çift Tepe', 'signal': 'sell',
+                    'reliability': 'high', 'completed': completed,
+                    'description': (f'İki benzer zirve ({sf(h_lb[p1])}, {sf(h_lb[p2])}) '
+                                    f'Neckline: {sf(neckline)}' +
+                                    (' → TAMAMLANDI' if completed else ' → Neckline kırılması bekleniyor')),
+                    'peak1': sf(h_lb[p1]), 'peak2': sf(h_lb[p2]),
+                    'neckline': sf(neckline),
+                    'target': sf(neckline - height),
+                    'barsAgo': int(lb - p2),
+                })
+
+        # ---- Çift Dip ----
+        if len(troughs) >= 2:
+            t1, t2 = troughs[-2], troughs[-1]
+            if abs(l_lb[t2] - l_lb[t1]) / l_lb[t1] <= tol and t2 - t1 >= 10:
+                neckline = float(np.max(h_lb[t1:t2 + 1]))
+                completed = bool(c_lb[-1] > neckline)
+                height = neckline - float(l_lb[t2])
+                patterns.append({
+                    'type': 'double_bottom', 'label': 'Çift Dip', 'signal': 'buy',
+                    'reliability': 'high', 'completed': completed,
+                    'description': (f'İki benzer dip ({sf(l_lb[t1])}, {sf(l_lb[t2])}) '
+                                    f'Neckline: {sf(neckline)}' +
+                                    (' → TAMAMLANDI' if completed else ' → Neckline kırılması bekleniyor')),
+                    'trough1': sf(l_lb[t1]), 'trough2': sf(l_lb[t2]),
+                    'neckline': sf(neckline),
+                    'target': sf(neckline + height),
+                    'barsAgo': int(lb - t2),
+                })
+
+        # ---- Omuz-Baş-Omuz ----
+        if len(peaks) >= 3:
+            ls, hd, rs = peaks[-3], peaks[-2], peaks[-1]
+            lsh, hp, rsh = float(h_lb[ls]), float(h_lb[hd]), float(h_lb[rs])
+            if (hp > lsh and hp > rsh and
+                    abs(rsh - lsh) / lsh <= 0.05 and rs - ls >= 20):
+                neckline = (float(np.min(l_lb[ls:hd + 1])) + float(np.min(l_lb[hd:rs + 1]))) / 2
+                completed = bool(c_lb[-1] < neckline)
+                patterns.append({
+                    'type': 'head_shoulders', 'label': 'Omuz-Baş-Omuz', 'signal': 'sell',
+                    'reliability': 'very_high', 'completed': completed,
+                    'description': (f'Sol omuz ({sf(lsh)}), Baş ({sf(hp)}), '
+                                    f'Sağ omuz ({sf(rsh)}) Neckline: {sf(neckline)}' +
+                                    (' → TAMAMLANDI' if completed else '')),
+                    'leftShoulder': sf(lsh), 'head': sf(hp), 'rightShoulder': sf(rsh),
+                    'neckline': sf(neckline),
+                    'target': sf(neckline - (hp - neckline)),
+                    'barsAgo': int(lb - rs),
+                })
+
+        # ---- Ters Omuz-Baş-Omuz ----
+        if len(troughs) >= 3:
+            ls, hd, rs = troughs[-3], troughs[-2], troughs[-1]
+            lsh, hp, rsh = float(l_lb[ls]), float(l_lb[hd]), float(l_lb[rs])
+            if (hp < lsh and hp < rsh and
+                    abs(rsh - lsh) / lsh <= 0.05 and rs - ls >= 20):
+                neckline = (float(np.max(h_lb[ls:hd + 1])) + float(np.max(h_lb[hd:rs + 1]))) / 2
+                completed = bool(c_lb[-1] > neckline)
+                patterns.append({
+                    'type': 'inv_head_shoulders', 'label': 'Ters Omuz-Baş-Omuz', 'signal': 'buy',
+                    'reliability': 'very_high', 'completed': completed,
+                    'description': (f'Sol omuz ({sf(lsh)}), Baş ({sf(hp)}), '
+                                    f'Sağ omuz ({sf(rsh)}) Neckline: {sf(neckline)}' +
+                                    (' → TAMAMLANDI' if completed else '')),
+                    'leftShoulder': sf(lsh), 'head': sf(hp), 'rightShoulder': sf(rsh),
+                    'neckline': sf(neckline),
+                    'target': sf(neckline + (neckline - hp)),
+                    'barsAgo': int(lb - rs),
+                })
+
+        # ---- Üçgen Formasyonları (son 30 bar) ----
+        if lb >= 30:
+            x      = np.arange(30, dtype=float)
+            h_seg  = h_lb[-30:].astype(float)
+            l_seg  = l_lb[-30:].astype(float)
+            h_slope = float(np.polyfit(x, h_seg, 1)[0])
+            l_slope = float(np.polyfit(x, l_seg, 1)[0])
+            h_pct   = h_slope / float(np.mean(h_seg)) * 100
+            l_pct   = l_slope / float(np.mean(l_seg)) * 100
+
+            if abs(h_pct) < 0.08 and l_pct > 0.08:         # Yükselen Üçgen
+                res = sf(float(np.max(h_seg[-10:])))
+                rng = float(np.max(h_seg)) - float(np.min(l_seg))
+                patterns.append({
+                    'type': 'ascending_triangle', 'label': 'Yükselen Üçgen', 'signal': 'buy',
+                    'reliability': 'medium', 'completed': bool(c_lb[-1] > float(np.max(h_seg))),
+                    'description': f'Düz direnç ({res}) + yükselen dip → Yukarı kırılım beklenir',
+                    'resistance': res, 'target': sf(float(np.max(h_seg)) + rng), 'barsAgo': 0,
+                })
+            elif abs(l_pct) < 0.08 and h_pct < -0.08:      # Alçalan Üçgen
+                sup = sf(float(np.min(l_seg[-10:])))
+                rng = float(np.max(h_seg)) - float(np.min(l_seg))
+                patterns.append({
+                    'type': 'descending_triangle', 'label': 'Alçalan Üçgen', 'signal': 'sell',
+                    'reliability': 'medium', 'completed': bool(c_lb[-1] < float(np.min(l_seg))),
+                    'description': f'Düz destek ({sup}) + düşen zirve → Aşağı kırılım beklenir',
+                    'support': sup, 'target': sf(float(np.min(l_seg)) - rng), 'barsAgo': 0,
+                })
+            elif h_pct < -0.05 and l_pct > 0.05:           # Simetrik Üçgen
+                apex = sf((float(np.max(h_seg[-5:])) + float(np.min(l_seg[-5:]))) / 2)
+                patterns.append({
+                    'type': 'symmetrical_triangle', 'label': 'Simetrik Üçgen', 'signal': 'neutral',
+                    'reliability': 'medium', 'completed': False,
+                    'description': f'Daralan fiyat aralığı → Güçlü kırılım bekleniyor (apex: {apex})',
+                    'apex': apex, 'barsAgo': 0,
+                })
+
+        # ---- Bayrak / Flama ----
+        if lb >= 26:
+            pre_move_pct = (float(c_lb[-16]) - float(c_lb[-26])) / max(float(c_lb[-26]), 1) * 100
+            consol_range = ((float(np.max(h_lb[-15:])) - float(np.min(l_lb[-15:]))) /
+                            max(float(c_lb[-15]), 1) * 100)
+            if abs(pre_move_pct) > 5 and consol_range < 4:
+                is_bull = pre_move_pct > 0
+                patterns.append({
+                    'type': 'bull_flag' if is_bull else 'bear_flag',
+                    'label': 'Boğa Bayrağı' if is_bull else 'Ayı Bayrağı',
+                    'signal': 'buy' if is_bull else 'sell',
+                    'reliability': 'medium', 'completed': False,
+                    'description': (f'{sf(abs(pre_move_pct))}% ön hareket + '
+                                    f'{sf(consol_range)}% konsolidasyon → Trend devam bekleniyor'),
+                    'priorMovePct': sf(pre_move_pct),
+                    'consolidationRangePct': sf(consol_range),
+                    'barsAgo': 0,
+                })
+
+        completed = [p for p in patterns if p.get('completed', False)]
+        bull_patt = [p for p in patterns if p['signal'] == 'buy']
+        bear_patt = [p for p in patterns if p['signal'] == 'sell']
+
+        if completed:
+            overall = completed[0]['signal']
+        elif len(bull_patt) > len(bear_patt):
+            overall = 'buy'
+        elif len(bear_patt) > len(bull_patt):
+            overall = 'sell'
+        else:
+            overall = 'neutral'
+
+        return {
+            'signal':            overall,
+            'patterns':          patterns,
+            'completedPatterns': completed,
+            'pendingPatterns':   [p for p in patterns if not p.get('completed', False)],
+            'summary': {
+                'total':     len(patterns),
+                'bullish':   len(bull_patt),
+                'bearish':   len(bear_patt),
+                'completed': len(completed),
+            },
+        }
+    except Exception as e:
+        print(f"  [PATTERNS] Hata: {e}")
+        return {'signal': 'neutral', 'patterns': [], 'completedPatterns': [], 'pendingPatterns': [],
+                'summary': {'total': 0, 'bullish': 0, 'bearish': 0, 'completed': 0},
+                'error': str(e)}
+
+
+# =====================================================================
+# FAZ 7: FİBONACCİ SEVİYELERİ & PİVOT NOKTALARI
+# Fibonacci retracement/extension + Classic/Camarilla/Woodie Pivot Points
+# =====================================================================
+def calc_fibonacci_adv(hist, lookback=60):
+    """
+    Fibonacci retracement ve extension seviyeleri.
+    Son lookback bardaki en yüksek/düşük noktadan hesaplar.
+    Retracement : 0.236, 0.382, 0.5, 0.618, 0.786
+    Extension   : 1.272, 1.618, 2.618
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High' in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'  in hist.columns else c.copy()
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        n = len(c)
+        lb = min(lookback, n)
+
+        seg_h = h[-lb:]
+        seg_l = l[-lb:]
+        hi_idx = int(np.argmax(seg_h))
+        lo_idx = int(np.argmin(seg_l))
+        swing_high = float(seg_h[hi_idx])
+        swing_low  = float(seg_l[lo_idx])
+        diff = swing_high - swing_low
+        cur  = float(c[-1])
+
+        # Trend yönü: yüksek mi önce, düşük mü?
+        if hi_idx > lo_idx:
+            # Önce dip, sonra zirve → uptrend retracement (yukarıdan aşağı seviyeler)
+            trend = 'uptrend'
+            base, top = swing_low, swing_high
+        else:
+            # Önce zirve, sonra dip → downtrend retracement (aşağıdan yukarı seviyeler)
+            trend = 'downtrend'
+            base, top = swing_low, swing_high
+
+        ret_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+        ext_ratios = [1.272, 1.618, 2.618]
+
+        def label_level(lvl):
+            """Mevcut fiyata göre destek/direnç etiketi"""
+            if lvl < cur - diff * 0.01:
+                return 'support'
+            elif lvl > cur + diff * 0.01:
+                return 'resistance'
+            return 'current'
+
+        retracements = []
+        for r in ret_ratios:
+            lvl = sf(top - diff * r)
+            retracements.append({
+                'ratio': r, 'label': f'Fib {r:.3f}',
+                'level': lvl,
+                'role': label_level(float(lvl)),
+                'distPct': sf((float(lvl) - cur) / cur * 100),
+            })
+
+        extensions = []
+        for r in ext_ratios:
+            lvl = sf(top + diff * (r - 1)) if trend == 'uptrend' else sf(base - diff * (r - 1))
+            extensions.append({
+                'ratio': r, 'label': f'Fib {r:.3f}',
+                'level': lvl,
+                'role': 'extension_target',
+                'distPct': sf((float(lvl) - cur) / cur * 100),
+            })
+
+        # En yakın destek ve dirençler
+        supports    = sorted([lv for lv in retracements if lv['role'] == 'support'],
+                             key=lambda x: -float(x['level']))[:3]
+        resistances = sorted([lv for lv in retracements if lv['role'] == 'resistance'],
+                             key=lambda x: float(x['level']))[:3]
+
+        # Golden Pocket (0.618-0.65 bölgesi)
+        golden_top = sf(top - diff * 0.618)
+        golden_bot = sf(top - diff * 0.65)
+        in_golden  = float(golden_bot) <= cur <= float(golden_top)
+
+        return {
+            'trend':          trend,
+            'swingHigh':      sf(swing_high),
+            'swingLow':       sf(swing_low),
+            'currentPrice':   sf(cur),
+            'retracements':   retracements,
+            'extensions':     extensions,
+            'nearestSupports':    supports,
+            'nearestResistances': resistances,
+            'goldenPocket': {
+                'top': golden_top, 'bottom': golden_bot, 'inZone': in_golden,
+            },
+        }
+    except Exception as e:
+        print(f"  [FIB] Hata: {e}")
+        return {'error': str(e), 'retracements': [], 'extensions': []}
+
+
+def calc_pivot_points_adv(hist):
+    """
+    Klasik, Camarilla ve Woodie Pivot Noktaları.
+    Son kapanan günün OHLC verisinden hesaplar.
+    Classic   : PP = (H+L+C)/3
+    Camarilla : PP = (H+L+C)/3, farklı katsayılar
+    Woodie    : PP = (H+L+2C)/4
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High' in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'  in hist.columns else c.copy()
+        o = hist['Open'].values.astype(float)  if 'Open' in hist.columns else c.copy()
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        o = np.where(np.isnan(o), c, o)
+
+        # Son kapanan günün OHLC değerleri
+        H, L, C, O = float(h[-2]), float(l[-2]), float(c[-2]), float(o[-2])
+        rng = H - L
+        cur = float(c[-1])
+
+        def _role(lvl):
+            return 'support' if lvl < cur else ('resistance' if lvl > cur else 'pivot')
+
+        # ---- Classic ----
+        pp_c = (H + L + C) / 3
+        classic = {
+            'pp':  sf(pp_c),
+            'r1':  sf(2 * pp_c - L),   'r2': sf(pp_c + rng),
+            'r3':  sf(H + 2 * (pp_c - L)),
+            's1':  sf(2 * pp_c - H),   's2': sf(pp_c - rng),
+            's3':  sf(L - 2 * (H - pp_c)),
+        }
+
+        # ---- Camarilla ----
+        cam = {
+            'pp':  sf(pp_c),
+            'r1':  sf(C + rng * 1.1 / 12), 'r2': sf(C + rng * 1.1 / 6),
+            'r3':  sf(C + rng * 1.1 / 4),  'r4': sf(C + rng * 1.1 / 2),
+            's1':  sf(C - rng * 1.1 / 12), 's2': sf(C - rng * 1.1 / 6),
+            's3':  sf(C - rng * 1.1 / 4),  's4': sf(C - rng * 1.1 / 2),
+        }
+
+        # ---- Woodie ----
+        pp_w = (H + L + 2 * C) / 4
+        woodie = {
+            'pp':  sf(pp_w),
+            'r1':  sf(2 * pp_w - L),        'r2': sf(pp_w + rng),
+            's1':  sf(2 * pp_w - H),        's2': sf(pp_w - rng),
+        }
+
+        # En yakın pivot seviyeleri (tüm modeller birlikte)
+        all_levels = []
+        for name, val in classic.items():
+            all_levels.append({'model': 'classic', 'name': name.upper(),
+                                'level': val, 'role': _role(float(val))})
+
+        supports    = sorted([lv for lv in all_levels if lv['role'] == 'support'],
+                             key=lambda x: -float(x['level']))[:3]
+        resistances = sorted([lv for lv in all_levels if lv['role'] == 'resistance'],
+                             key=lambda x: float(x['level']))[:3]
+
+        # Fiyat pivot'un üstünde mi altında mı?
+        bias = 'bullish' if cur > float(classic['pp']) else 'bearish'
+
+        return {
+            'currentPrice':       sf(cur),
+            'bias':               bias,
+            'classic':            classic,
+            'camarilla':          cam,
+            'woodie':             woodie,
+            'nearestSupports':    supports,
+            'nearestResistances': resistances,
+        }
+    except Exception as e:
+        print(f"  [PIVOT] Hata: {e}")
+        return {'error': str(e), 'classic': {}, 'camarilla': {}, 'woodie': {}}
+
+
+# =====================================================================
+# FAZ 9: İLERİ TEKNİK İNDİKATÖRLER
+# Ichimoku Cloud, Stochastic Oscillator, Williams %R
+# =====================================================================
+def calc_advanced_indicators(hist):
+    """
+    İleri teknik indikatörler:
+      Ichimoku : Tenkan, Kijun, Senkou A/B, Chikou — bulut içi mi?
+      Stochastic: %K ve %D (14,3,3) → aşırı alım/satım
+      Williams %R: -80 altı aşırı satım, -20 üstü aşırı alım
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High' in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'  in hist.columns else c.copy()
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        n = len(c)
+
+        result = {}
+
+        # ---- Ichimoku Cloud ----
+        if n >= 52:
+            def mid(arr, period):
+                return (pd.Series(arr).rolling(period).max() +
+                        pd.Series(arr).rolling(period).min()) / 2
+
+            tenkan  = mid(h, 9).values
+            kijun   = mid(h, 26).values
+            senkou_a = ((pd.Series(tenkan) + pd.Series(kijun)) / 2).shift(26).values
+            senkou_b = mid(h, 52).shift(26).values
+            chikou  = np.roll(c, -26)
+
+            cur_price = float(c[-1])
+            sa = float(senkou_a[-27]) if not np.isnan(senkou_a[-27]) else 0
+            sb = float(senkou_b[-27]) if not np.isnan(senkou_b[-27]) else 0
+            cloud_top = max(sa, sb)
+            cloud_bot = min(sa, sb)
+
+            tk = float(tenkan[-1]) if not np.isnan(tenkan[-1]) else cur_price
+            kj = float(kijun[-1])  if not np.isnan(kijun[-1])  else cur_price
+
+            above_cloud = cur_price > cloud_top
+            below_cloud = cur_price < cloud_bot
+            in_cloud    = cloud_bot <= cur_price <= cloud_top
+            tk_kj_cross = ('bullish' if tk > kj else ('bearish' if tk < kj else 'neutral'))
+
+            ich_signal = ('buy'  if above_cloud and tk > kj
+                          else ('sell' if below_cloud and tk < kj
+                                else 'neutral'))
+
+            result['ichimoku'] = {
+                'tenkan':      sf(tk),
+                'kijun':       sf(kj),
+                'senkouA':     sf(sa),
+                'senkouB':     sf(sb),
+                'cloudTop':    sf(cloud_top),
+                'cloudBottom': sf(cloud_bot),
+                'aboveCloud':  above_cloud,
+                'belowCloud':  below_cloud,
+                'inCloud':     in_cloud,
+                'tkKjCross':   tk_kj_cross,
+                'signal':      ich_signal,
+            }
+        else:
+            result['ichimoku'] = {'signal': 'neutral', 'error': 'Yetersiz veri (min 52 bar)'}
+
+        # ---- Stochastic (14, 3, 3) ----
+        if n >= 17:
+            period = 14
+            h_ser = pd.Series(h)
+            l_ser = pd.Series(l)
+            c_ser = pd.Series(c)
+
+            highest_h = h_ser.rolling(period).max()
+            lowest_l  = l_ser.rolling(period).min()
+            raw_k     = 100 * (c_ser - lowest_l) / (highest_h - lowest_l + 1e-10)
+            k_line    = raw_k.rolling(3).mean()
+            d_line    = k_line.rolling(3).mean()
+
+            k_val = sf(float(k_line.iloc[-1]))
+            d_val = sf(float(d_line.iloc[-1]))
+
+            if float(k_val) < 20 and float(d_val) < 20:
+                sto_signal = 'buy'
+            elif float(k_val) > 80 and float(d_val) > 80:
+                sto_signal = 'sell'
+            elif float(k_val) > float(d_val) and float(k_val) < 50:
+                sto_signal = 'buy'   # Yukarı kesişim düşük bölgede
+            elif float(k_val) < float(d_val) and float(k_val) > 50:
+                sto_signal = 'sell'  # Aşağı kesişim yüksek bölgede
+            else:
+                sto_signal = 'neutral'
+
+            result['stochastic'] = {
+                'k': k_val, 'd': d_val,
+                'overbought': float(k_val) > 80,
+                'oversold':   float(k_val) < 20,
+                'signal':     sto_signal,
+            }
+        else:
+            result['stochastic'] = {'signal': 'neutral', 'k': 50, 'd': 50}
+
+        # ---- Williams %R (14) ----
+        if n >= 14:
+            period = 14
+            highest_h = float(np.max(h[-period:]))
+            lowest_l  = float(np.min(l[-period:]))
+            wr = ((highest_h - float(c[-1])) / (highest_h - lowest_l + 1e-10)) * -100
+            wr = sf(wr)
+
+            if float(wr) < -80:
+                wr_signal = 'buy'    # Aşırı satım
+            elif float(wr) > -20:
+                wr_signal = 'sell'   # Aşırı alım
+            else:
+                wr_signal = 'neutral'
+
+            result['williamsR'] = {
+                'value':      wr,
+                'overbought': float(wr) > -20,
+                'oversold':   float(wr) < -80,
+                'signal':     wr_signal,
+            }
+        else:
+            result['williamsR'] = {'signal': 'neutral', 'value': -50}
+
+        # ---- Genel Özet ----
+        signals = [result.get('ichimoku', {}).get('signal', 'neutral'),
+                   result.get('stochastic', {}).get('signal', 'neutral'),
+                   result.get('williamsR', {}).get('signal', 'neutral')]
+        buy_cnt  = signals.count('buy')
+        sell_cnt = signals.count('sell')
+        result['summary'] = {
+            'signal':   'buy' if buy_cnt > sell_cnt else ('sell' if sell_cnt > buy_cnt else 'neutral'),
+            'buyCount': buy_cnt, 'sellCount': sell_cnt,
+        }
+
+        return result
+    except Exception as e:
+        print(f"  [ADV-IND] Hata: {e}")
+        return {'error': str(e), 'summary': {'signal': 'neutral', 'buyCount': 0, 'sellCount': 0}}
+
+
+# =====================================================================
 # FEATURE 1: SIGNAL BACKTESTING & PERFORMANCE TRACKING
 # =====================================================================
 def calc_signal_backtest(hist, lookback_days=252):
-    """Gecmis sinyallerin performansini olc: her sinyal sonrasi 5/10/20 gun getiri"""
+    """Enhanced backtest: 9 indikatör, Profit Factor / Sharpe / benchmark, BIST RSI kalibrasyonu"""
     try:
         c = hist['Close'].values.astype(float)
         h = hist['High'].values.astype(float)
         l = hist['Low'].values.astype(float)
         v = hist['Volume'].values.astype(float)
-        # NaN temizligi
         h = np.where(np.isnan(h), c, h)
         l = np.where(np.isnan(l), c, l)
         v = np.where(np.isnan(v), 0, v)
@@ -1915,112 +3086,308 @@ def calc_signal_backtest(hist, lookback_days=252):
         if n < 60:
             return {'totalSignals': 0, 'message': 'Yeterli veri yok'}
 
+        # ---- Metrik yardimcilari ----
+        def _pf(rets):
+            """Profit Factor = toplam kazanc / toplam kayip"""
+            wins   = sum(r for r in rets if r > 0)
+            losses = sum(-r for r in rets if r < 0)
+            if losses == 0:
+                return sf(99.0 if wins > 0 else 0.0)
+            return sf(wins / losses)
+
+        def _sharpe(rets, period_days=10):
+            """Yillik Sharpe orani"""
+            if len(rets) < 3:
+                return 0.0
+            m = float(np.mean(rets))
+            s = float(np.std(rets))
+            return sf(m / s * float(np.sqrt(252.0 / period_days)) if s > 0 else 0.0)
+
+        def calc_stats_v2(sigs):
+            if not sigs:
+                return {
+                    'count': 0,
+                    'winRate5d': 0, 'winRate10d': 0, 'winRate20d': 0,
+                    'avgRet5d': 0, 'avgRet10d': 0, 'avgRet20d': 0,
+                    'profitFactor5d': 0, 'profitFactor10d': 0, 'profitFactor20d': 0,
+                    'sharpe5d': 0, 'sharpe10d': 0, 'sharpe20d': 0,
+                    'avgWin10d': 0, 'avgLoss10d': 0, 'grade': '-',
+                }
+            r5  = [float(s['ret5d'])  for s in sigs]
+            r10 = [float(s['ret10d']) for s in sigs]
+            r20 = [float(s['ret20d']) for s in sigs]
+            wr5  = sf(sum(1 for s in sigs if s['win5d'])  / len(sigs) * 100)
+            wr10 = sf(sum(1 for s in sigs if s['win10d']) / len(sigs) * 100)
+            wr20 = sf(sum(1 for s in sigs if s['win20d']) / len(sigs) * 100)
+            pf10 = _pf(r10)
+            sh10 = _sharpe(r10, 10)
+            avg_win  = sf(float(np.mean([r for r in r10 if r > 0])) if any(r > 0 for r in r10) else 0.0)
+            avg_loss = sf(float(np.mean([r for r in r10 if r < 0])) if any(r < 0 for r in r10) else 0.0)
+            grade = ('Guclu' if float(pf10) >= 1.5 and float(wr10) >= 55
+                     else ('Orta' if float(pf10) >= 1.0 and float(wr10) >= 50 else 'Zayif'))
+            return {
+                'count': len(sigs),
+                'winRate5d': wr5, 'winRate10d': wr10, 'winRate20d': wr20,
+                'avgRet5d':  sf(float(np.mean(r5))),
+                'avgRet10d': sf(float(np.mean(r10))),
+                'avgRet20d': sf(float(np.mean(r20))),
+                'profitFactor5d':  _pf(r5),
+                'profitFactor10d': pf10,
+                'profitFactor20d': _pf(r20),
+                'sharpe5d':  _sharpe(r5, 5),
+                'sharpe10d': sh10,
+                'sharpe20d': _sharpe(r20, 20),
+                'avgWin10d':  avg_win,
+                'avgLoss10d': avg_loss,
+                'grade': grade,
+            }
+
+        # ---- Indikatör dizilerini onceden hesapla (vektörel) ----
+
+        # 1. RSI (Wilder smoothing)
+        def _rsi_arr(closes, period=14):
+            delta = np.diff(closes)
+            g  = np.where(delta > 0, delta, 0.0)
+            lo = np.where(delta < 0, -delta, 0.0)
+            arr = np.full(len(closes), 50.0)
+            if len(delta) < period:
+                return arr
+            ag, al = float(np.mean(g[:period])), float(np.mean(lo[:period]))
+            for i in range(period, len(delta)):
+                ag = (ag*(period-1) + g[i]) / period
+                al = (al*(period-1) + lo[i]) / period
+                rs = ag/al if al > 0 else 100.0
+                arr[i+1] = 100.0 - (100.0/(1.0+rs))
+            return arr
+
+        # 2. MACD
+        def _macd_arr(closes):
+            s = pd.Series(closes)
+            mv = (s.ewm(span=12, adjust=False).mean() - s.ewm(span=26, adjust=False).mean()).values
+            sv = pd.Series(mv).ewm(span=9, adjust=False).mean().values
+            return mv, sv
+
+        # 3. Bollinger Bands
+        def _boll_arr(closes, period=20, mult=2.0):
+            s   = pd.Series(closes)
+            mid = s.rolling(period).mean().values
+            std = s.rolling(period).std(ddof=1).values
+            return mid + mult*std, mid, mid - mult*std
+
+        # 4. Stochastic %K
+        def _stoch_arr(closes, highs, lows, period=14):
+            k = np.full(len(closes), 50.0)
+            for i in range(period-1, len(closes)):
+                hi = float(np.max(highs[i-period+1:i+1]))
+                lo = float(np.min(lows[i-period+1:i+1]))
+                k[i] = ((closes[i]-lo)/(hi-lo))*100.0 if hi != lo else 50.0
+            return k
+
+        # 5. EMA
+        def _ema(closes, span):
+            return pd.Series(closes).ewm(span=span, adjust=False).mean().values
+
+        # 6. Williams %R
+        def _wpr_arr(closes, highs, lows, period=14):
+            w = np.full(len(closes), -50.0)
+            for i in range(period-1, len(closes)):
+                hh = float(np.max(highs[i-period+1:i+1]))
+                ll = float(np.min(lows[i-period+1:i+1]))
+                w[i] = ((hh-closes[i])/(hh-ll))*-100.0 if hh != ll else -50.0
+            return w
+
+        # 7. CCI
+        def _cci_arr(closes, highs, lows, period=20):
+            tp  = (highs + lows + closes) / 3.0
+            arr = np.zeros(len(closes))
+            for i in range(period-1, len(closes)):
+                tp_w = tp[i-period+1:i+1]
+                sma  = float(np.mean(tp_w))
+                md   = float(np.mean(np.abs(tp_w - sma)))
+                arr[i] = (tp[i]-sma)/(0.015*md) if md > 0 else 0.0
+            return arr
+
+        # 8. MFI
+        def _mfi_arr(closes, highs, lows, volumes, period=14):
+            tp  = (highs + lows + closes) / 3.0
+            mf  = tp * volumes
+            arr = np.full(len(closes), 50.0)
+            for i in range(period, len(closes)):
+                # w_tp ve w_prev ayni boyutta olmali
+                w_tp   = tp[i-period+1:i+1]   # [i-period+1 .. i]  shape=(period,)
+                w_prev = tp[i-period:i]         # [i-period   .. i-1] shape=(period,)
+                w_mf   = mf[i-period+1:i+1]
+                pmf = float(np.sum(w_mf[w_tp > w_prev]))
+                nmf = float(np.sum(w_mf[w_tp <= w_prev]))
+                arr[i] = 100.0 - (100.0/(1.0+pmf/nmf)) if nmf > 0 else 100.0
+            return arr
+
+        # 9. OBV
+        def _obv_arr(closes, volumes):
+            obv = np.zeros(len(closes))
+            for i in range(1, len(closes)):
+                if   closes[i] > closes[i-1]: obv[i] = obv[i-1] + volumes[i]
+                elif closes[i] < closes[i-1]: obv[i] = obv[i-1] - volumes[i]
+                else:                          obv[i] = obv[i-1]
+            return obv
+
+        rsi_a          = _rsi_arr(c)
+        macd_v, macd_s = _macd_arr(c)
+        bb_u, _bb_m, bb_l = _boll_arr(c)
+        stoch_k        = _stoch_arr(c, h, l)
+        ema20          = _ema(c, 20)
+        ema50          = _ema(c, 50)
+        wpr_a          = _wpr_arr(c, h, l)
+        cci_a          = _cci_arr(c, h, l)
+        mfi_a          = _mfi_arr(c, h, l, v)
+        obv_a          = _obv_arr(c, v)
+
+        # ---- Sinyal uretimi ----
+        start_i = 60     # 60 bar stabilite suresi
+        end_i   = n - 20 # 20 bar gelecegi gormek icin
         signals = []
-        # Her gunde geriye donuk indikatoru hesapla ve sinyal uret
-        for i in range(50, n - 20):  # 20 gun sonrasini gormek icin -20
-            sc = c[:i+1]
-            sh = h[:i+1]
-            sl = l[:i+1]
-            sv = v[:i+1]
 
-            rsi = calc_rsi(sc)
-            macd = calc_macd(sc)
+        for i in range(start_i, end_i):
+            ep  = float(c[i])
+            r5  = ((float(c[min(i+5,  n-1)]) - ep) / ep) * 100.0
+            r10 = ((float(c[min(i+10, n-1)]) - ep) / ep) * 100.0
+            r20 = ((float(c[min(i+20, n-1)]) - ep) / ep) * 100.0
 
-            signal_type = None
-            signal_reason = ''
-
-            # RSI asiri satim
-            if rsi.get('value', 50) < 30:
-                signal_type = 'buy'
-                signal_reason = 'RSI < 30'
-            elif rsi.get('value', 50) > 70:
-                signal_type = 'sell'
-                signal_reason = 'RSI > 70'
-            # MACD kesisim
-            elif macd.get('signalType') == 'buy' and len(sc) > 26:
-                prev_macd = calc_macd(sc[:-1])
-                if prev_macd.get('signalType') != 'buy':
-                    signal_type = 'buy'
-                    signal_reason = 'MACD Kesisim'
-            elif macd.get('signalType') == 'sell' and len(sc) > 26:
-                prev_macd = calc_macd(sc[:-1])
-                if prev_macd.get('signalType') != 'sell':
-                    signal_type = 'sell'
-                    signal_reason = 'MACD Kesisim'
-            # Bollinger alt bant
-            elif len(sc) >= 20:
-                bb = calc_bollinger(sc, float(sc[-1]))
-                if bb.get('lower', 0) > 0 and float(sc[-1]) < bb['lower']:
-                    signal_type = 'buy'
-                    signal_reason = 'Bollinger Alt Bant'
-                elif bb.get('upper', 0) > 0 and float(sc[-1]) > bb['upper']:
-                    signal_type = 'sell'
-                    signal_reason = 'Bollinger Ust Bant'
-
-            if signal_type:
-                entry_price = float(c[i])
-                ret_5d = sf(((float(c[min(i+5, n-1)]) - entry_price) / entry_price) * 100)
-                ret_10d = sf(((float(c[min(i+10, n-1)]) - entry_price) / entry_price) * 100)
-                ret_20d = sf(((float(c[min(i+20, n-1)]) - entry_price) / entry_price) * 100)
-
-                # Satis sinyali icin getiriyi ters cevir
-                if signal_type == 'sell':
-                    ret_5d, ret_10d, ret_20d = -ret_5d, -ret_10d, -ret_20d
-
+            def _add(stype, reason):
+                m5, m10, m20 = r5, r10, r20
+                if stype == 'sell':
+                    m5, m10, m20 = -m5, -m10, -m20
                 signals.append({
-                    'day': i,
-                    'type': signal_type,
-                    'reason': signal_reason,
-                    'price': sf(entry_price),
-                    'ret5d': float(ret_5d),
-                    'ret10d': float(ret_10d),
-                    'ret20d': float(ret_20d),
-                    'win5d': float(ret_5d) > 0,
-                    'win10d': float(ret_10d) > 0,
-                    'win20d': float(ret_20d) > 0,
+                    'day': i, 'type': stype, 'reason': reason,
+                    'price': sf(ep),
+                    'ret5d':  sf(m5),  'ret10d': sf(m10), 'ret20d': sf(m20),
+                    'win5d':  m5 > 0, 'win10d': m10 > 0, 'win20d': m20 > 0,
                 })
+
+            # RSI
+            rsi = rsi_a[i]
+            if   rsi < 30: _add('buy',  'RSI < 30')
+            elif rsi > 70: _add('sell', 'RSI > 70')
+
+            # MACD kesisim
+            if i > 0:
+                if   macd_v[i] > macd_s[i] and macd_v[i-1] <= macd_s[i-1]: _add('buy',  'MACD Kesisim')
+                elif macd_v[i] < macd_s[i] and macd_v[i-1] >= macd_s[i-1]: _add('sell', 'MACD Kesisim')
+
+            # Bollinger Bantlari
+            if not np.isnan(bb_l[i]) and bb_l[i] > 0:
+                if   ep < bb_l[i]: _add('buy',  'Bollinger Alt Bant')
+                elif ep > bb_u[i]: _add('sell', 'Bollinger Ust Bant')
+
+            # Stochastic
+            if   stoch_k[i] < 20: _add('buy',  'Stochastic Asiri Satim')
+            elif stoch_k[i] > 80: _add('sell', 'Stochastic Asiri Alim')
+
+            # EMA kesisim (yeni kesisim aninda tetikle)
+            if i > 0:
+                now_bull = ep > ema20[i] and ema20[i] > ema50[i]
+                now_bear = ep < ema20[i] and ema20[i] < ema50[i]
+                prv_bull = float(c[i-1]) > ema20[i-1] and ema20[i-1] > ema50[i-1]
+                prv_bear = float(c[i-1]) < ema20[i-1] and ema20[i-1] < ema50[i-1]
+                if   now_bull and not prv_bull: _add('buy',  'EMA Yukari Kesisim')
+                elif now_bear and not prv_bear: _add('sell', 'EMA Asagi Kesisim')
+
+            # Williams %R
+            if   wpr_a[i] < -80: _add('buy',  'Williams %R Asiri Satim')
+            elif wpr_a[i] > -20: _add('sell', 'Williams %R Asiri Alim')
+
+            # CCI
+            if   cci_a[i] < -100: _add('buy',  'CCI Asiri Satim')
+            elif cci_a[i] >  100: _add('sell', 'CCI Asiri Alim')
+
+            # MFI
+            if   mfi_a[i] < 20: _add('buy',  'MFI Asiri Satim')
+            elif mfi_a[i] > 80: _add('sell', 'MFI Asiri Alim')
+
+            # OBV diverjans (10-gunluk egim)
+            if i >= 10:
+                obv_slope   = float(obv_a[i]  - obv_a[i-10])
+                price_slope = float(c[i]) - float(c[i-10])
+                if   obv_slope > 0 and price_slope < 0: _add('buy',  'OBV Pozitif Diverjans')
+                elif obv_slope < 0 and price_slope > 0: _add('sell', 'OBV Negatif Diverjans')
 
         if not signals:
             return {'totalSignals': 0, 'message': 'Sinyal bulunamadi'}
 
-        buy_signals = [s for s in signals if s['type'] == 'buy']
-        sell_signals = [s for s in signals if s['type'] == 'sell']
+        buy_sigs  = [s for s in signals if s['type'] == 'buy']
+        sell_sigs = [s for s in signals if s['type'] == 'sell']
 
-        def calc_stats(sigs):
-            if not sigs:
-                return {'count': 0, 'winRate5d': 0, 'winRate10d': 0, 'winRate20d': 0, 'avgRet5d': 0, 'avgRet10d': 0, 'avgRet20d': 0}
-            return {
-                'count': len(sigs),
-                'winRate5d': sf(sum(1 for s in sigs if s['win5d']) / len(sigs) * 100),
-                'winRate10d': sf(sum(1 for s in sigs if s['win10d']) / len(sigs) * 100),
-                'winRate20d': sf(sum(1 for s in sigs if s['win20d']) / len(sigs) * 100),
-                'avgRet5d': sf(np.mean([s['ret5d'] for s in sigs])),
-                'avgRet10d': sf(np.mean([s['ret10d'] for s in sigs])),
-                'avgRet20d': sf(np.mean([s['ret20d'] for s in sigs])),
-            }
-
-        # Sinyal tiplerine gore istatistik
+        # Her indikatör için istatistik
         by_reason = {}
         for s in signals:
-            r = s['reason']
-            if r not in by_reason:
-                by_reason[r] = []
-            by_reason[r].append(s)
+            by_reason.setdefault(s['reason'], []).append(s)
 
-        reason_stats = {}
-        for reason, sigs in by_reason.items():
-            reason_stats[reason] = calc_stats(sigs)
+        reason_stats = {r: {**calc_stats_v2(sigs), 'reason': r}
+                        for r, sigs in by_reason.items()}
+
+        # Profit Factor'a göre sırala
+        ranked = sorted(
+            reason_stats.values(),
+            key=lambda x: (float(x.get('profitFactor10d', 0)),
+                           float(x.get('winRate10d', 0))),
+            reverse=True,
+        )
+
+        # ---- Buy-and-Hold Benchmark ----
+        # Rastgele giris yapilsaydi ortalama 10-gunluk getiri ne olurdu?
+        baseline_rets = [
+            ((float(c[min(i+10, n-1)]) - float(c[i])) / float(c[i])) * 100.0
+            for i in range(start_i, end_i)
+        ]
+        baseline_avg  = sf(float(np.mean(baseline_rets))) if baseline_rets else 0
+        full_period_r = sf(((float(c[-1]) - float(c[start_i])) / float(c[start_i])) * 100.0)
+
+        # ---- BIST RSI Kalibrasyonu ----
+        # Hangi RSI esigi BIST'te daha iyi calisıyor?
+        rsi_calib = {}
+        for lo_th, hi_th in [(25, 75), (30, 70), (35, 65)]:
+            cal = []
+            for i in range(start_i, end_i):
+                rv = rsi_a[i]
+                if   rv < lo_th: st = 'buy'
+                elif rv > hi_th: st = 'sell'
+                else: continue
+                ep_c = float(c[i])
+                r = ((float(c[min(i+10, n-1)]) - ep_c) / ep_c) * 100.0
+                if st == 'sell':
+                    r = -r
+                cal.append(r)
+            if cal:
+                wins   = [r for r in cal if r > 0]
+                losses = [abs(r) for r in cal if r < 0]
+                rsi_calib[f'{lo_th}/{hi_th}'] = {
+                    'signalCount':     len(cal),
+                    'winRate10d':      sf(len(wins)/len(cal)*100),
+                    'profitFactor10d': sf(sum(wins)/sum(losses) if losses else 99.0),
+                    'avgReturn10d':    sf(float(np.mean(cal))),
+                }
+        best_rsi = (max(rsi_calib, key=lambda k: float(rsi_calib[k].get('profitFactor10d', 0)))
+                    if rsi_calib else '30/70')
 
         return {
             'totalSignals': len(signals),
-            'buySignals': calc_stats(buy_signals),
-            'sellSignals': calc_stats(sell_signals),
-            'overall': calc_stats(signals),
-            'byReason': reason_stats,
+            'buySignals':   calc_stats_v2(buy_sigs),
+            'sellSignals':  calc_stats_v2(sell_sigs),
+            'overall':      calc_stats_v2(signals),
+            'byReason':     reason_stats,
+            'rankedIndicators': ranked,
             'recentSignals': signals[-10:],
+            'benchmark': {
+                'avgRandom10dReturn': baseline_avg,
+                'fullPeriodReturn':   full_period_r,
+                'note': 'avgRandom10dReturn: rastgele giris olsaydi beklenen 10-gunluk ortalama getiri',
+            },
+            'rsiCalibration':  rsi_calib,
+            'bestRsiThreshold': best_rsi,
         }
     except Exception as e:
         print(f"  [BACKTEST] Hata: {e}")
+        import traceback; traceback.print_exc()
         return {'totalSignals': 0, 'error': str(e)}
 
 
@@ -4165,6 +5532,141 @@ def _compute_signal_for_stock(stock, timeframe):
         ml_conf = calc_ml_confidence(hist, ind, score, sig_type)
         candle_patterns = ind.get('candlestick', {}).get('patterns', [])
 
+        # MTF: gercek coklu zaman dilimi analizi
+        try:
+            mtf = calc_mtf_signal(hist)
+        except Exception:
+            mtf = {'mtfScore': 0, 'mtfAlignment': '0/3',
+                   'mtfDirection': 'neutral', 'mtfStrength': 'Uyumsuz'}
+
+        # MTF filtresi: sinyal ile MTF yonu uyumsuzsa composite skoru zayiflat
+        mtf_direction = mtf.get('mtfDirection', 'neutral')
+        if mtf_direction != 'neutral' and mtf_direction != sig_type:
+            composite = composite * 0.6   # Uyumsuz MTF → skoru %40 dusur
+        elif mtf_direction == sig_type and mtf.get('mtfScore', 0) == 3:
+            composite = min(100, composite * 1.2)  # 3/3 uyum → %20 artir
+
+        # Faz 3: Divergence analizi
+        try:
+            div = calc_divergence(hist)
+        except Exception:
+            div = {'summary': {'signal': 'neutral', 'bullish': 0, 'bearish': 0, 'hasRecent': False}}
+        div_summary = div.get('summary', {})
+        div_signal  = div_summary.get('signal', 'neutral')
+
+        # Divergence + composite uyum bonusu / penaltısı
+        if div_summary.get('hasRecent', False):
+            if div_signal == sig_type:
+                composite = min(100, composite * 1.10)  # Uyumlu recent divergence → +%10
+            elif div_signal != 'neutral':
+                composite = composite * 0.85            # Ters divergence → -%15
+
+        # Faz 4: Hacim Profili & VWAP
+        try:
+            vp = calc_volume_profile(hist)
+        except Exception:
+            vp = {'vwap': 0, 'poc': 0, 'vah': 0, 'val': 0, 'volumeAnomaly': False, 'vwapSignal': 'neutral'}
+
+        # VWAP + composite uyum
+        vwap_sig = vp.get('vwapSignal', 'neutral')
+        if vwap_sig == sig_type:
+            composite = min(100, composite * 1.05)  # Uyumlu VWAP → +%5
+        elif vwap_sig != 'neutral':
+            composite = composite * 0.95            # Ters VWAP → -%5
+
+        # Hacim anomalisi → belirsizlik: composite'i hafif düşür
+        if vp.get('volumeAnomaly', False) and sig_type == 'sell':
+            composite = min(100, composite * 1.08)  # Yüksek hacim + sat → güçlü satış
+
+        # Faz 5: SMC analizi
+        try:
+            smc = calc_smc(hist)
+        except Exception:
+            smc = {'signal': 'neutral', 'structureTrend': 'neutral', 'bullScore': 0, 'bearScore': 0,
+                   'bosEvents': [], 'chochEvents': [], 'fvgs': [], 'orderBlocks': [],
+                   'summary': {'hasBOS': False, 'hasCHoCH': False, 'activeFvgCount': 0, 'activeObCount': 0}}
+        smc_signal  = smc.get('signal', 'neutral')
+        smc_summary = smc.get('summary', {})
+
+        # SMC CHoCH ters işaret → güçlü uyarı
+        if smc_summary.get('hasCHoCH', False):
+            choch_types = [cc.get('type', '') for cc in smc.get('chochEvents', [])]
+            if any('bullish' in t for t in choch_types) and sig_type == 'buy':
+                composite = min(100, composite * 1.15)  # Bullish CHoCH + al → +%15
+            elif any('bearish' in t for t in choch_types) and sig_type == 'sell':
+                composite = min(100, composite * 1.15)  # Bearish CHoCH + sat → +%15
+        # BOS uyumu
+        if smc_summary.get('hasBOS', False) and smc_signal == sig_type:
+            composite = min(100, composite * 1.08)      # Uyumlu BOS → +%8
+
+        # Faz 6: Grafik formasyonları
+        try:
+            patt = calc_chart_patterns(hist)
+        except Exception:
+            patt = {'signal': 'neutral', 'patterns': [], 'completedPatterns': [],
+                    'summary': {'total': 0, 'bullish': 0, 'bearish': 0, 'completed': 0}}
+        patt_signal  = patt.get('signal', 'neutral')
+        patt_summary = patt.get('summary', {})
+
+        # Tamamlanmış formasyon + uyumlu sinyal → güçlü bonus
+        if patt_summary.get('completed', 0) > 0:
+            if patt_signal == sig_type:
+                composite = min(100, composite * 1.20)  # Tamamlanmış uyumlu formasyon → +%20
+            elif patt_signal != 'neutral':
+                composite = composite * 0.75            # Ters tamamlanmış formasyon → -%25
+        elif patt_signal == sig_type:
+            composite = min(100, composite * 1.05)      # Bekleyen uyumlu formasyon → +%5
+
+        # Faz 7: Fibonacci & Pivot Noktaları
+        try:
+            fib    = calc_fibonacci_adv(hist)
+            pivots = calc_pivot_points_adv(hist)
+        except Exception:
+            fib    = {'trend': 'neutral', 'goldenPocket': {'inZone': False}}
+            pivots = {'bias': 'neutral', 'classic': {}}
+
+        piv_bias = pivots.get('bias', 'neutral')
+        if piv_bias == sig_type:
+            composite = min(100, composite * 1.05)   # Pivot bias uyumu → +%5
+        elif piv_bias != 'neutral':
+            composite = composite * 0.97             # Ters pivot bias → -%3
+
+        # Golden Pocket bölgesinde mi? (0.618-0.65) → kritik al/sat bölgesi
+        in_golden = fib.get('goldenPocket', {}).get('inZone', False)
+        fib_trend = fib.get('trend', 'neutral')
+        if in_golden:
+            if fib_trend == 'uptrend' and sig_type == 'buy':
+                composite = min(100, composite * 1.12)  # Uptrend golden pocket → güçlü al
+            elif fib_trend == 'downtrend' and sig_type == 'sell':
+                composite = min(100, composite * 1.08)  # Downtrend golden pocket → sat
+
+        # Faz 9: İleri Teknik İndikatörler
+        try:
+            adv = calc_advanced_indicators(hist)
+        except Exception:
+            adv = {'summary': {'signal': 'neutral', 'buyCount': 0, 'sellCount': 0}}
+
+        adv_summary = adv.get('summary', {})
+        adv_signal  = adv_summary.get('signal', 'neutral')
+        adv_buy     = adv_summary.get('buyCount', 0)
+        adv_sell    = adv_summary.get('sellCount', 0)
+
+        # 3/3 ileri indikatör uyumu → güçlü sinyal
+        if adv_signal == sig_type:
+            if adv_buy == 3 or adv_sell == 3:
+                composite = min(100, composite * 1.15)  # Tam uyum → +%15
+            else:
+                composite = min(100, composite * 1.07)  # Kısmi uyum → +%7
+        elif adv_signal != 'neutral':
+            composite = composite * 0.90                # Ters adv signal → -%10
+
+        # Ichimoku cloud'un altında ve satış → ekstra baskı
+        ich = adv.get('ichimoku', {})
+        if ich.get('belowCloud', False) and sig_type == 'sell':
+            composite = min(100, composite * 1.08)
+        elif ich.get('aboveCloud', False) and sig_type == 'buy':
+            composite = min(100, composite * 1.08)
+
         return {
             'code': sym,
             'name': BIST100_STOCKS.get(sym, sym),
@@ -4194,6 +5696,68 @@ def _compute_signal_for_stock(stock, timeframe):
             'candlestickPatterns': candle_patterns[:3],
             'dynamicThresholds': ind.get('dynamicThresholds', {}),
             'tradePlan': calc_trade_plan(hist, ind),
+            # MTF alanları
+            'mtfScore':       mtf.get('mtfScore', 0),
+            'mtfAlignment':   mtf.get('mtfAlignment', '0/3'),
+            'mtfDirection':   mtf_direction,
+            'mtfStrength':    mtf.get('mtfStrength', 'Uyumsuz'),
+            'mtfDescription': mtf.get('description', ''),
+            # Faz 3: Divergence
+            'divergenceSignal':  div_signal,
+            'divergenceCount':   div_summary.get('count', 0),
+            'divergenceBullish': div_summary.get('bullish', 0),
+            'divergenceBearish': div_summary.get('bearish', 0),
+            'hasRecentDivergence': div_summary.get('hasRecent', False),
+            'divergences':       div.get('recentDivergences', [])[:3],
+            # Faz 4: Hacim Profili & VWAP
+            'vwap':           vp.get('vwap', 0),
+            'vwapSignal':     vwap_sig,
+            'vwapPct':        vp.get('vwapPct', 0),
+            'poc':            vp.get('poc', 0),
+            'vah':            vp.get('vah', 0),
+            'val':            vp.get('val', 0),
+            'volumeAnomaly':  vp.get('volumeAnomaly', False),
+            'volumeRatio':    vp.get('volumeRatio', 0),
+            'volumeTrend':    vp.get('volumeTrend', ''),
+            # Faz 5: SMC
+            'smcSignal':         smc_signal,
+            'smcStructure':      smc.get('structureTrend', 'neutral'),
+            'smcBullScore':      smc.get('bullScore', 0),
+            'smcBearScore':      smc.get('bearScore', 0),
+            'hasBOS':            smc_summary.get('hasBOS', False),
+            'hasCHoCH':          smc_summary.get('hasCHoCH', False),
+            'activeFvgCount':    smc_summary.get('activeFvgCount', 0),
+            'activeObCount':     smc_summary.get('activeObCount', 0),
+            'smcEntryZones':     smc.get('entryZones', [])[:3],
+            # Faz 6: Grafik Formasyonları
+            'patternSignal':     patt_signal,
+            'patternCount':      patt_summary.get('total', 0),
+            'completedPatterns': patt_summary.get('completed', 0),
+            'bullishPatterns':   patt_summary.get('bullish', 0),
+            'bearishPatterns':   patt_summary.get('bearish', 0),
+            'patterns':          patt.get('completedPatterns', [])[:2] + patt.get('pendingPatterns', [])[:2],
+            # Faz 7: Fibonacci & Pivot
+            'fibTrend':          fib.get('trend', 'neutral'),
+            'fibSwingHigh':      fib.get('swingHigh', 0),
+            'fibSwingLow':       fib.get('swingLow', 0),
+            'inGoldenPocket':    fib.get('goldenPocket', {}).get('inZone', False),
+            'fibNearestSupport': (fib.get('nearestSupports', [{}]) or [{}])[0].get('level', 0),
+            'fibNearestResist':  (fib.get('nearestResistances', [{}]) or [{}])[0].get('level', 0),
+            'pivotBias':         piv_bias,
+            'pivotPP':           pivots.get('classic', {}).get('pp', 0),
+            'pivotR1':           pivots.get('classic', {}).get('r1', 0),
+            'pivotS1':           pivots.get('classic', {}).get('s1', 0),
+            # Faz 9: İleri İndikatörler
+            'advSignal':         adv_signal,
+            'advBuyCount':       adv_buy,
+            'advSellCount':      adv_sell,
+            'ichimokuSignal':    adv.get('ichimoku', {}).get('signal', 'neutral'),
+            'aboveCloud':        adv.get('ichimoku', {}).get('aboveCloud', False),
+            'belowCloud':        adv.get('ichimoku', {}).get('belowCloud', False),
+            'stochasticK':       adv.get('stochastic', {}).get('k', 50),
+            'stochasticSignal':  adv.get('stochastic', {}).get('signal', 'neutral'),
+            'williamsR':         adv.get('williamsR', {}).get('value', -50),
+            'williamsSignal':    adv.get('williamsR', {}).get('signal', 'neutral'),
         }
     except:
         return None
@@ -5117,6 +6681,255 @@ def stock_signal_backtest(symbol):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/stock/<symbol>/mtf')
+def stock_mtf(symbol):
+    """
+    Hisse icin gercek coklu zaman dilimi (MTF) analizi.
+    Gunluk OHLCV verisini haftalik ve aylik bara resample ederek
+    her zaman diliminde RSI/MACD/EMA/Bollinger indikatörlerini hesaplar.
+    Kac zaman diliminin ayni yonde oldugunu MTF skoru olarak doner (0-3).
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 30:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 30 bar gerekli)'}), 400
+
+        mtf = calc_mtf_signal(hist)
+        return jsonify(safe_dict({
+            'success': True,
+            'symbol': symbol,
+            'mtf': mtf,
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/divergence')
+def stock_divergence(symbol):
+    """
+    Hisse icin RSI ve MACD uyumsuzluk (divergence) analizi.
+    Klasik Boğa/Ayı + Gizli Boğa/Ayı + MACD divergence tespit eder.
+    Son 90 barda tarama yapar; son 20 barda tespit edilenleri 'recentDivergences' olarak isaretler.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 50:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 50 bar)'}), 400
+        result = calc_divergence(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/volume-profile')
+def stock_volume_profile(symbol):
+    """
+    Hisse icin Hacim Profili ve VWAP analizi.
+    POC (Point of Control), VAH/VAL (Value Area), VWAP, hacim anomalisi döner.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 20:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 20 bar)'}), 400
+        result = calc_volume_profile(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/smc')
+def stock_smc(symbol):
+    """
+    Hisse icin Smart Money Concepts (SMC) analizi.
+    Fair Value Gap, Order Block, Break of Structure (BOS), Change of Character (CHoCH) döner.
+    Kurumsal işlem izleri ve potansiyel giriş bölgeleri tespit eder.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 30:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 30 bar)'}), 400
+        result = calc_smc(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/patterns')
+def stock_chart_patterns(symbol):
+    """
+    Hisse icin grafik formasyon analizi.
+    Çift Tepe/Dip, OBO/Ters OBO, Üçgen, Bayrak formasyonlarini tespit eder.
+    Tamamlanmis formasyonlar ve hedef fiyat seviyeleri döner.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 30:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 30 bar)'}), 400
+        result = calc_chart_patterns(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/fibonacci')
+def stock_fibonacci(symbol):
+    """
+    Fibonacci retracement ve extension seviyeleri.
+    Son 60 barin swing high/low noktasindan hesaplanir.
+    Golden Pocket (0.618-0.65) bolgesi de isaretlenir.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 20:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 20 bar)'}), 400
+        result = calc_fibonacci_adv(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/pivots')
+def stock_pivot_points(symbol):
+    """
+    Klasik, Camarilla ve Woodie Pivot Noktalari.
+    Son kapanan gunun OHLC'sinden hesaplanir.
+    Destek/direnc seviyeleri + fiyat bias (bullish/bearish).
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 3:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 3 bar)'}), 400
+        result = calc_pivot_points_adv(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/advanced-indicators')
+def stock_advanced_indicators(symbol):
+    """
+    Ileri teknik indikatörler:
+    Ichimoku Cloud (bulut analizi), Stochastic (14,3,3), Williams %R (14).
+    Her indikatörün sinyal + asiri alim/satim durumu döner.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 14:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 14 bar)'}), 400
+        result = calc_advanced_indicators(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/full-analysis')
+def stock_full_analysis(symbol):
+    """
+    Kapsamli tam analiz: Tum fazlari tek endpoint'te birlestirir.
+    MTF + Divergence + Volume Profile + SMC + Patterns +
+    Fibonacci + Pivots + Advanced Indicators + Temel Gostergeler.
+    Frontend dashboard icin tek sorgu ile tam analiz.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 30:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 30 bar)'}), 400
+
+        # Temel fiyat bilgisi
+        stocks = _get_stocks()
+        stock_info = next((s for s in stocks if s.get('code') == symbol), {})
+        cp = float(hist['Close'].iloc[-1])
+
+        # Tum analizleri paralel olmayan ama ozlü sekilde calistir
+        def _safe(fn, *args, **kwargs):
+            try: return fn(*args, **kwargs)
+            except Exception as ex: return {'error': str(ex)}
+
+        ind          = _safe(calc_indicators, hist)
+        mtf          = _safe(calc_mtf_signal,       hist)
+        div          = _safe(calc_divergence,        hist)
+        vp           = _safe(calc_volume_profile,    hist)
+        smc          = _safe(calc_smc,               hist)
+        patterns     = _safe(calc_chart_patterns,    hist)
+        fib          = _safe(calc_fibonacci_adv,         hist)
+        pivots       = _safe(calc_pivot_points_adv,      hist)
+        adv          = _safe(calc_advanced_indicators, hist)
+        sr           = _safe(calc_support_resistance, hist)
+        candles      = _safe(calc_candlestick_patterns, hist)
+        backtest     = _safe(calc_signal_backtest,   hist)
+
+        # Composite sinyal sayimi (tüm faz sinyalleri)
+        all_signals = [
+            mtf.get('mtfDirection', 'neutral'),
+            div.get('summary', {}).get('signal', 'neutral'),
+            vp.get('vwapSignal', 'neutral'),
+            smc.get('signal', 'neutral'),
+            patterns.get('signal', 'neutral'),
+            adv.get('summary', {}).get('signal', 'neutral'),
+            pivots.get('bias', 'neutral') if 'bias' in pivots else 'neutral',
+        ]
+        buy_votes  = all_signals.count('buy')
+        sell_votes = all_signals.count('sell')
+        consensus  = ('buy'  if buy_votes > sell_votes
+                      else ('sell' if sell_votes > buy_votes else 'neutral'))
+        confidence = round(max(buy_votes, sell_votes) / len(all_signals) * 100)
+
+        return jsonify(safe_dict({
+            'success':     True,
+            'symbol':      symbol,
+            'name':        BIST100_STOCKS.get(symbol, symbol),
+            'price':       sf(cp),
+            'changePct':   stock_info.get('changePct', 0),
+            'consensus':   consensus,
+            'buyVotes':    buy_votes,
+            'sellVotes':   sell_votes,
+            'neutralVotes': len(all_signals) - buy_votes - sell_votes,
+            'confidence':  confidence,
+            # Faz verileri
+            'indicators':         ind,
+            'mtf':                mtf,
+            'divergence':         div,
+            'volumeProfile':      vp,
+            'smc':                smc,
+            'chartPatterns':      patterns,
+            'fibonacci':          fib,
+            'pivots':             pivots,
+            'advancedIndicators': adv,
+            'supportResistance':  sr,
+            'candlestickPatterns': candles,
+            'backtest':           backtest,
+            'timestamp':          datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/stock/<symbol>/fundamentals')
 def stock_fundamentals_endpoint(symbol):
     """Hisse temel analiz verileri (F/K, PD/DD)"""
@@ -5176,6 +6989,106 @@ def signals_performance():
         return jsonify(safe_dict({
             'success': True,
             'performance': results,
+            'timestamp': datetime.now().isoformat(),
+        }))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/signals/calibration')
+def signals_calibration():
+    """
+    BIST indikatör kalibrasyonu:
+    - Tekli hisse: ?symbol=THYAO
+    - Toplu (ilk 20 hisse): parametre yok
+    Döndürür: RSI en iyi eşik, en iyi performans gösteren indikatörler (Profit Factor bazli)
+    """
+    try:
+        symbol = request.args.get('symbol', '').upper().strip()
+
+        # Tek hisse modu
+        if symbol:
+            hist = _cget_hist(f"{symbol}_1y")
+            if hist is None:
+                hist = _fetch_hist_df(symbol, '1y')
+            if hist is None or len(hist) < 60:
+                return jsonify({'error': f'{symbol} icin yeterli veri yok'}), 400
+            bt = calc_signal_backtest(hist)
+            return jsonify(safe_dict({
+                'success': True,
+                'symbol': symbol,
+                'rsiCalibration': bt.get('rsiCalibration', {}),
+                'bestRsiThreshold': bt.get('bestRsiThreshold', '30/70'),
+                'rankedIndicators': bt.get('rankedIndicators', [])[:5],
+                'benchmark': bt.get('benchmark', {}),
+                'totalSignals': bt.get('totalSignals', 0),
+                'timestamp': datetime.now().isoformat(),
+            }))
+
+        # Toplu mod: ilk 20 hisse üzerinden RSI kalibrasyon ortalaması
+        stocks = _get_stocks()
+        if not stocks:
+            return jsonify({'success': True, 'loading': True})
+
+        agg_rsi = {}   # { '30/70': [profitFactor, ...], ... }
+        agg_ind = {}   # { 'RSI < 30': [profitFactor, ...], ... }
+        processed = 0
+
+        for stock in stocks[:20]:
+            sym = stock['code']
+            try:
+                hist = _cget_hist(f"{sym}_1y")
+                if hist is None or len(hist) < 60:
+                    continue
+                bt = calc_signal_backtest(hist)
+                if bt.get('totalSignals', 0) < 5:
+                    continue
+
+                # RSI kalibrasyon topla
+                for thresh, stats in bt.get('rsiCalibration', {}).items():
+                    agg_rsi.setdefault(thresh, []).append(float(stats.get('profitFactor10d', 0)))
+
+                # Indikatör sıralaması topla
+                for ind in bt.get('rankedIndicators', []):
+                    name = ind.get('reason', '')
+                    if name:
+                        agg_ind.setdefault(name, []).append(float(ind.get('profitFactor10d', 0)))
+
+                processed += 1
+            except Exception:
+                continue
+
+        if processed == 0:
+            return jsonify({'success': True, 'loading': True, 'message': 'Veri hazırlanıyor'})
+
+        # RSI eşik özeti
+        rsi_summary = {}
+        for thresh, pfs in agg_rsi.items():
+            avg_pf = float(np.mean(pfs)) if pfs else 0
+            rsi_summary[thresh] = {
+                'avgProfitFactor10d': sf(avg_pf),
+                'stockCount': len(pfs),
+            }
+        best_rsi_bulk = max(rsi_summary, key=lambda k: float(rsi_summary[k]['avgProfitFactor10d'])) if rsi_summary else '30/70'
+
+        # Indikatör özeti
+        ind_summary = []
+        for name, pfs in agg_ind.items():
+            avg_pf = float(np.mean(pfs)) if pfs else 0
+            ind_summary.append({
+                'reason': name,
+                'avgProfitFactor10d': sf(avg_pf),
+                'stockCount': len(pfs),
+            })
+        ind_summary.sort(key=lambda x: float(x['avgProfitFactor10d']), reverse=True)
+
+        return jsonify(safe_dict({
+            'success': True,
+            'processedStocks': processed,
+            'rsiCalibrationSummary': rsi_summary,
+            'bestRsiThreshold': best_rsi_bulk,
+            'topIndicators': ind_summary[:5],
+            'allIndicators': ind_summary,
             'timestamp': datetime.now().isoformat(),
         }))
     except Exception as e:
