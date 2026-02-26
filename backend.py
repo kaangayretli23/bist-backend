@@ -4570,24 +4570,25 @@ def test_fetch(symbol):
     return jsonify(safe_dict(results))
 
 # --- index.html bellekte gzipli cache ---
-_index_cache = {'raw': None, 'gz': None, 'mtime': 0}
+# Not: _index_cache adı endeks verisi cache'i ile çakışıyor — farklı isim kullan
+_html_page_cache = {'raw': None, 'gz': None, 'mtime': 0}
 
 def _load_index_html():
     """index.html'i diskten oku, gziple, bellekte tut"""
     fpath = os.path.join(BASE_DIR, 'index.html')
     try:
         mt = os.path.getmtime(fpath)
-        if _index_cache['raw'] and _index_cache['mtime'] == mt:
+        if _html_page_cache['raw'] and _html_page_cache['mtime'] == mt:
             return True
         with open(fpath, 'rb') as f:
             raw = f.read()
         buf = io.BytesIO()
         with gzip.GzipFile(fileobj=buf, mode='wb', compresslevel=6) as gz:
             gz.write(raw)
-        _index_cache['raw'] = raw
-        _index_cache['gz'] = buf.getvalue()
-        _index_cache['mtime'] = mt
-        print(f"[INDEX] Cached: {len(raw)} bytes -> gzip {len(_index_cache['gz'])} bytes")
+        _html_page_cache['raw'] = raw
+        _html_page_cache['gz'] = buf.getvalue()
+        _html_page_cache['mtime'] = mt
+        print(f"[INDEX] Cached: {len(raw)} bytes -> gzip {len(_html_page_cache['gz'])} bytes")
         return True
     except Exception as e:
         print(f"[INDEX] Load error: {e}")
@@ -4597,16 +4598,16 @@ _load_index_html()
 
 @app.route('/')
 def index():
-    if not _index_cache['raw']:
+    if not _html_page_cache['raw']:
         if not _load_index_html():
             return jsonify({'error':'index.html bulunamadi'}), 500
     # gzip destegi varsa sikistirilmis gonder
     ae = request.headers.get('Accept-Encoding', '')
-    if 'gzip' in ae and _index_cache['gz']:
-        resp = make_response(_index_cache['gz'])
+    if 'gzip' in ae and _html_page_cache['gz']:
+        resp = make_response(_html_page_cache['gz'])
         resp.headers['Content-Encoding'] = 'gzip'
     else:
-        resp = make_response(_index_cache['raw'])
+        resp = make_response(_html_page_cache['raw'])
     resp.headers['Content-Type'] = 'text/html; charset=utf-8'
     resp.headers['Cache-Control'] = 'public, max-age=300'
     resp.headers['Vary'] = 'Accept-Encoding'
