@@ -2747,6 +2747,329 @@ def calc_chart_patterns(hist, lookback=120):
 
 
 # =====================================================================
+# FAZ 7: FİBONACCİ SEVİYELERİ & PİVOT NOKTALARI
+# Fibonacci retracement/extension + Classic/Camarilla/Woodie Pivot Points
+# =====================================================================
+def calc_fibonacci_adv(hist, lookback=60):
+    """
+    Fibonacci retracement ve extension seviyeleri.
+    Son lookback bardaki en yüksek/düşük noktadan hesaplar.
+    Retracement : 0.236, 0.382, 0.5, 0.618, 0.786
+    Extension   : 1.272, 1.618, 2.618
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High' in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'  in hist.columns else c.copy()
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        n = len(c)
+        lb = min(lookback, n)
+
+        seg_h = h[-lb:]
+        seg_l = l[-lb:]
+        hi_idx = int(np.argmax(seg_h))
+        lo_idx = int(np.argmin(seg_l))
+        swing_high = float(seg_h[hi_idx])
+        swing_low  = float(seg_l[lo_idx])
+        diff = swing_high - swing_low
+        cur  = float(c[-1])
+
+        # Trend yönü: yüksek mi önce, düşük mü?
+        if hi_idx > lo_idx:
+            # Önce dip, sonra zirve → uptrend retracement (yukarıdan aşağı seviyeler)
+            trend = 'uptrend'
+            base, top = swing_low, swing_high
+        else:
+            # Önce zirve, sonra dip → downtrend retracement (aşağıdan yukarı seviyeler)
+            trend = 'downtrend'
+            base, top = swing_low, swing_high
+
+        ret_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+        ext_ratios = [1.272, 1.618, 2.618]
+
+        def label_level(lvl):
+            """Mevcut fiyata göre destek/direnç etiketi"""
+            if lvl < cur - diff * 0.01:
+                return 'support'
+            elif lvl > cur + diff * 0.01:
+                return 'resistance'
+            return 'current'
+
+        retracements = []
+        for r in ret_ratios:
+            lvl = sf(top - diff * r)
+            retracements.append({
+                'ratio': r, 'label': f'Fib {r:.3f}',
+                'level': lvl,
+                'role': label_level(float(lvl)),
+                'distPct': sf((float(lvl) - cur) / cur * 100),
+            })
+
+        extensions = []
+        for r in ext_ratios:
+            lvl = sf(top + diff * (r - 1)) if trend == 'uptrend' else sf(base - diff * (r - 1))
+            extensions.append({
+                'ratio': r, 'label': f'Fib {r:.3f}',
+                'level': lvl,
+                'role': 'extension_target',
+                'distPct': sf((float(lvl) - cur) / cur * 100),
+            })
+
+        # En yakın destek ve dirençler
+        supports    = sorted([lv for lv in retracements if lv['role'] == 'support'],
+                             key=lambda x: -float(x['level']))[:3]
+        resistances = sorted([lv for lv in retracements if lv['role'] == 'resistance'],
+                             key=lambda x: float(x['level']))[:3]
+
+        # Golden Pocket (0.618-0.65 bölgesi)
+        golden_top = sf(top - diff * 0.618)
+        golden_bot = sf(top - diff * 0.65)
+        in_golden  = float(golden_bot) <= cur <= float(golden_top)
+
+        return {
+            'trend':          trend,
+            'swingHigh':      sf(swing_high),
+            'swingLow':       sf(swing_low),
+            'currentPrice':   sf(cur),
+            'retracements':   retracements,
+            'extensions':     extensions,
+            'nearestSupports':    supports,
+            'nearestResistances': resistances,
+            'goldenPocket': {
+                'top': golden_top, 'bottom': golden_bot, 'inZone': in_golden,
+            },
+        }
+    except Exception as e:
+        print(f"  [FIB] Hata: {e}")
+        return {'error': str(e), 'retracements': [], 'extensions': []}
+
+
+def calc_pivot_points_adv(hist):
+    """
+    Klasik, Camarilla ve Woodie Pivot Noktaları.
+    Son kapanan günün OHLC verisinden hesaplar.
+    Classic   : PP = (H+L+C)/3
+    Camarilla : PP = (H+L+C)/3, farklı katsayılar
+    Woodie    : PP = (H+L+2C)/4
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High' in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'  in hist.columns else c.copy()
+        o = hist['Open'].values.astype(float)  if 'Open' in hist.columns else c.copy()
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        o = np.where(np.isnan(o), c, o)
+
+        # Son kapanan günün OHLC değerleri
+        H, L, C, O = float(h[-2]), float(l[-2]), float(c[-2]), float(o[-2])
+        rng = H - L
+        cur = float(c[-1])
+
+        def _role(lvl):
+            return 'support' if lvl < cur else ('resistance' if lvl > cur else 'pivot')
+
+        # ---- Classic ----
+        pp_c = (H + L + C) / 3
+        classic = {
+            'pp':  sf(pp_c),
+            'r1':  sf(2 * pp_c - L),   'r2': sf(pp_c + rng),
+            'r3':  sf(H + 2 * (pp_c - L)),
+            's1':  sf(2 * pp_c - H),   's2': sf(pp_c - rng),
+            's3':  sf(L - 2 * (H - pp_c)),
+        }
+
+        # ---- Camarilla ----
+        cam = {
+            'pp':  sf(pp_c),
+            'r1':  sf(C + rng * 1.1 / 12), 'r2': sf(C + rng * 1.1 / 6),
+            'r3':  sf(C + rng * 1.1 / 4),  'r4': sf(C + rng * 1.1 / 2),
+            's1':  sf(C - rng * 1.1 / 12), 's2': sf(C - rng * 1.1 / 6),
+            's3':  sf(C - rng * 1.1 / 4),  's4': sf(C - rng * 1.1 / 2),
+        }
+
+        # ---- Woodie ----
+        pp_w = (H + L + 2 * C) / 4
+        woodie = {
+            'pp':  sf(pp_w),
+            'r1':  sf(2 * pp_w - L),        'r2': sf(pp_w + rng),
+            's1':  sf(2 * pp_w - H),        's2': sf(pp_w - rng),
+        }
+
+        # En yakın pivot seviyeleri (tüm modeller birlikte)
+        all_levels = []
+        for name, val in classic.items():
+            all_levels.append({'model': 'classic', 'name': name.upper(),
+                                'level': val, 'role': _role(float(val))})
+
+        supports    = sorted([lv for lv in all_levels if lv['role'] == 'support'],
+                             key=lambda x: -float(x['level']))[:3]
+        resistances = sorted([lv for lv in all_levels if lv['role'] == 'resistance'],
+                             key=lambda x: float(x['level']))[:3]
+
+        # Fiyat pivot'un üstünde mi altında mı?
+        bias = 'bullish' if cur > float(classic['pp']) else 'bearish'
+
+        return {
+            'currentPrice':       sf(cur),
+            'bias':               bias,
+            'classic':            classic,
+            'camarilla':          cam,
+            'woodie':             woodie,
+            'nearestSupports':    supports,
+            'nearestResistances': resistances,
+        }
+    except Exception as e:
+        print(f"  [PIVOT] Hata: {e}")
+        return {'error': str(e), 'classic': {}, 'camarilla': {}, 'woodie': {}}
+
+
+# =====================================================================
+# FAZ 9: İLERİ TEKNİK İNDİKATÖRLER
+# Ichimoku Cloud, Stochastic Oscillator, Williams %R
+# =====================================================================
+def calc_advanced_indicators(hist):
+    """
+    İleri teknik indikatörler:
+      Ichimoku : Tenkan, Kijun, Senkou A/B, Chikou — bulut içi mi?
+      Stochastic: %K ve %D (14,3,3) → aşırı alım/satım
+      Williams %R: -80 altı aşırı satım, -20 üstü aşırı alım
+    """
+    try:
+        c = hist['Close'].values.astype(float)
+        h = hist['High'].values.astype(float)  if 'High' in hist.columns else c.copy()
+        l = hist['Low'].values.astype(float)   if 'Low'  in hist.columns else c.copy()
+        h = np.where(np.isnan(h), c, h)
+        l = np.where(np.isnan(l), c, l)
+        n = len(c)
+
+        result = {}
+
+        # ---- Ichimoku Cloud ----
+        if n >= 52:
+            def mid(arr, period):
+                return (pd.Series(arr).rolling(period).max() +
+                        pd.Series(arr).rolling(period).min()) / 2
+
+            tenkan  = mid(h, 9).values
+            kijun   = mid(h, 26).values
+            senkou_a = ((pd.Series(tenkan) + pd.Series(kijun)) / 2).shift(26).values
+            senkou_b = mid(h, 52).shift(26).values
+            chikou  = np.roll(c, -26)
+
+            cur_price = float(c[-1])
+            sa = float(senkou_a[-27]) if not np.isnan(senkou_a[-27]) else 0
+            sb = float(senkou_b[-27]) if not np.isnan(senkou_b[-27]) else 0
+            cloud_top = max(sa, sb)
+            cloud_bot = min(sa, sb)
+
+            tk = float(tenkan[-1]) if not np.isnan(tenkan[-1]) else cur_price
+            kj = float(kijun[-1])  if not np.isnan(kijun[-1])  else cur_price
+
+            above_cloud = cur_price > cloud_top
+            below_cloud = cur_price < cloud_bot
+            in_cloud    = cloud_bot <= cur_price <= cloud_top
+            tk_kj_cross = ('bullish' if tk > kj else ('bearish' if tk < kj else 'neutral'))
+
+            ich_signal = ('buy'  if above_cloud and tk > kj
+                          else ('sell' if below_cloud and tk < kj
+                                else 'neutral'))
+
+            result['ichimoku'] = {
+                'tenkan':      sf(tk),
+                'kijun':       sf(kj),
+                'senkouA':     sf(sa),
+                'senkouB':     sf(sb),
+                'cloudTop':    sf(cloud_top),
+                'cloudBottom': sf(cloud_bot),
+                'aboveCloud':  above_cloud,
+                'belowCloud':  below_cloud,
+                'inCloud':     in_cloud,
+                'tkKjCross':   tk_kj_cross,
+                'signal':      ich_signal,
+            }
+        else:
+            result['ichimoku'] = {'signal': 'neutral', 'error': 'Yetersiz veri (min 52 bar)'}
+
+        # ---- Stochastic (14, 3, 3) ----
+        if n >= 17:
+            period = 14
+            h_ser = pd.Series(h)
+            l_ser = pd.Series(l)
+            c_ser = pd.Series(c)
+
+            highest_h = h_ser.rolling(period).max()
+            lowest_l  = l_ser.rolling(period).min()
+            raw_k     = 100 * (c_ser - lowest_l) / (highest_h - lowest_l + 1e-10)
+            k_line    = raw_k.rolling(3).mean()
+            d_line    = k_line.rolling(3).mean()
+
+            k_val = sf(float(k_line.iloc[-1]))
+            d_val = sf(float(d_line.iloc[-1]))
+
+            if float(k_val) < 20 and float(d_val) < 20:
+                sto_signal = 'buy'
+            elif float(k_val) > 80 and float(d_val) > 80:
+                sto_signal = 'sell'
+            elif float(k_val) > float(d_val) and float(k_val) < 50:
+                sto_signal = 'buy'   # Yukarı kesişim düşük bölgede
+            elif float(k_val) < float(d_val) and float(k_val) > 50:
+                sto_signal = 'sell'  # Aşağı kesişim yüksek bölgede
+            else:
+                sto_signal = 'neutral'
+
+            result['stochastic'] = {
+                'k': k_val, 'd': d_val,
+                'overbought': float(k_val) > 80,
+                'oversold':   float(k_val) < 20,
+                'signal':     sto_signal,
+            }
+        else:
+            result['stochastic'] = {'signal': 'neutral', 'k': 50, 'd': 50}
+
+        # ---- Williams %R (14) ----
+        if n >= 14:
+            period = 14
+            highest_h = float(np.max(h[-period:]))
+            lowest_l  = float(np.min(l[-period:]))
+            wr = ((highest_h - float(c[-1])) / (highest_h - lowest_l + 1e-10)) * -100
+            wr = sf(wr)
+
+            if float(wr) < -80:
+                wr_signal = 'buy'    # Aşırı satım
+            elif float(wr) > -20:
+                wr_signal = 'sell'   # Aşırı alım
+            else:
+                wr_signal = 'neutral'
+
+            result['williamsR'] = {
+                'value':      wr,
+                'overbought': float(wr) > -20,
+                'oversold':   float(wr) < -80,
+                'signal':     wr_signal,
+            }
+        else:
+            result['williamsR'] = {'signal': 'neutral', 'value': -50}
+
+        # ---- Genel Özet ----
+        signals = [result.get('ichimoku', {}).get('signal', 'neutral'),
+                   result.get('stochastic', {}).get('signal', 'neutral'),
+                   result.get('williamsR', {}).get('signal', 'neutral')]
+        buy_cnt  = signals.count('buy')
+        sell_cnt = signals.count('sell')
+        result['summary'] = {
+            'signal':   'buy' if buy_cnt > sell_cnt else ('sell' if sell_cnt > buy_cnt else 'neutral'),
+            'buyCount': buy_cnt, 'sellCount': sell_cnt,
+        }
+
+        return result
+    except Exception as e:
+        print(f"  [ADV-IND] Hata: {e}")
+        return {'error': str(e), 'summary': {'signal': 'neutral', 'buyCount': 0, 'sellCount': 0}}
+
+
+# =====================================================================
 # FEATURE 1: SIGNAL BACKTESTING & PERFORMANCE TRACKING
 # =====================================================================
 def calc_signal_backtest(hist, lookback_days=252):
@@ -5294,6 +5617,56 @@ def _compute_signal_for_stock(stock, timeframe):
         elif patt_signal == sig_type:
             composite = min(100, composite * 1.05)      # Bekleyen uyumlu formasyon → +%5
 
+        # Faz 7: Fibonacci & Pivot Noktaları
+        try:
+            fib    = calc_fibonacci_adv(hist)
+            pivots = calc_pivot_points_adv(hist)
+        except Exception:
+            fib    = {'trend': 'neutral', 'goldenPocket': {'inZone': False}}
+            pivots = {'bias': 'neutral', 'classic': {}}
+
+        piv_bias = pivots.get('bias', 'neutral')
+        if piv_bias == sig_type:
+            composite = min(100, composite * 1.05)   # Pivot bias uyumu → +%5
+        elif piv_bias != 'neutral':
+            composite = composite * 0.97             # Ters pivot bias → -%3
+
+        # Golden Pocket bölgesinde mi? (0.618-0.65) → kritik al/sat bölgesi
+        in_golden = fib.get('goldenPocket', {}).get('inZone', False)
+        fib_trend = fib.get('trend', 'neutral')
+        if in_golden:
+            if fib_trend == 'uptrend' and sig_type == 'buy':
+                composite = min(100, composite * 1.12)  # Uptrend golden pocket → güçlü al
+            elif fib_trend == 'downtrend' and sig_type == 'sell':
+                composite = min(100, composite * 1.08)  # Downtrend golden pocket → sat
+
+        # Faz 9: İleri Teknik İndikatörler
+        try:
+            adv = calc_advanced_indicators(hist)
+        except Exception:
+            adv = {'summary': {'signal': 'neutral', 'buyCount': 0, 'sellCount': 0}}
+
+        adv_summary = adv.get('summary', {})
+        adv_signal  = adv_summary.get('signal', 'neutral')
+        adv_buy     = adv_summary.get('buyCount', 0)
+        adv_sell    = adv_summary.get('sellCount', 0)
+
+        # 3/3 ileri indikatör uyumu → güçlü sinyal
+        if adv_signal == sig_type:
+            if adv_buy == 3 or adv_sell == 3:
+                composite = min(100, composite * 1.15)  # Tam uyum → +%15
+            else:
+                composite = min(100, composite * 1.07)  # Kısmi uyum → +%7
+        elif adv_signal != 'neutral':
+            composite = composite * 0.90                # Ters adv signal → -%10
+
+        # Ichimoku cloud'un altında ve satış → ekstra baskı
+        ich = adv.get('ichimoku', {})
+        if ich.get('belowCloud', False) and sig_type == 'sell':
+            composite = min(100, composite * 1.08)
+        elif ich.get('aboveCloud', False) and sig_type == 'buy':
+            composite = min(100, composite * 1.08)
+
         return {
             'code': sym,
             'name': BIST100_STOCKS.get(sym, sym),
@@ -5363,6 +5736,28 @@ def _compute_signal_for_stock(stock, timeframe):
             'bullishPatterns':   patt_summary.get('bullish', 0),
             'bearishPatterns':   patt_summary.get('bearish', 0),
             'patterns':          patt.get('completedPatterns', [])[:2] + patt.get('pendingPatterns', [])[:2],
+            # Faz 7: Fibonacci & Pivot
+            'fibTrend':          fib.get('trend', 'neutral'),
+            'fibSwingHigh':      fib.get('swingHigh', 0),
+            'fibSwingLow':       fib.get('swingLow', 0),
+            'inGoldenPocket':    fib.get('goldenPocket', {}).get('inZone', False),
+            'fibNearestSupport': (fib.get('nearestSupports', [{}]) or [{}])[0].get('level', 0),
+            'fibNearestResist':  (fib.get('nearestResistances', [{}]) or [{}])[0].get('level', 0),
+            'pivotBias':         piv_bias,
+            'pivotPP':           pivots.get('classic', {}).get('pp', 0),
+            'pivotR1':           pivots.get('classic', {}).get('r1', 0),
+            'pivotS1':           pivots.get('classic', {}).get('s1', 0),
+            # Faz 9: İleri İndikatörler
+            'advSignal':         adv_signal,
+            'advBuyCount':       adv_buy,
+            'advSellCount':      adv_sell,
+            'ichimokuSignal':    adv.get('ichimoku', {}).get('signal', 'neutral'),
+            'aboveCloud':        adv.get('ichimoku', {}).get('aboveCloud', False),
+            'belowCloud':        adv.get('ichimoku', {}).get('belowCloud', False),
+            'stochasticK':       adv.get('stochastic', {}).get('k', 50),
+            'stochasticSignal':  adv.get('stochastic', {}).get('signal', 'neutral'),
+            'williamsR':         adv.get('williamsR', {}).get('value', -50),
+            'williamsSignal':    adv.get('williamsR', {}).get('signal', 'neutral'),
         }
     except:
         return None
@@ -6388,6 +6783,150 @@ def stock_chart_patterns(symbol):
         result = calc_chart_patterns(hist)
         return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
                                   'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/fibonacci')
+def stock_fibonacci(symbol):
+    """
+    Fibonacci retracement ve extension seviyeleri.
+    Son 60 barin swing high/low noktasindan hesaplanir.
+    Golden Pocket (0.618-0.65) bolgesi de isaretlenir.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 20:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 20 bar)'}), 400
+        result = calc_fibonacci_adv(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/pivots')
+def stock_pivot_points(symbol):
+    """
+    Klasik, Camarilla ve Woodie Pivot Noktalari.
+    Son kapanan gunun OHLC'sinden hesaplanir.
+    Destek/direnc seviyeleri + fiyat bias (bullish/bearish).
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 3:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 3 bar)'}), 400
+        result = calc_pivot_points_adv(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/advanced-indicators')
+def stock_advanced_indicators(symbol):
+    """
+    Ileri teknik indikatörler:
+    Ichimoku Cloud (bulut analizi), Stochastic (14,3,3), Williams %R (14).
+    Her indikatörün sinyal + asiri alim/satim durumu döner.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 14:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 14 bar)'}), 400
+        result = calc_advanced_indicators(hist)
+        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
+                                  'timestamp': datetime.now().isoformat()}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stock/<symbol>/full-analysis')
+def stock_full_analysis(symbol):
+    """
+    Kapsamli tam analiz: Tum fazlari tek endpoint'te birlestirir.
+    MTF + Divergence + Volume Profile + SMC + Patterns +
+    Fibonacci + Pivots + Advanced Indicators + Temel Gostergeler.
+    Frontend dashboard icin tek sorgu ile tam analiz.
+    """
+    try:
+        symbol = symbol.upper()
+        hist = _cget_hist(f"{symbol}_1y")
+        if hist is None:
+            hist = _fetch_hist_df(symbol, '1y')
+        if hist is None or len(hist) < 30:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 30 bar)'}), 400
+
+        # Temel fiyat bilgisi
+        stocks = _get_stocks()
+        stock_info = next((s for s in stocks if s.get('code') == symbol), {})
+        cp = float(hist['Close'].iloc[-1])
+
+        # Tum analizleri paralel olmayan ama ozlü sekilde calistir
+        def _safe(fn, *args, **kwargs):
+            try: return fn(*args, **kwargs)
+            except Exception as ex: return {'error': str(ex)}
+
+        ind          = _safe(calc_indicators, hist)
+        mtf          = _safe(calc_mtf_signal,       hist)
+        div          = _safe(calc_divergence,        hist)
+        vp           = _safe(calc_volume_profile,    hist)
+        smc          = _safe(calc_smc,               hist)
+        patterns     = _safe(calc_chart_patterns,    hist)
+        fib          = _safe(calc_fibonacci_adv,         hist)
+        pivots       = _safe(calc_pivot_points_adv,      hist)
+        adv          = _safe(calc_advanced_indicators, hist)
+        sr           = _safe(calc_support_resistance, hist)
+        candles      = _safe(calc_candlestick_patterns, hist)
+        backtest     = _safe(calc_signal_backtest,   hist)
+
+        # Composite sinyal sayimi (tüm faz sinyalleri)
+        all_signals = [
+            mtf.get('mtfDirection', 'neutral'),
+            div.get('summary', {}).get('signal', 'neutral'),
+            vp.get('vwapSignal', 'neutral'),
+            smc.get('signal', 'neutral'),
+            patterns.get('signal', 'neutral'),
+            adv.get('summary', {}).get('signal', 'neutral'),
+            pivots.get('bias', 'neutral') if 'bias' in pivots else 'neutral',
+        ]
+        buy_votes  = all_signals.count('buy')
+        sell_votes = all_signals.count('sell')
+        consensus  = ('buy'  if buy_votes > sell_votes
+                      else ('sell' if sell_votes > buy_votes else 'neutral'))
+        confidence = round(max(buy_votes, sell_votes) / len(all_signals) * 100)
+
+        return jsonify(safe_dict({
+            'success':     True,
+            'symbol':      symbol,
+            'name':        BIST100_STOCKS.get(symbol, symbol),
+            'price':       sf(cp),
+            'changePct':   stock_info.get('changePct', 0),
+            'consensus':   consensus,
+            'buyVotes':    buy_votes,
+            'sellVotes':   sell_votes,
+            'neutralVotes': len(all_signals) - buy_votes - sell_votes,
+            'confidence':  confidence,
+            # Faz verileri
+            'indicators':         ind,
+            'mtf':                mtf,
+            'divergence':         div,
+            'volumeProfile':      vp,
+            'smc':                smc,
+            'chartPatterns':      patterns,
+            'fibonacci':          fib,
+            'pivots':             pivots,
+            'advancedIndicators': adv,
+            'supportResistance':  sr,
+            'candlestickPatterns': candles,
+            'backtest':           backtest,
+            'timestamp':          datetime.now().isoformat(),
+        }))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
