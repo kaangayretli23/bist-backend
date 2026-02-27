@@ -6,3 +6,4 @@ pandas
 numpy
 requests
 psycopg2-binary
+pyarrow
