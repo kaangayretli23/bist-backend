@@ -1316,6 +1316,9 @@ function signalBadge(s) {
 // =============================================================================
 // SEARCH
 // =============================================================================
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 let searchTimeout;
 function onSearch(q) {
   clearTimeout(searchTimeout);
@@ -1324,12 +1327,14 @@ function onSearch(q) {
   searchTimeout = setTimeout(async () => {
     const data = await api('/search?q=' + encodeURIComponent(q));
     if (data.results && data.results.length > 0) {
-      dd.innerHTML = data.results.map(r =>
-        `<div class="search-result-item" onclick="goToStock('${r.code}');document.getElementById('searchDropdown').classList.remove('show');document.getElementById('globalSearch').value='';">
-          <span class="search-result-code">${r.code}</span>
-          <span class="search-result-name">${r.name}</span>
-        </div>`
-      ).join('');
+      dd.innerHTML = data.results.map(r => {
+        const code = escHtml(r.code);
+        const name = escHtml(r.name);
+        return `<div class="search-result-item" onclick="goToStock('${code}');document.getElementById('searchDropdown').classList.remove('show');document.getElementById('globalSearch').value='';">
+          <span class="search-result-code">${code}</span>
+          <span class="search-result-name">${name}</span>
+        </div>`;
+      }).join('');
       dd.classList.add('show');
     } else {
       dd.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:13px;">Sonuç bulunamadı</div>';
@@ -1652,8 +1657,10 @@ async function loadSectors(selectId) {
 // =============================================================================
 // STOCK DETAIL
 // =============================================================================
+let _stockDetailSymbol = null; // race condition guard
 async function loadStockDetail(symbol, period) {
   period = period || '1y';
+  _stockDetailSymbol = symbol; // mark current request
   const container = document.getElementById('stockDetailContent');
   container.innerHTML = '<div class="loading"><div class="spinner"></div>Hisse verisi yükleniyor...</div>';
 
@@ -1664,6 +1671,9 @@ async function loadStockDetail(symbol, period) {
     api('/stock/' + symbol + '?period=' + period),
     api('/stock/' + symbol + '/events')
   ]);
+
+  // If user navigated to a different stock while this was loading, discard
+  if (_stockDetailSymbol !== symbol) return;
 
   if (stockData.error && !stockData.success) {
     container.innerHTML = `<div class="empty-state"><div class="icon">❌</div><div>Hata: ${stockData.error}</div></div>`;
@@ -1940,6 +1950,212 @@ async function loadStockDetail(symbol, period) {
 
   // Draw chart
   drawPriceChart(s.chartData, s.code, ind);
+
+  // Faz 2-9 advanced analysis tabs
+  _initAdvancedTabs(symbol);
+}
+
+// =============================================================================
+// FAZ 2-9 ADVANCED ANALYSIS TABS
+// =============================================================================
+let _advTabsLoaded = {};
+
+function _initAdvancedTabs(symbol) {
+  _advTabsLoaded = {}; // reset on new stock
+  const container = document.getElementById('stockDetailContent');
+  const tabSection = document.createElement('div');
+  tabSection.id = 'advAnalysisTabs';
+  tabSection.className = 'card mb-24 fade-in';
+  tabSection.style.cssText = 'margin-top:20px;';
+  tabSection.innerHTML = `
+    <div style="font-weight:700;font-size:14px;margin-bottom:14px;">Gelişmiş Analiz</div>
+    <div class="tabs" id="advTabBar">
+      <button class="tab active" onclick="_loadAdvTab('mtf','${escHtml(symbol)}',this)">Çoklu Zaman Dilimi</button>
+      <button class="tab" onclick="_loadAdvTab('divergence','${escHtml(symbol)}',this)">Diverjans</button>
+      <button class="tab" onclick="_loadAdvTab('volume-profile','${escHtml(symbol)}',this)">Hacim Profili</button>
+      <button class="tab" onclick="_loadAdvTab('smc','${escHtml(symbol)}',this)">Smart Money</button>
+      <button class="tab" onclick="_loadAdvTab('patterns','${escHtml(symbol)}',this)">Formasyonlar</button>
+      <button class="tab" onclick="_loadAdvTab('fibonacci','${escHtml(symbol)}',this)">Fibonacci</button>
+      <button class="tab" onclick="_loadAdvTab('pivots','${escHtml(symbol)}',this)">Pivot</button>
+      <button class="tab" onclick="_loadAdvTab('advanced-indicators','${escHtml(symbol)}',this)">Gelişmiş İnd.</button>
+    </div>
+    <div id="advTabContent"><div class="loading"><div class="spinner"></div>Yükleniyor...</div></div>
+  `;
+  container.appendChild(tabSection);
+  _loadAdvTab('mtf', symbol, document.querySelector('#advTabBar .tab'));
+}
+
+async function _loadAdvTab(endpoint, symbol, btn) {
+  document.querySelectorAll('#advTabBar .tab').forEach(t => t.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  const content = document.getElementById('advTabContent');
+  if (!content) return;
+
+  if (_advTabsLoaded[endpoint]) { content.innerHTML = _advTabsLoaded[endpoint]; return; }
+
+  content.innerHTML = '<div class="loading"><div class="spinner"></div>Hesaplanıyor...</div>';
+  const data = await api('/stock/' + encodeURIComponent(symbol) + '/' + endpoint);
+  if (data.error) { content.innerHTML = `<div class="empty-state" style="padding:20px;"><div class="icon">⚠️</div><div>${escHtml(data.error)}</div></div>`; return; }
+
+  let html = '';
+  if (endpoint === 'mtf') html = _renderMtf(data);
+  else if (endpoint === 'divergence') html = _renderDivergence(data);
+  else if (endpoint === 'volume-profile') html = _renderVolumeProfile(data);
+  else if (endpoint === 'smc') html = _renderSmc(data);
+  else if (endpoint === 'patterns') html = _renderPatterns(data);
+  else if (endpoint === 'fibonacci') html = _renderFibonacci(data);
+  else if (endpoint === 'pivots') html = _renderPivots(data);
+  else if (endpoint === 'advanced-indicators') html = _renderAdvIndicators(data);
+  else html = `<pre style="font-size:11px;overflow:auto;">${escHtml(JSON.stringify(data,null,2))}</pre>`;
+
+  _advTabsLoaded[endpoint] = html;
+  content.innerHTML = html;
+}
+
+function _advKv(label, value, color) {
+  const c = color ? `color:${color};` : '';
+  return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">
+    <span style="color:var(--text-muted);">${label}</span>
+    <span class="td-mono" style="${c}font-weight:600;">${value}</span>
+  </div>`;
+}
+
+function _renderMtf(d) {
+  const frames = d.timeframes || {};
+  const keys = Object.keys(frames);
+  if (!keys.length) return '<div class="empty-state">Veri yok</div>';
+  return keys.map(tf => {
+    const f = frames[tf];
+    const trendColor = f.trend === 'Yukari' ? 'var(--green)' : f.trend === 'Asagi' ? 'var(--red)' : 'var(--text-muted)';
+    return `<div class="card mb-12" style="padding:12px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:8px;">${tf.toUpperCase()}</div>
+      ${_advKv('Trend', f.trend || '-', trendColor)}
+      ${_advKv('RSI', f.rsi ?? '-', parseFloat(f.rsi)<30?'var(--green)':parseFloat(f.rsi)>70?'var(--red)':'')}
+      ${_advKv('MACD Sinyal', f.macdSignal || '-', f.macdSignal==='buy'?'var(--green)':f.macdSignal==='sell'?'var(--red)':'')}
+      ${_advKv('Fiyat / BB', f.priceVsBB || '-')}
+    </div>`;
+  }).join('') + (d.summary ? `<div class="card" style="padding:12px;border-left:3px solid var(--accent);">${_advKv('MTF Özeti', d.summary.overallTrend || '-')}${_advKv('Uyum Skoru', d.summary.alignmentScore ?? '-')}</div>` : '');
+}
+
+function _renderDivergence(d) {
+  const divs = d.divergences || [];
+  if (!divs.length) return '<div class="empty-state" style="padding:20px;">Aktif diverjans sinyali yok</div>';
+  return divs.map(div => {
+    const color = div.type && div.type.toLowerCase().includes('bullish') ? 'var(--green)' : 'var(--red)';
+    return `<div class="card mb-12" style="padding:12px;border-left:3px solid ${color};">
+      ${_advKv('Tip', escHtml(div.type || '-'), color)}
+      ${_advKv('İndikatör', escHtml(div.indicator || '-'))}
+      ${_advKv('Güç', escHtml(div.strength || '-'))}
+      ${div.description ? `<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">${escHtml(div.description)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function _renderVolumeProfile(d) {
+  const vp = d.volumeProfile || d;
+  return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    <div class="card" style="padding:12px;">
+      <div style="font-weight:700;font-size:12px;margin-bottom:8px;">VWAP & POC</div>
+      ${_advKv('VWAP', fmtPrice(vp.vwap) + ' ₺')}
+      ${_advKv('POC (En Yüksek Hacim)', fmtPrice(vp.poc) + ' ₺')}
+      ${_advKv('Değer Alanı Üst (VAH)', fmtPrice(vp.vah) + ' ₺')}
+      ${_advKv('Değer Alanı Alt (VAL)', fmtPrice(vp.val) + ' ₺')}
+    </div>
+    <div class="card" style="padding:12px;">
+      <div style="font-weight:700;font-size:12px;margin-bottom:8px;">Hacim Anomalisi</div>
+      ${_advKv('Anomali', vp.volumeAnomaly ? 'Var ⚠️' : 'Yok', vp.volumeAnomaly ? 'var(--yellow)' : '')}
+      ${_advKv('Fiyat vs VWAP', vp.priceVsVwap || '-', vp.priceVsVwap === 'above' ? 'var(--green)' : vp.priceVsVwap === 'below' ? 'var(--red)' : '')}
+      ${_advKv('Değer Alanında mı?', vp.inValueArea ? 'Evet' : 'Hayır')}
+    </div>
+  </div>`;
+}
+
+function _renderSmc(d) {
+  const smc = d.smc || d;
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">';
+  const fvgs = smc.fairValueGaps || [];
+  const obs = smc.orderBlocks || [];
+  html += `<div class="card" style="padding:12px;"><div style="font-weight:700;font-size:12px;margin-bottom:8px;">Fair Value Gaps (${fvgs.length})</div>`;
+  if (fvgs.length) fvgs.slice(-3).forEach(g => {
+    const c = g.type === 'bullish' ? 'var(--green)' : 'var(--red)';
+    html += _advKv(escHtml(g.type || '-'), `${fmtPrice(g.low)} - ${fmtPrice(g.high)} ₺`, c);
+  }); else html += '<div style="color:var(--text-muted);font-size:12px;">Aktif FVG yok</div>';
+  html += '</div>';
+  html += `<div class="card" style="padding:12px;"><div style="font-weight:700;font-size:12px;margin-bottom:8px;">Order Blocks (${obs.length})</div>`;
+  if (obs.length) obs.slice(-3).forEach(o => {
+    const c = o.type === 'bullish' ? 'var(--green)' : 'var(--red)';
+    html += _advKv(escHtml(o.type || '-'), `${fmtPrice(o.low)} - ${fmtPrice(o.high)} ₺`, c);
+  }); else html += '<div style="color:var(--text-muted);font-size:12px;">Aktif OB yok</div>';
+  html += '</div></div>';
+  const bias = smc.marketBias;
+  if (bias) html += `<div class="card mt-12" style="padding:12px;margin-top:12px;border-left:3px solid ${bias==='bullish'?'var(--green)':bias==='bearish'?'var(--red)':'var(--text-muted)'};">${_advKv('Piyasa Yönelimi', escHtml(bias), bias==='bullish'?'var(--green)':bias==='bearish'?'var(--red)':'')}${smc.bos?_advKv('BOS', escHtml(smc.bos)):''}${smc.choch?_advKv('CHoCH', escHtml(smc.choch)):''}${smc.description?`<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">${escHtml(smc.description)}</div>`:''}</div>`;
+  return html;
+}
+
+function _renderPatterns(d) {
+  const pats = d.patterns || [];
+  if (!pats.length) return '<div class="empty-state" style="padding:20px;">Aktif formasyon bulunamadı</div>';
+  return pats.map(p => {
+    const color = p.type === 'bullish' ? 'var(--green)' : p.type === 'bearish' ? 'var(--red)' : 'var(--yellow)';
+    return `<div class="card mb-12" style="padding:12px;border-left:3px solid ${color};">
+      ${_advKv('Formasyon', escHtml(p.name || '-'), color)}
+      ${_advKv('Yön', escHtml(p.type || '-'), color)}
+      ${p.target ? _advKv('Hedef Fiyat', fmtPrice(p.target) + ' ₺') : ''}
+      ${p.completion !== undefined ? _advKv('Tamamlanma', Math.round(p.completion * 100) + '%') : ''}
+      ${p.description ? `<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">${escHtml(p.description)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function _renderFibonacci(d) {
+  const fib = d.fibonacci || d;
+  const levels = fib.levels || {};
+  let html = '<div class="card" style="padding:12px;"><div style="font-weight:700;font-size:12px;margin-bottom:8px;">Fibonacci Seviyeleri</div>';
+  Object.entries(levels).forEach(([k, v]) => { html += _advKv(k, fmtPrice(v) + ' ₺'); });
+  html += '</div>';
+  if (fib.goldenPocket) html += `<div class="card mt-12" style="padding:12px;margin-top:12px;border-left:3px solid var(--yellow);">${_advKv('Golden Pocket Alt', fmtPrice(fib.goldenPocket.low) + ' ₺', 'var(--yellow)')}${_advKv('Golden Pocket Üst', fmtPrice(fib.goldenPocket.high) + ' ₺', 'var(--yellow)')}</div>`;
+  return html;
+}
+
+function _renderPivots(d) {
+  const pv = d.pivots || d;
+  return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+    ${['R3','R2','R1'].map(k => `<div class="card" style="padding:10px;text-align:center;border-left:3px solid var(--red);">
+      <div style="font-size:10px;color:var(--red);font-weight:700;">${k}</div>
+      <div class="td-mono" style="font-size:14px;font-weight:800;">${fmtPrice(pv[k] ?? pv[k.toLowerCase()]) || '-'} ₺</div>
+    </div>`).join('')}
+    <div class="card" style="padding:10px;text-align:center;border-left:3px solid var(--accent);grid-column:2;">
+      <div style="font-size:10px;color:var(--accent);font-weight:700;">PIVOT</div>
+      <div class="td-mono" style="font-size:14px;font-weight:800;">${fmtPrice(pv.PP ?? pv.pp) || '-'} ₺</div>
+    </div>
+    ${['S1','S2','S3'].map(k => `<div class="card" style="padding:10px;text-align:center;border-left:3px solid var(--green);">
+      <div style="font-size:10px;color:var(--green);font-weight:700;">${k}</div>
+      <div class="td-mono" style="font-size:14px;font-weight:800;">${fmtPrice(pv[k] ?? pv[k.toLowerCase()]) || '-'} ₺</div>
+    </div>`).join('')}
+  </div>`;
+}
+
+function _renderAdvIndicators(d) {
+  const ind = d.indicators || d;
+  const ich = ind.ichimoku || {};
+  const sto = ind.stochastic || {};
+  const wpr = ind.williamsR;
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">';
+  html += `<div class="card" style="padding:12px;"><div style="font-weight:700;font-size:12px;margin-bottom:8px;">Ichimoku</div>
+    ${_advKv('Bulut Rengi', escHtml(ich.cloudColor || '-'), ich.cloudColor==='green'?'var(--green)':ich.cloudColor==='red'?'var(--red)':'')}
+    ${_advKv('Fiyat vs Bulut', escHtml(ich.priceVsCloud || '-'), ich.priceVsCloud==='above'?'var(--green)':ich.priceVsCloud==='below'?'var(--red)':'')}
+    ${_advKv('TK Sinyal', escHtml(ich.tkSignal || '-'), ich.tkSignal==='bullish'?'var(--green)':ich.tkSignal==='bearish'?'var(--red)':'')}
+    ${_advKv('Tenkan', fmtPrice(ich.tenkan) || '-')}
+    ${_advKv('Kijun', fmtPrice(ich.kijun) || '-')}
+  </div>`;
+  html += `<div class="card" style="padding:12px;"><div style="font-weight:700;font-size:12px;margin-bottom:8px;">Stokastik & Williams</div>
+    ${_advKv('Stokastik %K', sto.k !== undefined ? sto.k.toFixed(1) : '-', parseFloat(sto.k)<20?'var(--green)':parseFloat(sto.k)>80?'var(--red)':'')}
+    ${_advKv('Stokastik %D', sto.d !== undefined ? sto.d.toFixed(1) : '-')}
+    ${_advKv('Sto. Sinyal', escHtml(sto.signal || '-'), sto.signal==='oversold'?'var(--green)':sto.signal==='overbought'?'var(--red)':'')}
+    ${_advKv('Williams %R', wpr !== undefined ? wpr.toFixed(1) : '-', parseFloat(wpr)<-80?'var(--green)':parseFloat(wpr)>-20?'var(--red)':'')}
+  </div>`;
+  html += '</div>';
+  return html;
 }
 
 function loadStockPeriod(symbol, period) {
@@ -3217,10 +3433,10 @@ async function runBacktest() {
   const symbol = document.getElementById('btSymbol').value.toUpperCase();
   const strategy = document.getElementById('btStrategy').value;
   const period = document.getElementById('btPeriod').value;
-  const p1 = parseFloat(document.getElementById('btParam1').value);
-  const p2 = parseFloat(document.getElementById('btParam2').value);
-  const commission = parseFloat(document.getElementById('btCommission').value) / 100;
-  const capital = parseFloat(document.getElementById('btCapital').value);
+  const p1 = parseFloat(document.getElementById('btParam1').value) || 0;
+  const p2 = parseFloat(document.getElementById('btParam2').value) || 0;
+  const commission = (parseFloat(document.getElementById('btCommission').value) || 0) / 100;
+  const capital = parseFloat(document.getElementById('btCapital').value) || 10000;
 
   if (!symbol) { alert('Hisse kodu girin'); return; }
 
@@ -3595,6 +3811,7 @@ async function loadSignals() {
   if (!signals.length) { container.innerHTML = '<div class="card">Sinyal bulunamadı.</div>'; return; }
 
   // Market regime banner
+  let html = '';
   if (data.marketRegime) {
     html = renderMarketRegime(data.marketRegime);
     html += `<div style="margin-top:12px;font-size:12px;color:var(--text-muted);margin-bottom:12px;">Zaman Dilimi: <b>${tfLabels[tf] || tf}</b> | ${signals.length} sinyal bulundu</div>`;
