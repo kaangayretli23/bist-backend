@@ -3836,12 +3836,14 @@ def calc_sector_relative_strength():
 # FEATURE 6: FUNDAMENTAL ANALYSIS (F/K, PD/DD) - Is Yatirim Scraping
 # =====================================================================
 _fundamental_cache = {}
+_fundamental_cache_lock = threading.Lock()
 
 def fetch_fundamental_data(symbol):
     """Is Yatirim'dan temel analiz verilerini cek (F/K, PD/DD vs.)"""
     try:
         # Cache kontrol (1 saat)
-        cached = _fundamental_cache.get(symbol)
+        with _fundamental_cache_lock:
+            cached = _fundamental_cache.get(symbol)
         if cached and time.time() - cached['ts'] < 3600:
             return cached['data']
 
@@ -3855,7 +3857,8 @@ def fetch_fundamental_data(symbol):
                 rows = data.get('value', [])
                 if rows:
                     result = _parse_fundamental_data(rows, symbol)
-                    _fundamental_cache[symbol] = {'data': result, 'ts': time.time()}
+                    with _fundamental_cache_lock:
+                        _fundamental_cache[symbol] = {'data': result, 'ts': time.time()}
                     return result
         except Exception as e:
             print(f"  [FUNDAMENTAL] {symbol} Is Yatirim hata: {e}")
@@ -3877,7 +3880,8 @@ def fetch_fundamental_data(symbol):
                     'profitMargin': sf(info.get('profitMargins', 0) * 100) if info.get('profitMargins') else 0,
                     'source': 'yfinance',
                 }
-                _fundamental_cache[symbol] = {'data': result, 'ts': time.time()}
+                with _fundamental_cache_lock:
+                    _fundamental_cache[symbol] = {'data': result, 'ts': time.time()}
                 return result
             except Exception as e:
                 print(f"  [FUNDAMENTAL] {symbol} yfinance hata: {e}")
@@ -4572,23 +4576,26 @@ def test_fetch(symbol):
 # --- index.html bellekte gzipli cache ---
 # Not: _index_cache adı endeks verisi cache'i ile çakışıyor — farklı isim kullan
 _html_page_cache = {'raw': None, 'gz': None, 'mtime': 0}
+_html_page_cache_lock = threading.Lock()
 
 def _load_index_html():
     """index.html'i diskten oku, gziple, bellekte tut"""
     fpath = os.path.join(BASE_DIR, 'index.html')
     try:
         mt = os.path.getmtime(fpath)
-        if _html_page_cache['raw'] and _html_page_cache['mtime'] == mt:
-            return True
+        with _html_page_cache_lock:
+            if _html_page_cache['raw'] and _html_page_cache['mtime'] == mt:
+                return True
         with open(fpath, 'rb') as f:
             raw = f.read()
         buf = io.BytesIO()
         with gzip.GzipFile(fileobj=buf, mode='wb', compresslevel=6) as gz:
             gz.write(raw)
-        _html_page_cache['raw'] = raw
-        _html_page_cache['gz'] = buf.getvalue()
-        _html_page_cache['mtime'] = mt
-        print(f"[INDEX] Cached: {len(raw)} bytes -> gzip {len(_html_page_cache['gz'])} bytes")
+        with _html_page_cache_lock:
+            _html_page_cache['raw'] = raw
+            _html_page_cache['gz'] = buf.getvalue()
+            _html_page_cache['mtime'] = mt
+        print(f"[INDEX] Cached: {len(raw)} bytes -> gzip {len(buf.getvalue())} bytes")
         return True
     except Exception as e:
         print(f"[INDEX] Load error: {e}")
@@ -4598,16 +4605,22 @@ _load_index_html()
 
 @app.route('/')
 def index():
-    if not _html_page_cache['raw']:
+    with _html_page_cache_lock:
+        raw = _html_page_cache['raw']
+        gz = _html_page_cache['gz']
+    if not raw:
         if not _load_index_html():
             return jsonify({'error':'index.html bulunamadi'}), 500
+        with _html_page_cache_lock:
+            raw = _html_page_cache['raw']
+            gz = _html_page_cache['gz']
     # gzip destegi varsa sikistirilmis gonder
     ae = request.headers.get('Accept-Encoding', '')
-    if 'gzip' in ae and _html_page_cache['gz']:
-        resp = make_response(_html_page_cache['gz'])
+    if 'gzip' in ae and gz:
+        resp = make_response(gz)
         resp.headers['Content-Encoding'] = 'gzip'
     else:
-        resp = make_response(_html_page_cache['raw'])
+        resp = make_response(raw)
     resp.headers['Content-Type'] = 'text/html; charset=utf-8'
     resp.headers['Cache-Control'] = 'public, max-age=300'
     resp.headers['Vary'] = 'Accept-Encoding'
@@ -6403,11 +6416,13 @@ def _auto_signal_check():
 
 # Telegram bildirim thread'ini baslat
 _telegram_thread_started = False
+_telegram_thread_lock = threading.Lock()
 def _start_telegram_thread():
     global _telegram_thread_started
-    if _telegram_thread_started:
-        return
-    _telegram_thread_started = True
+    with _telegram_thread_lock:
+        if _telegram_thread_started:
+            return
+        _telegram_thread_started = True
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         t = threading.Thread(target=_auto_signal_check, daemon=True)
         t.start()
@@ -6619,10 +6634,8 @@ def check_alerts():
 
 
 # =====================================================================
-# TELEGRAM BILDIRIM
+# TELEGRAM BILDIRIM (per-user alerts)
 # =====================================================================
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-
 def _send_telegram_alerts(user_id, triggered_alerts):
     """Tetiklenen uyarilari Telegram'a gonder"""
     if not TELEGRAM_BOT_TOKEN:
