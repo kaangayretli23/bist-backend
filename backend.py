@@ -430,6 +430,8 @@ def _get_indices():
 import urllib.request
 import urllib.error
 import requests as req_lib
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 IS_YATIRIM_BASE = "https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/HisseTekil"
 IS_YATIRIM_HEADERS = {
@@ -453,7 +455,7 @@ def _fetch_isyatirim_df(symbol, days=365):
         last_err = None
         for http_attempt in range(2):
             try:
-                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=10)
+                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=10, verify=False)
                 resp.raise_for_status()
                 break
             except Exception as http_e:
@@ -3903,7 +3905,7 @@ def fetch_fundamental_data(symbol):
         headers = IS_YATIRIM_HEADERS.copy()
 
         try:
-            resp = req_lib.get(url, headers=headers, timeout=10)
+            resp = req_lib.get(url, headers=headers, timeout=10, verify=False)
             if resp.status_code == 200:
                 data = resp.json()
                 rows = data.get('value', [])
@@ -4517,11 +4519,26 @@ def prepare_chart_data(hist):
 # =====================================================================
 @app.route('/api/health')
 def health():
+    import shutil
     now = time.time()
     with _lock:
         fresh = [k for k, v in _stock_cache.items() if now - v['ts'] < CACHE_TTL]
         stale = [k for k, v in _stock_cache.items() if CACHE_TTL <= now - v['ts'] < CACHE_STALE_TTL]
     hist_ready = sum(1 for s in BIST100_STOCKS if _cget_hist(f"{s}_1y") is not None)
+    disk_writable = os.access(_DATA_DIR, os.W_OK)
+    parquet_files = [f for f in os.listdir(PARQUET_CACHE_DIR) if f.endswith('.parquet')] if os.path.exists(PARQUET_CACHE_DIR) else []
+    try:
+        disk_usage = shutil.disk_usage(_DATA_DIR)
+        disk_info = {
+            'path': _DATA_DIR,
+            'writable': disk_writable,
+            'parquetFiles': len(parquet_files),
+            'totalMB': round(disk_usage.total / 1024**2),
+            'usedMB': round(disk_usage.used / 1024**2),
+            'freeMB': round(disk_usage.free / 1024**2),
+        }
+    except Exception as e:
+        disk_info = {'path': _DATA_DIR, 'writable': disk_writable, 'error': str(e)}
     return jsonify({
         'status': 'ok', 'version': '7.0.0', 'yf': YF_OK,
         'time': datetime.now().isoformat(),
@@ -4537,6 +4554,7 @@ def health():
         'cachedIndices': list(_index_cache.keys()),
         'totalDefined': len(BIST100_STOCKS),
         'missingStocks': [s for s in BIST100_STOCKS.keys() if s not in _stock_cache],
+        'disk': disk_info,
     })
 
 @app.route('/api/debug')
@@ -5018,7 +5036,7 @@ def stock_kap(symbol):
         # Fallback: Is Yatirim haberler
         try:
             url2 = f"https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/HaberlerHisseTekil?hession={symbol}&startdate={datetime.now().strftime('%d-%m-%Y')}&enddate={datetime.now().strftime('%d-%m-%Y')}"
-            resp2 = req_lib.get(url2, headers=IS_YATIRIM_HEADERS, timeout=10)
+            resp2 = req_lib.get(url2, headers=IS_YATIRIM_HEADERS, timeout=10, verify=False)
             if resp2.status_code == 200:
                 data2 = resp2.json()
                 news = data2.get('value', [])
