@@ -430,6 +430,8 @@ def _get_indices():
 import urllib.request
 import urllib.error
 import requests as req_lib
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 IS_YATIRIM_BASE = "https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/HisseTekil"
 IS_YATIRIM_HEADERS = {
@@ -453,7 +455,7 @@ def _fetch_isyatirim_df(symbol, days=365):
         last_err = None
         for http_attempt in range(2):
             try:
-                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=10)
+                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=10, verify=False)
                 resp.raise_for_status()
                 break
             except Exception as http_e:
@@ -3903,7 +3905,7 @@ def fetch_fundamental_data(symbol):
         headers = IS_YATIRIM_HEADERS.copy()
 
         try:
-            resp = req_lib.get(url, headers=headers, timeout=10)
+            resp = req_lib.get(url, headers=headers, timeout=10, verify=False)
             if resp.status_code == 200:
                 data = resp.json()
                 rows = data.get('value', [])
@@ -5018,7 +5020,7 @@ def stock_kap(symbol):
         # Fallback: Is Yatirim haberler
         try:
             url2 = f"https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/HaberlerHisseTekil?hession={symbol}&startdate={datetime.now().strftime('%d-%m-%Y')}&enddate={datetime.now().strftime('%d-%m-%Y')}"
-            resp2 = req_lib.get(url2, headers=IS_YATIRIM_HEADERS, timeout=10)
+            resp2 = req_lib.get(url2, headers=IS_YATIRIM_HEADERS, timeout=10, verify=False)
             if resp2.status_code == 200:
                 data2 = resp2.json()
                 news = data2.get('value', [])
