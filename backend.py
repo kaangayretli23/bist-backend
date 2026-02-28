@@ -30,8 +30,13 @@ DATABASE_URL = os.environ.get('DATABASE_URL', '')
 USE_POSTGRES = bool(DATABASE_URL)
 
 # SQLite fallback
-DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'bist.db'))
-os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
+_DATA_DIR = os.environ.get('DATA_DIR', BASE_DIR)
+os.makedirs(_DATA_DIR, exist_ok=True)
+DB_PATH = os.environ.get('DB_PATH', os.path.join(_DATA_DIR, 'bist.db'))
+
+# Parquet cache dizini (restart sonrasi tarihsel veri diskten yuklenir)
+PARQUET_CACHE_DIR = os.path.join(_DATA_DIR, 'hist_cache')
+os.makedirs(PARQUET_CACHE_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bist-pro-secret-' + str(hash(BASE_DIR)))
@@ -364,10 +369,22 @@ CACHE_TTL = 600
 CACHE_STALE_TTL = 1800  # Stale data served up to 30 min (prevents stocks from disappearing on fetch failure)
 HIST_CACHE_TTL = 3600   # Tarihsel veri 1 saat gecerli (gun ici degismez)
 
+def _is_market_open():
+    """BIST piyasasi acik mi? (UTC+3, Haftaici 10:00-18:15)"""
+    now_tr = datetime.utcnow() + timedelta(hours=3)
+    if now_tr.weekday() >= 5:  # Cumartesi=5, Pazar=6
+        return False
+    t = now_tr.hour * 60 + now_tr.minute
+    return 10 * 60 <= t < 18 * 60 + 15
+
+def _effective_ttl():
+    """Piyasa kapali ise TTL'yi uzat (sabah acilisina kadar gecerli say)"""
+    return CACHE_TTL if _is_market_open() else CACHE_STALE_TTL * 12  # ~6 saat
+
 def _cget(store, key):
     with _lock:
         item = store.get(key)
-        if item and time.time() - item['ts'] < CACHE_TTL:
+        if item and time.time() - item['ts'] < _effective_ttl():
             return item['data']
     return None
 
@@ -1008,15 +1025,43 @@ def _auto_check_all_alerts():
     except Exception as e:
         print(f"[ALERT-AUTO] Hata: {e}")
 
+def _parquet_load(sym):
+    """Parquet disk cache'den yukle (restart sonrasi hizli baslatma)"""
+    try:
+        pfile = os.path.join(PARQUET_CACHE_DIR, f"{sym}_1y.parquet")
+        if os.path.exists(pfile) and time.time() - os.path.getmtime(pfile) < 86400:
+            df = pd.read_parquet(pfile)
+            if len(df) >= 30:
+                return df
+    except Exception:
+        pass
+    return None
+
+def _parquet_save(sym, df):
+    """DataFrame'i Parquet olarak diske kaydet"""
+    try:
+        pfile = os.path.join(PARQUET_CACHE_DIR, f"{sym}_1y.parquet")
+        df.to_parquet(pfile)
+    except Exception:
+        pass
+
 def _preload_one_hist(sym):
     """Tek hisse icin tarihsel veriyi cek ve cache'le"""
     try:
+        # 1. Bellek cache
         cached = _cget_hist(f"{sym}_1y")
         if cached is not None:
             return sym, True
+        # 2. Parquet disk cache (restart sonrasi)
+        df = _parquet_load(sym)
+        if df is not None:
+            _cset(_hist_cache, f"{sym}_1y", df)
+            return sym, True
+        # 3. API'den cek
         df = _fetch_hist_df(sym, '1y')
         if df is not None and len(df) >= 30:
             _cset(_hist_cache, f"{sym}_1y", df)
+            _parquet_save(sym, df)
             return sym, True
     except Exception as e:
         print(f"  [HIST] {sym}: {e}")
@@ -1026,13 +1071,20 @@ def _preload_hist_data():
     """Tum hisselerin tarihsel verisini paralel on-yukle"""
     # XU100 endeks verisini de yukle (market regime icin)
     if _cget_hist("XU100_1y") is None:
-        try:
-            xu_df = _fetch_isyatirim_df("XU100", 365)
-            if xu_df is not None and len(xu_df) >= 30:
-                _cset(_hist_cache, "XU100_1y", xu_df)
-                print("[HIST-PRELOAD] XU100 endeks verisi yuklendi")
-        except Exception as e:
-            print(f"[HIST-PRELOAD] XU100 hata: {e}")
+        # Once Parquet cache dene
+        xu_parquet = _parquet_load("XU100")
+        if xu_parquet is not None:
+            _cset(_hist_cache, "XU100_1y", xu_parquet)
+            print("[HIST-PRELOAD] XU100 Parquet cache'den yuklendi")
+        else:
+            try:
+                xu_df = _fetch_isyatirim_df("XU100", 365)
+                if xu_df is not None and len(xu_df) >= 30:
+                    _cset(_hist_cache, "XU100_1y", xu_df)
+                    _parquet_save("XU100", xu_df)
+                    print("[HIST-PRELOAD] XU100 endeks verisi yuklendi")
+            except Exception as e:
+                print(f"[HIST-PRELOAD] XU100 hata: {e}")
 
     symbols = list(BIST100_STOCKS.keys())
     # Sadece cache'de olmayanlari cek
