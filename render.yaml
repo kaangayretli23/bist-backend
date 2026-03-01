@@ -7,9 +7,3 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-      - key: DATA_DIR
-        value: /data
-    disk:
-      name: bist-data
-      mountPath: /data
-      sizeGB: 1
