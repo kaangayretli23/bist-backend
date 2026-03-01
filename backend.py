@@ -141,6 +141,11 @@ def init_db():
                 cooldown_until TEXT,
                 created_at TIMESTAMP DEFAULT NOW()
             );
+            CREATE TABLE IF NOT EXISTS market_cache (
+                cache_key TEXT PRIMARY KEY,
+                data      TEXT NOT NULL,
+                saved_at  DOUBLE PRECISION NOT NULL
+            );
         ''')
         db.commit()
         db.close()
@@ -186,12 +191,135 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );
+            CREATE TABLE IF NOT EXISTS market_cache (
+                cache_key TEXT PRIMARY KEY,
+                data      TEXT NOT NULL,
+                saved_at  REAL NOT NULL
+            );
         ''')
         db.commit()
         db.close()
         print("[DB] SQLite hazir:", DB_PATH)
 
 init_db()
+
+# =====================================================================
+# MARKET CACHE — DB'ye snapshot kaydet / yükle (restart sonrası preload)
+# =====================================================================
+
+def _db_upsert_cache(key, data, ts):
+    """market_cache tablosuna yaz (Postgres ve SQLite uyumlu)"""
+    try:
+        if USE_POSTGRES and PG_OK:
+            # PgConnection.execute() ? → %s dönüşümü yapar
+            db = get_db()
+            db.execute(
+                "INSERT INTO market_cache (cache_key, data, saved_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (cache_key) DO UPDATE SET data=EXCLUDED.data, saved_at=EXCLUDED.saved_at",
+                (key, data, ts)
+            )
+            db.commit()
+            db.close()
+        else:
+            db = sqlite3.connect(DB_PATH)
+            db.execute(
+                "INSERT OR REPLACE INTO market_cache (cache_key, data, saved_at) VALUES (?,?,?)",
+                (key, data, ts)
+            )
+            db.commit()
+            db.close()
+    except Exception as e:
+        print(f"[CACHE-SAVE] DB yazma hatası: {e}")
+
+def _db_get_cache(key):
+    """market_cache'den oku → (data, saved_at) tuple veya None"""
+    try:
+        db = get_db()
+        row = db.execute(
+            "SELECT data, saved_at FROM market_cache WHERE cache_key=?", (key,)
+        ).fetchone()
+        db.close()
+        if row:
+            return row['data'], row['saved_at']
+        return None
+    except Exception:
+        return None
+
+def _db_save_market_snapshot():
+    """Her load cycle sonunda fiyat + endeks + tarihsel veriyi DB'ye kaydet"""
+    import gzip as _gz, base64 as _b64
+    try:
+        with _lock:
+            stocks_snap = {k: v for k, v in _stock_cache.items()}
+            indices_snap = {k: v for k, v in _index_cache.items()}
+
+        price_payload = json.dumps({'stocks': stocks_snap, 'indices': indices_snap})
+
+        # Tarihsel veri (gzip sıkıştırmalı)
+        with _lock:
+            hist_keys = list(_hist_cache.keys())
+        hist_payload = {}
+        for hk in hist_keys:
+            df = _cget_hist(hk)
+            if df is not None:
+                try:
+                    raw = df.to_json(orient='split')
+                    compressed = _b64.b64encode(_gz.compress(raw.encode())).decode()
+                    hist_payload[hk] = compressed
+                except Exception:
+                    pass
+        hist_data = json.dumps(hist_payload)
+
+        now = time.time()
+        _db_upsert_cache('price_snapshot', price_payload, now)
+        _db_upsert_cache('hist_snapshot', hist_data, now)
+        print(f"[CACHE-SAVE] {len(stocks_snap)} hisse, {len(hist_payload)} tarihsel veri kaydedildi")
+    except Exception as e:
+        print(f"[CACHE-SAVE] Hata: {e}")
+
+def _db_load_market_snapshot():
+    """Cold-start: DB snapshot'ından in-memory cache'i hızla doldur"""
+    import gzip as _gz, base64 as _b64
+    try:
+        price_row = _db_get_cache('price_snapshot')
+        if price_row:
+            payload, saved_at = price_row
+            age = time.time() - float(saved_at)
+            if age < CACHE_STALE_TTL:  # 30 dakikadan eskiyse yükleme
+                snapshot = json.loads(payload)
+                now = time.time()
+                with _lock:
+                    for k, v in snapshot.get('stocks', {}).items():
+                        _stock_cache[k] = {'data': v['data'], 'ts': now}
+                    for k, v in snapshot.get('indices', {}).items():
+                        _index_cache[k] = {'data': v['data'], 'ts': now}
+                print(f"[CACHE-LOAD] {len(snapshot.get('stocks',{}))} hisse, "
+                      f"{len(snapshot.get('indices',{}))} endeks DB'den yüklendi (yaş: {int(age)}s)")
+            else:
+                print(f"[CACHE-LOAD] Snapshot çok eski ({int(age)}s), atlanıyor")
+    except Exception as e:
+        print(f"[CACHE-LOAD] Fiyat snapshot hatası: {e}")
+
+    try:
+        hist_row = _db_get_cache('hist_snapshot')
+        if hist_row:
+            payload, saved_at = hist_row
+            age = time.time() - float(saved_at)
+            if age < HIST_CACHE_TTL:  # 1 saatten eskiyse yükleme
+                hist_payload = json.loads(payload)
+                loaded = 0
+                for hk, compressed in hist_payload.items():
+                    try:
+                        raw = _gz.decompress(_b64.b64decode(compressed)).decode()
+                        df = pd.read_json(raw, orient='split')
+                        if len(df) >= 10:
+                            _cset(_hist_cache, hk, df)
+                            loaded += 1
+                    except Exception:
+                        pass
+                print(f"[CACHE-LOAD] {loaded} tarihsel veri DB'den yüklendi (yaş: {int(age)}s)")
+    except Exception as e:
+        print(f"[CACHE-LOAD] Tarihsel snapshot hatası: {e}")
 
 def hash_password(pw):
     return hashlib.sha256((pw + app.secret_key).encode()).hexdigest()
@@ -940,6 +1068,9 @@ def _background_loop():
             # === FAZE 5: Tarihsel veri on-yukleme (ayri thread - ana donguyu BLOKLAMAZ) ===
             threading.Thread(target=_preload_hist_data, daemon=True).start()
 
+            # === FAZE 5b: DB snapshot kaydet (restart sonrası hızlı preload için) ===
+            threading.Thread(target=_db_save_market_snapshot, daemon=True).start()
+
             # === FAZE 6: Otomatik alert kontrolu (cooldown destekli) ===
             _auto_check_all_alerts()
 
@@ -1062,6 +1193,8 @@ def _ensure_loader():
     global _loader_started
     if _loader_started: return
     _loader_started = True
+    # Cold-start: DB snapshot'ından cache'i önceden doldur (kullanıcı anında veri görür)
+    _db_load_market_snapshot()
     print("[LOADER] Thread baslatiliyor (before_request)")
     t = threading.Thread(target=_background_loop, daemon=True)
     t.start()
