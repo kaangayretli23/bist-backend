@@ -7,13 +7,3 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-      - key: DATA_DIR
-        value: /data
-    # NOT: Render'da disk kullanımı FREE plan'da desteklenmiyor.
-    # Disk (Persistent Storage) için en az Starter plan gerekli → $7/ay'dan başlıyor.
-    # Free plan'da bu blok hata verir; free kalacaksa disk bloğunu kaldır,
-    # backend otomatik olarak BASE_DIR'a (proje klasörü) fallback yapar.
-    disk:
-      name: bist-data
-      mountPath: /data
-      sizeGB: 1
