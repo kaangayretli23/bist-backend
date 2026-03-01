@@ -31,7 +31,16 @@ USE_POSTGRES = bool(DATABASE_URL)
 
 # SQLite fallback
 _DATA_DIR = os.environ.get('DATA_DIR', BASE_DIR)
-os.makedirs(_DATA_DIR, exist_ok=True)
+try:
+    os.makedirs(_DATA_DIR, exist_ok=True)
+    # Yazma testi - disk mount edilmemisse PermissionError verir
+    _test = os.path.join(_DATA_DIR, '.write_test')
+    with open(_test, 'w') as _f:
+        _f.write('ok')
+    os.remove(_test)
+except (PermissionError, OSError):
+    _DATA_DIR = BASE_DIR
+    os.makedirs(_DATA_DIR, exist_ok=True)
 DB_PATH = os.environ.get('DB_PATH', os.path.join(_DATA_DIR, 'bist.db'))
 
 # Parquet cache dizini (restart sonrasi tarihsel veri diskten yuklenir)
