@@ -4416,8 +4416,9 @@ def calc_trade_plan(hist, indicators=None):
                 buy_reasons.append(f'Pivot S1 ({sf(s1)} TL) seviyesinden alis')
                 buy_strategy = 'pivot_alis'
 
-            # Giris fiyati mevcut fiyattan cok uzaksa (>%3) mevcut fiyati kullan
-            if buy_entry and float(buy_entry) < cur * 0.97:
+            # Giris fiyati mevcut fiyattan cok uzaksa (>%1.5) mevcut fiyati kullan
+            # %1.5'ten fazla aşağıda bir destek varsa beklemek yerine şu anki fiyattan gir
+            if buy_entry and float(buy_entry) < cur * 0.985:
                 buy_entry = sf(cur)
                 buy_sl = sf(cur - atr_val * atr_mult)
                 if 'destek_alis' in buy_strategy or 'bollinger_alis' in buy_strategy or 'pivot_alis' in buy_strategy:
