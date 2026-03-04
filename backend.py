@@ -4484,8 +4484,8 @@ def calc_trade_plan(hist, indicators=None):
                 sell_reasons.append(f'Pivot R1 ({sf(r1)} TL) seviyesinde satis')
                 sell_strategy = 'pivot_satis'
 
-            # Satis girisi mevcut fiyattan cok uzaksa (>%3 yukarda) mevcut fiyati kullan
-            if sell_entry and float(sell_entry) > cur * 1.03:
+            # Satis girisi mevcut fiyattan cok uzaksa (>%1.5 yukarda) mevcut fiyati kullan
+            if sell_entry and float(sell_entry) > cur * 1.015:
                 sell_entry = sf(cur)
                 sell_sl = sf(cur + atr_val * atr_mult)
                 if 'direnc_satis' in sell_strategy or 'bollinger_satis' in sell_strategy or 'pivot_satis' in sell_strategy:
