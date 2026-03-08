@@ -456,6 +456,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
     ◆ BIST Pro <span>v3.0</span>
   </a>
   <button class="nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('show')">☰</button>
+  <span id="arBadge" style="font-size:11px;font-family:monospace;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,0.05);cursor:default;display:none;"></span>
   <div class="nav-links">
     <button class="nav-link active" data-page="dashboard" onclick="navigate('dashboard')">Dashboard</button>
     <button class="nav-link" data-page="signals" onclick="navigate('signals')" style="color:var(--green);font-weight:700;">Sinyaller</button>
@@ -1008,7 +1009,16 @@ tr:hover td { background: rgba(26,34,52,0.5); }
         <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Seçili Risk</label>
         <input type="number" id="planRisk" value="1" min="0.1" max="20" step="0.1" oninput="savePlanSettings();refreshPlanCards()" style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:14px;width:70px;">
       </div>
+      <div>
+        <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">İşlem Stili</label>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          <button class="btn btn-sm plan-style-btn active" data-style="daily" onclick="setPlanStyle('daily')" title="Aynı gün içinde al-sat. Plan 4 saat sabit.">Günlük</button>
+          <button class="btn btn-sm plan-style-btn" data-style="weekly" onclick="setPlanStyle('weekly')" title="Birkaç günlük swing trade. Plan 3 gün sabit.">Swing</button>
+          <button class="btn btn-sm plan-style-btn" data-style="monthly" onclick="setPlanStyle('monthly')" title="Haftalarca pozisyon. Plan 7 gün sabit.">Aylık/Pozisyon</button>
+        </div>
+      </div>
     </div>
+    <div id="planStyleInfo" style="margin-top:10px;font-size:11px;color:var(--text-muted);"></div>
   </div>
 
   <div id="planContent">
@@ -4997,13 +5007,20 @@ function besRenderCategoryOverview(data) {
 // PLAN MERKEZİ
 // =============================================================================
 
-let _planRisk = 1;
+let _planRisk  = 1;
+let _planStyle = 'daily'; // 'daily' | 'weekly' | 'monthly'
+
+const PLAN_STYLE_CONFIG = {
+  daily:   { label: 'Günlük (İntraday)', tf: 'daily',   maxLockH: 4,    desc: 'Aynı gün içinde al-sat · Plan 4 saat sabit kalır' },
+  weekly:  { label: 'Swing',             tf: 'weekly',  maxLockH: 72,   desc: 'Birkaç günlük swing trade · Plan 3 gün sabit kalır' },
+  monthly: { label: 'Aylık/Pozisyon',    tf: 'monthly', maxLockH: 168,  desc: 'Haftalarca açık pozisyon · Plan 7 gün sabit kalır' },
+};
 
 function savePlanSettings() {
   const hesap = parseFloat(document.getElementById('planHesap')?.value) || 100000;
   const risk  = parseFloat(document.getElementById('planRisk')?.value)  || 1;
   const kom   = parseFloat(document.getElementById('planKomisyon')?.value) || 0.05;
-  localStorage.setItem('planSettings', JSON.stringify({ hesap, risk, kom }));
+  localStorage.setItem('planSettings', JSON.stringify({ hesap, risk, kom, style: _planStyle }));
   _planRisk = risk;
 }
 
@@ -5013,10 +5030,14 @@ function loadPlanSettings() {
     if (s.hesap) document.getElementById('planHesap').value = s.hesap;
     if (s.risk)  { document.getElementById('planRisk').value = s.risk; _planRisk = s.risk; }
     if (s.kom)   document.getElementById('planKomisyon').value = s.kom;
-    // Risk buton aktif durumu
+    if (s.style) _planStyle = s.style;
     document.querySelectorAll('.plan-risk-btn').forEach(b => {
       b.classList.toggle('active', parseFloat(b.dataset.risk) === (_planRisk || 1));
     });
+    document.querySelectorAll('.plan-style-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.style === _planStyle);
+    });
+    _updateStyleInfo();
   } catch(e) {}
 }
 
@@ -5030,11 +5051,26 @@ function setPlanRisk(val) {
   refreshPlanCards();
 }
 
+function setPlanStyle(style) {
+  _planStyle = style;
+  document.querySelectorAll('.plan-style-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.style === style);
+  });
+  _updateStyleInfo();
+  savePlanSettings();
+  // Kartları yeniden render et (aynı data, farklı TF)
+  loadPlans();
+}
+
+function _updateStyleInfo() {
+  const cfg = PLAN_STYLE_CONFIG[_planStyle] || PLAN_STYLE_CONFIG.daily;
+  const el = document.getElementById('planStyleInfo');
+  if (el) el.textContent = cfg.desc;
+}
+
 function refreshPlanCards() {
   document.querySelectorAll('[data-plan-card]').forEach(card => {
-    const cardId = card.dataset.planCard;
-    const lotInput = card.querySelector('.plan-lot-input');
-    if (lotInput) updatePosition(card);
+    if (card.querySelector('.plan-lot-input')) updatePosition(card);
   });
 }
 
@@ -5088,7 +5124,9 @@ function renderPlanCard(opp) {
   const dir   = opp.direction || 'buy';
   const score = opp.opportunityScore || 0;
   const tp    = opp.tradePlan || {};
-  const tfPlan = tp.daily || tp.weekly || {};
+  const styleCfg = PLAN_STYLE_CONFIG[_planStyle] || PLAN_STYLE_CONFIG.daily;
+  // Seçili işlem stiline göre doğru timeframe sub-planı
+  const tfPlan = tp[styleCfg.tf] || tp.daily || tp.weekly || {};
   const buyPlan  = tfPlan.buy  || {};
   const sellPlan = tfPlan.sell || {};
   const kl = tfPlan.keyLevels || {};
@@ -5129,6 +5167,11 @@ function renderPlanCard(opp) {
   const dirLabel  = isAl ? 'ALIŞ' : 'SATIŞ';
   const chgClass  = chg >= 0 ? 'pos' : 'neg';
   const scoreColor = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow,#f59e0b)' : 'var(--text-muted)';
+
+  // Kilit süresi etiketi
+  const lockLabel = styleCfg.label;
+  const lockMaxH  = styleCfg.maxLockH;
+  const lockBadge = `<span title="${styleCfg.desc}" style="font-size:10px;padding:2px 7px;border-radius:4px;background:rgba(99,102,241,0.1);color:var(--accent);border:1px solid rgba(99,102,241,0.2);">🔒 ${lockLabel} · max ${lockMaxH < 24 ? lockMaxH + 'sa' : Math.round(lockMaxH/24) + ' gün'}</span>`;
 
   const cardId = `plancard_${sym}`;
 
@@ -5173,6 +5216,7 @@ function renderPlanCard(opp) {
         <span style="font-weight:700;font-size:16px;">${fmt(price)} ₺</span>
         <span class="${chgClass}" style="font-size:12px;">%${fmt(Math.abs(chg))} ${chg >= 0 ? '▲' : '▼'}</span>
         <span style="padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700;background:${dirColor}22;color:${dirColor};">${dirLabel} SİNYALİ</span>
+        ${lockBadge}
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
         <div style="font-size:11px;color:${scoreColor};">Fırsat Skoru: <b style="color:${scoreColor};">${score}/100</b></div>
@@ -5182,7 +5226,7 @@ function renderPlanCard(opp) {
     <!-- Plan + Nedenler -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;" class="plan-top-grid">
       <div style="background:var(--bg-input);border-radius:8px;padding:14px;border-left:3px solid ${dirColor};">
-        <div style="font-size:11px;font-weight:700;color:${dirColor};margin-bottom:10px;">${isAl ? 'ALIŞ' : 'SATIŞ'} PLANI</div>
+        <div style="font-size:11px;font-weight:700;color:${dirColor};margin-bottom:10px;">${isAl ? 'ALIŞ' : 'SATIŞ'} PLANI <span style="font-weight:400;color:var(--text-muted);">· ${lockLabel}</span></div>
         <div style="display:flex;flex-direction:column;gap:6px;">
           <div style="display:flex;justify-content:space-between;"><span style="font-size:12px;color:var(--text-muted);">📌 Giriş</span><span style="font-weight:700;font-size:13px;color:${dirColor};">${fmt(entry)} ₺</span></div>
           <div style="display:flex;justify-content:space-between;"><span style="font-size:12px;color:var(--text-muted);">🛑 Stop-Loss</span><span style="font-weight:700;font-size:13px;color:var(--red);">${sl > 0 ? fmt(sl) + ' ₺' : '-'}</span></div>
@@ -5377,8 +5421,110 @@ function updatePosition(card) {
 document.addEventListener('DOMContentLoaded', () => {
   loadDashboard().catch(() => dismissLoadingPopup());
   updateUserUI();
-  validateSession(); // DB sifirlanmissa oturumu yeniden olustur
+  validateSession();
+  _autoRefreshInit();
 });
+
+// =============================================================================
+// OTOMATİK YENİLEME — Sayfa açık kaldığı sürece veriyi günceller
+// Tab gizlenince durur, tekrar görününce devam eder.
+// =============================================================================
+const AUTO_REFRESH_INTERVALS = {
+  dashboard:     2 * 60,   // 2 dk
+  signals:       3 * 60,   // 3 dk
+  opportunities: 3 * 60,   // 3 dk
+  plans:         5 * 60,   // 5 dk
+  bist100:       2 * 60,   // 2 dk
+  heatmap:       5 * 60,   // 5 dk
+  strategies:    10 * 60,  // 10 dk
+  dividends:     15 * 60,  // 15 dk
+  report:        10 * 60,  // 10 dk
+};
+const PAGE_LOADERS = {
+  dashboard:     () => loadDashboard(),
+  signals:       () => loadSignals(),
+  opportunities: () => loadOpportunities(),
+  plans:         () => loadPlans(),
+  bist100:       () => loadBist100(),
+  heatmap:       () => loadHeatmap(),
+  strategies:    () => loadStrategies(),
+  dividends:     () => loadDividends(),
+  report:        () => loadReport(),
+};
+
+let _currentPage   = 'dashboard';
+let _lastRefresh   = {};   // { page: timestamp }
+let _arTimer       = null; // setInterval id
+let _arCountdown   = null; // countdown setInterval id
+
+// navigate() çağrısında aktif sayfayı kaydet
+const _origNavigate = navigate;
+function navigate(page, params) {
+  _currentPage = page;
+  _lastRefresh[page] = Date.now();
+  _arUpdateBadge();
+  _origNavigate(page, params);
+}
+
+function _autoRefreshInit() {
+  // Her 10 sn bir kontrol et — vakti geldiyse yenile
+  _arTimer = setInterval(_arTick, 10_000);
+
+  // Tab gizlenince duraklat, görününce devam et
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      clearInterval(_arCountdown);
+      _arCountdown = null;
+    } else {
+      _arTick();           // Geri dönünce hemen kontrol et
+      _arStartCountdown();
+    }
+  });
+
+  _arStartCountdown();
+}
+
+function _arTick() {
+  if (document.hidden) return;
+  const page = _currentPage;
+  const interval = AUTO_REFRESH_INTERVALS[page];
+  if (!interval) return;
+  const last = _lastRefresh[page] || 0;
+  if ((Date.now() - last) >= interval * 1000) {
+    const loader = PAGE_LOADERS[page];
+    if (loader) {
+      _lastRefresh[page] = Date.now();
+      loader().catch(() => {});
+    }
+  }
+}
+
+function _arStartCountdown() {
+  if (_arCountdown) clearInterval(_arCountdown);
+  _arCountdown = setInterval(_arUpdateBadge, 1000);
+}
+
+function _arUpdateBadge() {
+  const badge = document.getElementById('arBadge');
+  if (!badge) return;
+  const page = _currentPage;
+  const interval = AUTO_REFRESH_INTERVALS[page];
+  if (!interval) { badge.style.display = 'none'; return; }
+  const elapsed = Math.floor((Date.now() - (_lastRefresh[page] || Date.now())) / 1000);
+  const remaining = Math.max(0, interval - elapsed);
+  const mm = String(Math.floor(remaining / 60)).padStart(2, '0');
+  const ss = String(remaining % 60).padStart(2, '0');
+  badge.style.display = '';
+  badge.title = 'Otomatik yenileme — Sekme açık kaldığı sürece veri güncellenir';
+  if (remaining === 0) {
+    badge.textContent = '↻ Güncelleniyor…';
+    badge.style.color = 'var(--accent)';
+  } else {
+    badge.textContent = `↻ ${mm}:${ss}`;
+    badge.style.color = remaining < 30 ? 'var(--accent)' : 'var(--text-muted)';
+  }
+}
+
 </script>
 </body>
 </html>

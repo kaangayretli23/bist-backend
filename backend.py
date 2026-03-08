@@ -515,8 +515,18 @@ HIST_CACHE_TTL = 3600   # Tarihsel veri 1 saat gecerli (gun ici degismez)
 # Plan kilitleme cache: { 'THYAO_daily': { 'plan': {...}, 'locked_at': ts, 'locked_price': 287.0, 'signal': 'AL' } }
 _plan_lock_cache = {}
 _plan_lock_cache_lock = threading.Lock()
-PLAN_MIN_LOCK_SECONDS = 1800   # Bir plan en az 30 dk kilitli kalir
-PLAN_MAX_LOCK_SECONDS = 28800  # En fazla 8 saat kilitli kalir
+
+# Her timeframe icin ayri kilit suresi (saniye)
+# min_lock: bu sure dolmadan sinyal degisimi yok sayilir
+# max_lock: plan bu sureden sonra yenilenir
+PLAN_LOCK_CONFIG = {
+    'daily':   {'min_lock': 900,    'max_lock': 14400},   # 15dk min / 4 saat max  (intraday)
+    'weekly':  {'min_lock': 7200,   'max_lock': 259200},  # 2sa min  / 3 gun max   (swing)
+    'monthly': {'min_lock': 21600,  'max_lock': 604800},  # 6sa min  / 7 gun max   (pozisyon)
+}
+# Geriye donuk uyumluluk icin eski isimler
+PLAN_MIN_LOCK_SECONDS = PLAN_LOCK_CONFIG['daily']['min_lock']
+PLAN_MAX_LOCK_SECONDS = PLAN_LOCK_CONFIG['daily']['max_lock']
 
 def _cget(store, key):
     with _lock:
@@ -4308,35 +4318,36 @@ def calc_ml_confidence(hist, indicators, recommendation_score, signal_type='buy'
 # =====================================================================
 # FEATURE 9: DETAYLI TRADE PLAN (Gunluk/Haftalik/Aylik giriş/çıkış)
 # =====================================================================
-def _is_plan_valid(lock_entry, cur_price, cur_signal):
+def _is_plan_valid(lock_entry, cur_price, cur_signal, cfg=None):
     """Kilitli bir planin hala gecerli olup olmadigini kontrol et.
+    cfg: PLAN_LOCK_CONFIG[timeframe] — yoksa daily config kullanilir.
     Returns (valid: bool, reason: str)"""
+    if cfg is None:
+        cfg = PLAN_LOCK_CONFIG['daily']
     now = time.time()
     age = now - lock_entry['locked_at']
 
-    # 8 saat maksimum kilit suresi
-    if age > PLAN_MAX_LOCK_SECONDS:
+    if age > cfg['max_lock']:
         return False, 'max_lock_exceeded'
 
-    # 30 dakika dolmadan signal degisimi yok sayilir
-    if age < PLAN_MIN_LOCK_SECONDS:
+    if age < cfg['min_lock']:
         return True, 'min_lock_active'
 
-    plan = lock_entry['plan']
     locked_signal = lock_entry['signal']
+    tf            = lock_entry.get('timeframe', 'daily')
+    tf_plan       = lock_entry.get('tf_plan', {})  # Tek timeframe plani
 
-    # Sinyal yonu degistiyse planı kilidi ac (30 dk+ sonra)
+    # Sinyal yonu degistiyse kilidi ac
     if cur_signal and cur_signal != locked_signal and cur_signal not in ('BEKLE', 'neutral'):
         return False, 'signal_changed'
 
-    # Stop-loss tetiklendi mi? (Alis plani icin)
-    daily_plan = plan.get('daily', {})
+    # Stop-loss tetiklendi mi?
     if locked_signal == 'AL':
-        sl = daily_plan.get('buy', {}).get('stopLoss', 0)
+        sl = tf_plan.get('buy', {}).get('stopLoss', 0)
         if sl and float(sl) > 0 and cur_price < float(sl):
             return False, 'stop_loss_hit'
     elif locked_signal == 'SAT':
-        sl = daily_plan.get('sell', {}).get('stopLoss', 0)
+        sl = tf_plan.get('sell', {}).get('stopLoss', 0)
         if sl and float(sl) > 0 and cur_price > float(sl):
             return False, 'stop_loss_hit'
 
@@ -4348,21 +4359,24 @@ def calc_trade_plan(hist, indicators=None, symbol=None):
     Entry, stop-loss, 3 hedef, risk/reward orani hesaplar.
     symbol verilirse plan kilitlenir, her guncellemede degismez."""
     try:
-        # Plan kilitleme: onceden kilitlenmis plan hala gecerliyse direkt don
+        cur_price_init = float(hist['Close'].values[-1])
+        cur_signal_init = (indicators or {}).get('recommendation', {}).get('signal', '')
+
+        # Per-timeframe kilit kontrolu: hangi tf'ler hala kilitli?
+        tf_locked = {}  # { 'daily': tf_plan_dict, ... }
         if symbol:
-            lock_key = f"{symbol}_daily"
-            with _plan_lock_cache_lock:
-                lock_entry = _plan_lock_cache.get(lock_key)
-            if lock_entry:
-                cur_price = float(hist['Close'].values[-1])
-                cur_signal = (indicators or {}).get('recommendation', {}).get('signal', '')
-                valid, reason = _is_plan_valid(lock_entry, cur_price, cur_signal)
-                if valid:
-                    return lock_entry['plan']
-                else:
-                    with _plan_lock_cache_lock:
-                        _plan_lock_cache.pop(lock_key, None)
-                    print(f"[PLAN-LOCK] {symbol} kilidi acildi: {reason}")
+            for tf_label, cfg in PLAN_LOCK_CONFIG.items():
+                lock_key = f"{symbol}_{tf_label}"
+                with _plan_lock_cache_lock:
+                    lock_entry = _plan_lock_cache.get(lock_key)
+                if lock_entry:
+                    valid, reason = _is_plan_valid(lock_entry, cur_price_init, cur_signal_init, cfg)
+                    if valid:
+                        tf_locked[tf_label] = lock_entry['tf_plan']
+                    else:
+                        with _plan_lock_cache_lock:
+                            _plan_lock_cache.pop(lock_key, None)
+                        print(f"[PLAN-LOCK] {symbol}_{tf_label} kilidi acildi: {reason}")
 
         c = hist['Close'].values.astype(float)
         h = hist['High'].values.astype(float)
@@ -4419,11 +4433,19 @@ def calc_trade_plan(hist, indicators=None, symbol=None):
 
         plans = {}
 
+        # Kilitli timeframe'leri direkt kullan
+        for tf_label, cached_tf in tf_locked.items():
+            plans[tf_label] = cached_tf
+
         for tf_label, tf_days, atr_mult, target_mult in [
             ('daily', 1, 1.0, [1.0, 1.5, 2.5]),
             ('weekly', 5, 1.5, [1.5, 2.5, 4.0]),
             ('monthly', 22, 2.5, [2.5, 4.0, 6.0]),
         ]:
+            # Zaten kilitliyse hesaplama
+            if tf_label in tf_locked:
+                continue
+
             # Bu zaman dilimi icin yeterli veri var mi
             if n < tf_days + 20:
                 continue
@@ -4662,19 +4684,29 @@ def calc_trade_plan(hist, indicators=None, symbol=None):
                 },
             }
 
-        # Plani kilitle (sadece symbol verilmisse)
+        # Her timeframe'i ayri ayri kilitle (sadece yeni hesaplananlar)
         if symbol and plans:
-            daily_signal = plans.get('daily', {}).get('signal', 'BEKLE')
-            lock_key = f"{symbol}_daily"
-            with _plan_lock_cache_lock:
-                _plan_lock_cache[lock_key] = {
-                    'plan': plans,
-                    'locked_at': time.time(),
-                    'locked_price': float(c[-1]),
-                    'signal': daily_signal,
-                }
-            # DB'ye async kaydet
-            threading.Thread(target=_db_save_plan_locks, daemon=True).start()
+            now_ts = time.time()
+            cur_p  = float(c[-1])
+            changed = False
+            for tf_label, tf_plan in plans.items():
+                if tf_label in tf_locked:
+                    continue  # Zaten kilitliydi, dokunma
+                cfg = PLAN_LOCK_CONFIG.get(tf_label, PLAN_LOCK_CONFIG['daily'])
+                lock_key = f"{symbol}_{tf_label}"
+                with _plan_lock_cache_lock:
+                    _plan_lock_cache[lock_key] = {
+                        'tf_plan':      tf_plan,
+                        'locked_at':    now_ts,
+                        'locked_price': cur_p,
+                        'signal':       tf_plan.get('signal', 'BEKLE'),
+                        'timeframe':    tf_label,
+                        'max_lock':     cfg['max_lock'],
+                        'min_lock':     cfg['min_lock'],
+                    }
+                changed = True
+            if changed:
+                threading.Thread(target=_db_save_plan_locks, daemon=True).start()
 
         return plans
     except Exception as e:
@@ -6406,19 +6438,25 @@ def locked_plans():
         with _plan_lock_cache_lock:
             items = list(_plan_lock_cache.items())
         for key, entry in items:
-            sym = key.rsplit('_', 1)[0]
+            parts = key.rsplit('_', 1)
+            sym = parts[0]
+            tf  = parts[1] if len(parts) == 2 else 'daily'
+            cfg = PLAN_LOCK_CONFIG.get(tf, PLAN_LOCK_CONFIG['daily'])
             age = now - entry['locked_at']
-            if age > PLAN_MAX_LOCK_SECONDS:
+            if age > cfg['max_lock']:
                 continue
+            remaining = max(0, cfg['max_lock'] - age)
             result.append({
-                'symbol': sym,
-                'name': BIST100_STOCKS.get(sym, sym),
-                'timeframe': 'daily',
-                'lockedAt': entry['locked_at'],
-                'lockedPrice': entry['locked_price'],
-                'signal': entry['signal'],
-                'ageSeconds': int(age),
-                'plan': entry['plan'],
+                'symbol':       sym,
+                'name':         BIST100_STOCKS.get(sym, sym),
+                'timeframe':    tf,
+                'lockedAt':     entry['locked_at'],
+                'lockedPrice':  entry['locked_price'],
+                'signal':       entry['signal'],
+                'ageSeconds':   int(age),
+                'remainingSec': int(remaining),
+                'maxLockSec':   cfg['max_lock'],
+                'tfPlan':       entry.get('tf_plan', {}),
             })
         # Skora gore sirala (fırsat olarak daha iyi olanlar once)
         result.sort(key=lambda x: x['lockedAt'], reverse=True)
