@@ -1,7 +1,7 @@
 flask
 flask-cors
 gunicorn
-yfinance
+yfinance>=0.2.50,<1.0.0
 pandas
 numpy
 requests
