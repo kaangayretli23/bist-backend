@@ -321,6 +321,27 @@ def _db_load_market_snapshot():
     except Exception as e:
         print(f"[CACHE-LOAD] Tarihsel snapshot hatası: {e}")
 
+    try:
+        plan_row = _db_get_cache('plan_locks')
+        if plan_row:
+            payload, saved_at = plan_row
+            age = time.time() - float(saved_at)
+            if age < PLAN_MAX_LOCK_SECONDS:
+                snap = json.loads(payload)
+                now = time.time()
+                loaded_plans = 0
+                with _plan_lock_cache_lock:
+                    for key, entry in snap.items():
+                        # Kaydedildiginden bu yana gecen sureyi locked_at'a ekle
+                        # (kilitleme suresi restart sonrasi da devam eder)
+                        entry_age = now - float(entry.get('locked_at', now))
+                        if entry_age < PLAN_MAX_LOCK_SECONDS:
+                            _plan_lock_cache[key] = entry
+                            loaded_plans += 1
+                print(f"[CACHE-LOAD] {loaded_plans} plan kilidi DB'den yüklendi (yaş: {int(age)}s)")
+    except Exception as e:
+        print(f"[CACHE-LOAD] Plan kilidi snapshot hatası: {e}")
+
 def hash_password(pw):
     return hashlib.sha256((pw + app.secret_key).encode()).hexdigest()
 
@@ -490,6 +511,12 @@ _status = {'phase':'idle','loaded':0,'total':0,'lastRun':None,'error':''}
 CACHE_TTL = 600
 CACHE_STALE_TTL = 1800  # Stale data served up to 30 min (prevents stocks from disappearing on fetch failure)
 HIST_CACHE_TTL = 3600   # Tarihsel veri 1 saat gecerli (gun ici degismez)
+
+# Plan kilitleme cache: { 'THYAO_daily': { 'plan': {...}, 'locked_at': ts, 'locked_price': 287.0, 'signal': 'AL' } }
+_plan_lock_cache = {}
+_plan_lock_cache_lock = threading.Lock()
+PLAN_MIN_LOCK_SECONDS = 1800   # Bir plan en az 30 dk kilitli kalir
+PLAN_MAX_LOCK_SECONDS = 28800  # En fazla 8 saat kilitli kalir
 
 def _cget(store, key):
     with _lock:
@@ -4281,10 +4308,62 @@ def calc_ml_confidence(hist, indicators, recommendation_score, signal_type='buy'
 # =====================================================================
 # FEATURE 9: DETAYLI TRADE PLAN (Gunluk/Haftalik/Aylik giriş/çıkış)
 # =====================================================================
-def calc_trade_plan(hist, indicators=None):
+def _is_plan_valid(lock_entry, cur_price, cur_signal):
+    """Kilitli bir planin hala gecerli olup olmadigini kontrol et.
+    Returns (valid: bool, reason: str)"""
+    now = time.time()
+    age = now - lock_entry['locked_at']
+
+    # 8 saat maksimum kilit suresi
+    if age > PLAN_MAX_LOCK_SECONDS:
+        return False, 'max_lock_exceeded'
+
+    # 30 dakika dolmadan signal degisimi yok sayilir
+    if age < PLAN_MIN_LOCK_SECONDS:
+        return True, 'min_lock_active'
+
+    plan = lock_entry['plan']
+    locked_signal = lock_entry['signal']
+
+    # Sinyal yonu degistiyse planı kilidi ac (30 dk+ sonra)
+    if cur_signal and cur_signal != locked_signal and cur_signal not in ('BEKLE', 'neutral'):
+        return False, 'signal_changed'
+
+    # Stop-loss tetiklendi mi? (Alis plani icin)
+    daily_plan = plan.get('daily', {})
+    if locked_signal == 'AL':
+        sl = daily_plan.get('buy', {}).get('stopLoss', 0)
+        if sl and float(sl) > 0 and cur_price < float(sl):
+            return False, 'stop_loss_hit'
+    elif locked_signal == 'SAT':
+        sl = daily_plan.get('sell', {}).get('stopLoss', 0)
+        if sl and float(sl) > 0 and cur_price > float(sl):
+            return False, 'stop_loss_hit'
+
+    return True, 'valid'
+
+
+def calc_trade_plan(hist, indicators=None, symbol=None):
     """Her hisse icin gunluk/haftalik/aylik bazda detayli al-sat plani
-    Entry, stop-loss, 3 hedef, risk/reward orani hesaplar"""
+    Entry, stop-loss, 3 hedef, risk/reward orani hesaplar.
+    symbol verilirse plan kilitlenir, her guncellemede degismez."""
     try:
+        # Plan kilitleme: onceden kilitlenmis plan hala gecerliyse direkt don
+        if symbol:
+            lock_key = f"{symbol}_daily"
+            with _plan_lock_cache_lock:
+                lock_entry = _plan_lock_cache.get(lock_key)
+            if lock_entry:
+                cur_price = float(hist['Close'].values[-1])
+                cur_signal = (indicators or {}).get('recommendation', {}).get('signal', '')
+                valid, reason = _is_plan_valid(lock_entry, cur_price, cur_signal)
+                if valid:
+                    return lock_entry['plan']
+                else:
+                    with _plan_lock_cache_lock:
+                        _plan_lock_cache.pop(lock_key, None)
+                    print(f"[PLAN-LOCK] {symbol} kilidi acildi: {reason}")
+
         c = hist['Close'].values.astype(float)
         h = hist['High'].values.astype(float)
         l = hist['Low'].values.astype(float)
@@ -4583,10 +4662,34 @@ def calc_trade_plan(hist, indicators=None):
                 },
             }
 
+        # Plani kilitle (sadece symbol verilmisse)
+        if symbol and plans:
+            daily_signal = plans.get('daily', {}).get('signal', 'BEKLE')
+            lock_key = f"{symbol}_daily"
+            with _plan_lock_cache_lock:
+                _plan_lock_cache[lock_key] = {
+                    'plan': plans,
+                    'locked_at': time.time(),
+                    'locked_price': float(c[-1]),
+                    'signal': daily_signal,
+                }
+            # DB'ye async kaydet
+            threading.Thread(target=_db_save_plan_locks, daemon=True).start()
+
         return plans
     except Exception as e:
         print(f"  [TRADE-PLAN] Hata: {e}")
         return {}
+
+
+def _db_save_plan_locks():
+    """Plan kilitleme cache'ini DB'ye kaydet"""
+    try:
+        with _plan_lock_cache_lock:
+            snap = dict(_plan_lock_cache)
+        _db_upsert_cache('plan_locks', json.dumps(snap), time.time())
+    except Exception as e:
+        print(f"[PLAN-LOCK-SAVE] Hata: {e}")
 
 
 def prepare_chart_data(hist):
@@ -4921,7 +5024,7 @@ def stock_detail(symbol):
             'recommendation':rec,
             'mlConfidence':ml_conf,
             'signalBacktest':calc_signal_backtest(hist),
-            'tradePlan':calc_trade_plan(hist, ind),
+            'tradePlan':calc_trade_plan(hist, ind, symbol=symbol),
             'marketRegime':calc_market_regime(),
             'fundamentals':calc_fundamentals(hist, symbol),
             'meta':_api_meta(),
@@ -5844,7 +5947,7 @@ def _compute_signal_for_stock(stock, timeframe):
             'strategy': tf_rec.get('strategy', ''),
             'candlestickPatterns': candle_patterns[:3],
             'dynamicThresholds': ind.get('dynamicThresholds', {}),
-            'tradePlan': calc_trade_plan(hist, ind),
+            'tradePlan': calc_trade_plan(hist, ind, symbol=sym),
             # MTF alanları
             'mtfScore':       mtf.get('mtfScore', 0),
             'mtfAlignment':   mtf.get('mtfAlignment', '0/3'),
@@ -6239,7 +6342,7 @@ def _compute_opportunity_for_stock(stock):
             'sidewaysMarket': sideways_market,
             'dynamicThresholds': dyn,
             'candlestickPatterns': candles.get('patterns', []),
-            'tradePlan': calc_trade_plan(hist),
+            'tradePlan': calc_trade_plan(hist, symbol=sym),
         }
     except:
         return None
@@ -6290,6 +6393,36 @@ def opportunities():
             _opps_cache['ts'] = time.time()
 
         return jsonify(safe_dict(result_data))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/locked-plans')
+def locked_plans():
+    """Kilitli yatirım planlarını döner (plan kilitleme sistemi)"""
+    try:
+        now = time.time()
+        result = []
+        with _plan_lock_cache_lock:
+            items = list(_plan_lock_cache.items())
+        for key, entry in items:
+            sym = key.rsplit('_', 1)[0]
+            age = now - entry['locked_at']
+            if age > PLAN_MAX_LOCK_SECONDS:
+                continue
+            result.append({
+                'symbol': sym,
+                'name': BIST100_STOCKS.get(sym, sym),
+                'timeframe': 'daily',
+                'lockedAt': entry['locked_at'],
+                'lockedPrice': entry['locked_price'],
+                'signal': entry['signal'],
+                'ageSeconds': int(age),
+                'plan': entry['plan'],
+            })
+        # Skora gore sirala (fırsat olarak daha iyi olanlar once)
+        result.sort(key=lambda x: x['lockedAt'], reverse=True)
+        return jsonify({'success': True, 'plans': result, 'count': len(result)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
