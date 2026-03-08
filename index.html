@@ -456,6 +456,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
     ◆ BIST Pro <span>v3.0</span>
   </a>
   <button class="nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('show')">☰</button>
+  <span id="arBadge" style="font-size:11px;font-family:monospace;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,0.05);cursor:default;display:none;"></span>
   <div class="nav-links">
     <button class="nav-link active" data-page="dashboard" onclick="navigate('dashboard')">Dashboard</button>
     <button class="nav-link" data-page="signals" onclick="navigate('signals')" style="color:var(--green);font-weight:700;">Sinyaller</button>
@@ -5420,8 +5421,110 @@ function updatePosition(card) {
 document.addEventListener('DOMContentLoaded', () => {
   loadDashboard().catch(() => dismissLoadingPopup());
   updateUserUI();
-  validateSession(); // DB sifirlanmissa oturumu yeniden olustur
+  validateSession();
+  _autoRefreshInit();
 });
+
+// =============================================================================
+// OTOMATİK YENİLEME — Sayfa açık kaldığı sürece veriyi günceller
+// Tab gizlenince durur, tekrar görününce devam eder.
+// =============================================================================
+const AUTO_REFRESH_INTERVALS = {
+  dashboard:     2 * 60,   // 2 dk
+  signals:       3 * 60,   // 3 dk
+  opportunities: 3 * 60,   // 3 dk
+  plans:         5 * 60,   // 5 dk
+  bist100:       2 * 60,   // 2 dk
+  heatmap:       5 * 60,   // 5 dk
+  strategies:    10 * 60,  // 10 dk
+  dividends:     15 * 60,  // 15 dk
+  report:        10 * 60,  // 10 dk
+};
+const PAGE_LOADERS = {
+  dashboard:     () => loadDashboard(),
+  signals:       () => loadSignals(),
+  opportunities: () => loadOpportunities(),
+  plans:         () => loadPlans(),
+  bist100:       () => loadBist100(),
+  heatmap:       () => loadHeatmap(),
+  strategies:    () => loadStrategies(),
+  dividends:     () => loadDividends(),
+  report:        () => loadReport(),
+};
+
+let _currentPage   = 'dashboard';
+let _lastRefresh   = {};   // { page: timestamp }
+let _arTimer       = null; // setInterval id
+let _arCountdown   = null; // countdown setInterval id
+
+// navigate() çağrısında aktif sayfayı kaydet
+const _origNavigate = navigate;
+function navigate(page, params) {
+  _currentPage = page;
+  _lastRefresh[page] = Date.now();
+  _arUpdateBadge();
+  _origNavigate(page, params);
+}
+
+function _autoRefreshInit() {
+  // Her 10 sn bir kontrol et — vakti geldiyse yenile
+  _arTimer = setInterval(_arTick, 10_000);
+
+  // Tab gizlenince duraklat, görününce devam et
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      clearInterval(_arCountdown);
+      _arCountdown = null;
+    } else {
+      _arTick();           // Geri dönünce hemen kontrol et
+      _arStartCountdown();
+    }
+  });
+
+  _arStartCountdown();
+}
+
+function _arTick() {
+  if (document.hidden) return;
+  const page = _currentPage;
+  const interval = AUTO_REFRESH_INTERVALS[page];
+  if (!interval) return;
+  const last = _lastRefresh[page] || 0;
+  if ((Date.now() - last) >= interval * 1000) {
+    const loader = PAGE_LOADERS[page];
+    if (loader) {
+      _lastRefresh[page] = Date.now();
+      loader().catch(() => {});
+    }
+  }
+}
+
+function _arStartCountdown() {
+  if (_arCountdown) clearInterval(_arCountdown);
+  _arCountdown = setInterval(_arUpdateBadge, 1000);
+}
+
+function _arUpdateBadge() {
+  const badge = document.getElementById('arBadge');
+  if (!badge) return;
+  const page = _currentPage;
+  const interval = AUTO_REFRESH_INTERVALS[page];
+  if (!interval) { badge.style.display = 'none'; return; }
+  const elapsed = Math.floor((Date.now() - (_lastRefresh[page] || Date.now())) / 1000);
+  const remaining = Math.max(0, interval - elapsed);
+  const mm = String(Math.floor(remaining / 60)).padStart(2, '0');
+  const ss = String(remaining % 60).padStart(2, '0');
+  badge.style.display = '';
+  badge.title = 'Otomatik yenileme — Sekme açık kaldığı sürece veri güncellenir';
+  if (remaining === 0) {
+    badge.textContent = '↻ Güncelleniyor…';
+    badge.style.color = 'var(--accent)';
+  } else {
+    badge.textContent = `↻ ${mm}:${ss}`;
+    badge.style.color = remaining < 30 ? 'var(--accent)' : 'var(--text-muted)';
+  }
+}
+
 </script>
 </body>
 </html>
