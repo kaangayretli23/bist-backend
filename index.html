@@ -460,6 +460,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
     <button class="nav-link active" data-page="dashboard" onclick="navigate('dashboard')">Dashboard</button>
     <button class="nav-link" data-page="signals" onclick="navigate('signals')" style="color:var(--green);font-weight:700;">Sinyaller</button>
     <button class="nav-link" data-page="opportunities" onclick="navigate('opportunities')">Fırsatlar</button>
+    <button class="nav-link" data-page="plans" onclick="navigate('plans')" style="color:var(--accent);font-weight:700;">Plan Merkezi</button>
     <button class="nav-link" data-page="strategies" onclick="navigate('strategies')">Stratejiler</button>
     <button class="nav-link" data-page="dividends" onclick="navigate('dividends')">Temettü</button>
     <button class="nav-link" data-page="bist100" onclick="navigate('bist100')">BIST 100</button>
@@ -978,6 +979,43 @@ tr:hover td { background: rgba(26,34,52,0.5); }
   </div>
 </div>
 
+<!-- ═══════════ PLAN MERKEZİ ═══════════ -->
+<div class="page" id="page-plans">
+  <div class="section-title mb-24"><span class="icon">📋</span> Plan Merkezi</div>
+
+  <!-- Hesap Ayarları -->
+  <div class="card mb-24" id="planAccountSettings">
+    <div style="font-weight:700;font-size:13px;margin-bottom:14px;color:var(--accent);">Hesap Ayarları</div>
+    <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;">
+      <div>
+        <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Hesap Büyüklüğü (TL)</label>
+        <input type="number" id="planHesap" value="100000" min="1000" step="1000" oninput="savePlanSettings();refreshPlanCards()" style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:14px;width:130px;">
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Risk / Trade</label>
+        <div style="display:flex;gap:4px;">
+          <button class="btn btn-sm plan-risk-btn active" data-risk="1" onclick="setPlanRisk(1)">%1</button>
+          <button class="btn btn-sm plan-risk-btn" data-risk="2" onclick="setPlanRisk(2)">%2</button>
+          <button class="btn btn-sm plan-risk-btn" data-risk="3" onclick="setPlanRisk(3)">%3</button>
+          <button class="btn btn-sm plan-risk-btn" data-risk="5" onclick="setPlanRisk(5)">%5</button>
+        </div>
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Komisyon (%)</label>
+        <input type="number" id="planKomisyon" value="0.05" min="0" max="1" step="0.01" oninput="savePlanSettings();refreshPlanCards()" style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:14px;width:80px;">
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Seçili Risk</label>
+        <input type="number" id="planRisk" value="1" min="0.1" max="20" step="0.1" oninput="savePlanSettings();refreshPlanCards()" style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:14px;width:70px;">
+      </div>
+    </div>
+  </div>
+
+  <div id="planContent">
+    <div class="loading"><div class="spinner"></div>Planlar hazırlanıyor...</div>
+  </div>
+</div>
+
 <!-- ═══════════ CANLI STRATEJİLER ═══════════ -->
 <div class="page" id="page-strategies">
   <div class="section-title mb-24"><span class="icon">⚡</span> Canlı Strateji Sinyalleri</div>
@@ -1251,6 +1289,7 @@ function navigate(page, params) {
     case 'report': loadReport(); break;
     case 'signals': loadSignals(); break;
     case 'opportunities': loadOpportunities(); break;
+    case 'plans': loadPlans(); break;
     case 'strategies': loadStrategies(); break;
     case 'dividends': loadDividends(); break;
     case 'bes': besLoadTopFunds(); break;
@@ -4952,6 +4991,384 @@ function besRenderCategoryOverview(data) {
   const section = document.getElementById('besCategoryOverview');
   document.getElementById('besCategoryContent').innerHTML = html;
   section.style.display = 'block';
+}
+
+// =============================================================================
+// PLAN MERKEZİ
+// =============================================================================
+
+let _planRisk = 1;
+
+function savePlanSettings() {
+  const hesap = parseFloat(document.getElementById('planHesap')?.value) || 100000;
+  const risk  = parseFloat(document.getElementById('planRisk')?.value)  || 1;
+  const kom   = parseFloat(document.getElementById('planKomisyon')?.value) || 0.05;
+  localStorage.setItem('planSettings', JSON.stringify({ hesap, risk, kom }));
+  _planRisk = risk;
+}
+
+function loadPlanSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem('planSettings') || '{}');
+    if (s.hesap) document.getElementById('planHesap').value = s.hesap;
+    if (s.risk)  { document.getElementById('planRisk').value = s.risk; _planRisk = s.risk; }
+    if (s.kom)   document.getElementById('planKomisyon').value = s.kom;
+    // Risk buton aktif durumu
+    document.querySelectorAll('.plan-risk-btn').forEach(b => {
+      b.classList.toggle('active', parseFloat(b.dataset.risk) === (_planRisk || 1));
+    });
+  } catch(e) {}
+}
+
+function setPlanRisk(val) {
+  _planRisk = val;
+  document.getElementById('planRisk').value = val;
+  document.querySelectorAll('.plan-risk-btn').forEach(b => {
+    b.classList.toggle('active', parseFloat(b.dataset.risk) === val);
+  });
+  savePlanSettings();
+  refreshPlanCards();
+}
+
+function refreshPlanCards() {
+  document.querySelectorAll('[data-plan-card]').forEach(card => {
+    const cardId = card.dataset.planCard;
+    const lotInput = card.querySelector('.plan-lot-input');
+    if (lotInput) updatePosition(card);
+  });
+}
+
+async function loadPlans() {
+  loadPlanSettings();
+  const container = document.getElementById('planContent');
+  container.innerHTML = '<div class="loading"><div class="spinner"></div>Fırsatlar analiz ediliyor...</div>';
+
+  const data = await api('/opportunities');
+  if (data.loading) {
+    container.innerHTML = `<div class="loading"><div class="spinner"></div>${data.message || 'Veriler yükleniyor...'} Otomatik yenilenecek.</div>`;
+    setTimeout(loadPlans, 10000);
+    return;
+  }
+  if (data.error) {
+    container.innerHTML = `<div class="card" style="text-align:center;">${data.error} <button class="btn btn-sm btn-primary" onclick="loadPlans()">Tekrar Dene</button></div>`;
+    return;
+  }
+
+  const buyOpps = (data.buyOpportunities || []).slice(0, 10);
+  const sellOpps = (data.sellOpportunities || []).slice(0, 5);
+  const allOpps = [...buyOpps, ...sellOpps];
+
+  if (!allOpps.length) {
+    container.innerHTML = '<div class="card">Şu anda kilitli plan bulunamadı. Biraz bekleyin, sistem fırsatları analiz ediyor.</div>';
+    return;
+  }
+
+  let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">${allOpps.length} plan hazır · Son güncelleme: ${new Date().toLocaleTimeString('tr-TR')}</div>`;
+  for (const opp of allOpps) {
+    html += renderPlanCard(opp);
+  }
+  container.innerHTML = html;
+
+  // Pozisyon hesaplayıcıyı init et
+  document.querySelectorAll('[data-plan-card]').forEach(card => {
+    updatePosition(card);
+  });
+}
+
+function fmt(n, d=2) {
+  if (!n && n !== 0) return '-';
+  return Number(n).toLocaleString('tr-TR', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+function renderPlanCard(opp) {
+  const sym   = opp.code;
+  const name  = opp.name || sym;
+  const price = opp.price || 0;
+  const chg   = opp.changePct || 0;
+  const dir   = opp.direction || 'buy';
+  const score = opp.opportunityScore || 0;
+  const tp    = opp.tradePlan || {};
+  const tfPlan = tp.daily || tp.weekly || {};
+  const buyPlan  = tfPlan.buy  || {};
+  const sellPlan = tfPlan.sell || {};
+  const kl = tfPlan.keyLevels || {};
+  const isAl = dir === 'buy';
+
+  const plan = isAl ? buyPlan : sellPlan;
+  const entry = parseFloat(plan.entry) || price;
+  const sl    = parseFloat(plan.stopLoss) || 0;
+  const targets = (plan.targets || []).map(t => parseFloat(t)).filter(t => t > 0);
+  const signal  = tfPlan.signal || (isAl ? 'AL' : 'SAT');
+  const ema20   = parseFloat(kl.ema20) || 0;
+  const ema50   = parseFloat(kl.ema50) || 0;
+  const ema200  = parseFloat(kl.ema200) || 0;
+  const bbU     = parseFloat(kl.bbUpper) || 0;
+  const bbL     = parseFloat(kl.bbLower) || 0;
+  const bbM     = parseFloat(kl.bbMiddle) || 0;
+  const supports = (kl.supports || []).map(s => parseFloat(s)).filter(s => s > 0);
+  const resistances = (kl.resistances || []).map(r => parseFloat(r)).filter(r => r > 0);
+  const rsi = parseFloat(opp.rsi) || parseFloat(tfPlan.rsi) || 0;
+  const adx = parseFloat(opp.adx) || 0;
+  const stoch = parseFloat(opp.stochastic) || 0;
+
+  // Çok zaman dilimi
+  const daily  = tp.daily  || {};
+  const weekly = tp.weekly || {};
+  const monthly = tp.monthly || {};
+  function tfBadge(s) {
+    const sig = s.signal || 'BEKLE';
+    const col = sig === 'AL' ? 'var(--green)' : sig === 'SAT' ? 'var(--red)' : 'var(--text-muted)';
+    return `<span style="padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;background:${col}22;color:${col};">${sig}</span>`;
+  }
+  const alCount = [daily, weekly, monthly].filter(s => s.signal === 'AL').length;
+  const satCount = [daily, weekly, monthly].filter(s => s.signal === 'SAT').length;
+  const mtfText = alCount >= 2 ? `${alCount}/3 AL — Güçlü Uyum` : satCount >= 2 ? `${satCount}/3 SAT — Güçlü Uyum` : 'Karışık Sinyaller';
+  const mtfColor = alCount >= 2 ? 'var(--green)' : satCount >= 2 ? 'var(--red)' : 'var(--text-muted)';
+
+  const dirColor  = isAl ? 'var(--green)' : 'var(--red)';
+  const dirLabel  = isAl ? 'ALIŞ' : 'SATIŞ';
+  const chgClass  = chg >= 0 ? 'pos' : 'neg';
+  const scoreColor = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow,#f59e0b)' : 'var(--text-muted)';
+
+  const cardId = `plancard_${sym}`;
+
+  // Fiyat haritası seviyeleri
+  const priceMapLevels = [];
+  if (targets[2]) priceMapLevels.push({ label: 'Hedef 3', price: targets[2], color: 'var(--green)', icon: '🎯', bold: false });
+  if (targets[1]) priceMapLevels.push({ label: 'Hedef 2', price: targets[1], color: 'var(--green)', icon: '🎯', bold: false });
+  if (targets[0]) priceMapLevels.push({ label: 'Hedef 1', price: targets[0], color: 'var(--green)', icon: '🎯', bold: false });
+  if (ema200 > 0) priceMapLevels.push({ label: 'EMA200', price: ema200, color: '#8896aa', icon: '━', bold: false });
+  resistances.slice(0,1).forEach(r => priceMapLevels.push({ label: 'Direnç', price: r, color: '#f59e0b', icon: '⬆', bold: false }));
+  priceMapLevels.push({ label: 'Mevcut', price: price, color: dirColor, icon: '●', bold: true });
+  if (ema50 > 0) priceMapLevels.push({ label: 'EMA50', price: ema50, color: '#8896aa', icon: '━', bold: false });
+  if (ema20 > 0) priceMapLevels.push({ label: 'EMA20', price: ema20, color: '#6366f1', icon: '━', bold: false });
+  supports.slice(0,1).forEach(s => priceMapLevels.push({ label: 'Destek', price: s, color: '#6366f1', icon: '⬇', bold: false }));
+  if (sl > 0) priceMapLevels.push({ label: 'Stop-Loss', price: sl, color: 'var(--red)', icon: '🛑', bold: false });
+  if (bbL > 0 && bbL < sl) priceMapLevels.push({ label: 'BB Alt', price: bbL, color: '#8896aa', icon: '━', bold: false });
+
+  const priceSorted = [...priceMapLevels].sort((a, b) => b.price - a.price);
+  const pmMin = Math.min(...priceSorted.map(p => p.price)) * 0.995;
+  const pmMax = Math.max(...priceSorted.map(p => p.price)) * 1.005;
+  const pmRange = pmMax - pmMin || 1;
+
+  const priceMapHtml = priceSorted.map(p => {
+    const pct = ((p.price - pmMin) / pmRange * 100).toFixed(1);
+    const isCurrent = p.label === 'Mevcut';
+    return `<div style="position:absolute;bottom:${pct}%;left:0;right:0;display:flex;align-items:center;gap:6px;${isCurrent ? 'z-index:2;' : ''}">
+      <span style="font-size:${isCurrent ? 13 : 10}px;color:${p.color};${p.bold ? 'font-weight:800;' : ''};min-width:16px;text-align:center;">${p.icon}</span>
+      <span style="font-size:${isCurrent ? 12 : 10}px;color:${p.color};${p.bold ? 'font-weight:700;' : ''};flex:1;white-space:nowrap;">${p.label}: ${fmt(p.price)} ₺</span>
+      ${isCurrent ? `<div style="position:absolute;left:0;right:0;height:1px;background:${dirColor};opacity:0.4;top:50%;"></div>` : ''}
+    </div>`;
+  }).join('');
+
+  const reasonHtml = (plan.reasons || []).map(r => `<li style="font-size:11px;color:var(--text-secondary);margin-bottom:2px;">${r}</li>`).join('');
+
+  return `
+  <div class="card mb-24" data-plan-card="${cardId}">
+    <!-- Başlık -->
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="font-weight:800;font-size:17px;cursor:pointer;color:var(--text);" onclick="goToStock('${sym}')">${sym}</span>
+        <span style="font-size:12px;color:var(--text-muted);">${name}</span>
+        <span style="font-weight:700;font-size:16px;">${fmt(price)} ₺</span>
+        <span class="${chgClass}" style="font-size:12px;">%${fmt(Math.abs(chg))} ${chg >= 0 ? '▲' : '▼'}</span>
+        <span style="padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700;background:${dirColor}22;color:${dirColor};">${dirLabel} SİNYALİ</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div style="font-size:11px;color:${scoreColor};">Fırsat Skoru: <b style="color:${scoreColor};">${score}/100</b></div>
+      </div>
+    </div>
+
+    <!-- Plan + Nedenler -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;" class="plan-top-grid">
+      <div style="background:var(--bg-input);border-radius:8px;padding:14px;border-left:3px solid ${dirColor};">
+        <div style="font-size:11px;font-weight:700;color:${dirColor};margin-bottom:10px;">${isAl ? 'ALIŞ' : 'SATIŞ'} PLANI</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;justify-content:space-between;"><span style="font-size:12px;color:var(--text-muted);">📌 Giriş</span><span style="font-weight:700;font-size:13px;color:${dirColor};">${fmt(entry)} ₺</span></div>
+          <div style="display:flex;justify-content:space-between;"><span style="font-size:12px;color:var(--text-muted);">🛑 Stop-Loss</span><span style="font-weight:700;font-size:13px;color:var(--red);">${sl > 0 ? fmt(sl) + ' ₺' : '-'}</span></div>
+          ${targets[0] ? `<div style="display:flex;justify-content:space-between;"><span style="font-size:12px;color:var(--text-muted);">🎯 Hedef 1</span><span style="font-weight:700;font-size:13px;color:var(--green);">${fmt(targets[0])} ₺</span></div>` : ''}
+          ${targets[1] ? `<div style="display:flex;justify-content:space-between;"><span style="font-size:12px;color:var(--text-muted);">🎯 Hedef 2</span><span style="font-weight:700;font-size:13px;color:var(--green);">${fmt(targets[1])} ₺</span></div>` : ''}
+          ${targets[2] ? `<div style="display:flex;justify-content:space-between;"><span style="font-size:12px;color:var(--text-muted);">🎯 Hedef 3</span><span style="font-weight:700;font-size:13px;color:var(--green);">${fmt(targets[2])} ₺</span></div>` : ''}
+          ${plan.riskReward ? `<div style="display:flex;justify-content:space-between;margin-top:4px;padding-top:6px;border-top:1px solid var(--border);"><span style="font-size:11px;color:var(--text-muted);">R/R Oranı</span><span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(99,102,241,0.1);color:var(--accent);">1:${plan.riskReward}</span></div>` : ''}
+        </div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:6px;">STRATEJİ NEDENLERİ</div>
+        <ul style="margin:0;padding-left:14px;">${reasonHtml || '<li style="font-size:11px;color:var(--text-muted);">Veri yükleniyor...</li>'}</ul>
+      </div>
+    </div>
+
+    <!-- Pozisyon Hesaplayıcı -->
+    <div style="background:var(--bg-input);border-radius:8px;padding:14px;margin-bottom:16px;border:1px solid var(--border);">
+      <div style="font-size:12px;font-weight:700;color:var(--accent);margin-bottom:12px;">POZİSYON HESAPLAYICI</div>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-bottom:12px;">
+        <div>
+          <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:4px;">Lot Sayısı</label>
+          <input type="number" class="plan-lot-input" min="1" step="1" placeholder="Lot girin"
+            oninput="updatePositionFromLot(this.closest('[data-plan-card]'))"
+            style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:14px;width:110px;">
+        </div>
+        <div style="font-size:12px;color:var(--text-muted);align-self:flex-end;padding-bottom:8px;">↔</div>
+        <div>
+          <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:4px;">Sermaye (TL)</label>
+          <input type="number" class="plan-sermaye-input" min="0" step="100" placeholder="Sermaye girin"
+            oninput="updatePositionFromSermaye(this.closest('[data-plan-card]'))"
+            style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:14px;width:130px;">
+        </div>
+      </div>
+      <div class="plan-calc-result"></div>
+      <div class="plan-recommended" style="margin-top:10px;padding:8px 12px;border-radius:6px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);font-size:12px;"></div>
+    </div>
+
+    <!-- Fiyat Haritası + Teknik -->
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:16px;margin-bottom:16px;" class="plan-bottom-grid">
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:8px;">FİYAT HARİTASI</div>
+        <div style="position:relative;height:280px;border-left:2px solid var(--border);padding-left:8px;">
+          ${priceMapHtml}
+        </div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:8px;">TEKNİK GÖSTERGELER</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${renderIndicatorBar('RSI', rsi, 0, 100, rsi < 30 ? 'var(--green)' : rsi > 70 ? 'var(--red)' : 'var(--accent)', rsi < 30 ? 'Aşırı Satım' : rsi > 70 ? 'Aşırı Alım' : 'Nötr')}
+          ${renderIndicatorBar('Stochastic', stoch, 0, 100, stoch < 20 ? 'var(--green)' : stoch > 80 ? 'var(--red)' : 'var(--accent)', stoch < 20 ? 'Aşırı Satım' : stoch > 80 ? 'Aşırı Alım' : 'Nötr')}
+          ${renderIndicatorBar('ADX', adx, 0, 60, adx > 25 ? 'var(--accent)' : 'var(--text-muted)', adx > 40 ? 'Çok Güçlü' : adx > 25 ? 'Güçlü' : 'Zayıf')}
+        </div>
+        <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px;">
+          ${ema20 > 0 ? `<div style="background:var(--bg-input);padding:6px 8px;border-radius:5px;"><span style="color:var(--text-muted);">EMA20</span><span style="float:right;font-weight:700;">${fmt(ema20)} ₺</span></div>` : ''}
+          ${ema50 > 0 ? `<div style="background:var(--bg-input);padding:6px 8px;border-radius:5px;"><span style="color:var(--text-muted);">EMA50</span><span style="float:right;font-weight:700;">${fmt(ema50)} ₺</span></div>` : ''}
+          ${ema200 > 0 ? `<div style="background:var(--bg-input);padding:6px 8px;border-radius:5px;"><span style="color:var(--text-muted);">EMA200</span><span style="float:right;font-weight:700;">${fmt(ema200)} ₺</span></div>` : ''}
+          ${bbU > 0 ? `<div style="background:var(--bg-input);padding:6px 8px;border-radius:5px;"><span style="color:var(--text-muted);">BB Üst</span><span style="float:right;font-weight:700;">${fmt(bbU)} ₺</span></div>` : ''}
+          ${bbM > 0 ? `<div style="background:var(--bg-input);padding:6px 8px;border-radius:5px;"><span style="color:var(--text-muted);">BB Orta</span><span style="float:right;font-weight:700;">${fmt(bbM)} ₺</span></div>` : ''}
+          ${bbL > 0 ? `<div style="background:var(--bg-input);padding:6px 8px;border-radius:5px;"><span style="color:var(--text-muted);">BB Alt</span><span style="float:right;font-weight:700;">${fmt(bbL)} ₺</span></div>` : ''}
+        </div>
+        <!-- Çok Zaman Dilimi -->
+        <div style="margin-top:12px;">
+          <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:6px;">ÇOK ZAMAN DİLİMİ</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">
+            <div style="font-size:11px;color:var(--text-muted);">Günlük:</div>${tfBadge(daily)}
+            <div style="font-size:11px;color:var(--text-muted);">Haftalık:</div>${tfBadge(weekly)}
+            <div style="font-size:11px;color:var(--text-muted);">Aylık:</div>${tfBadge(monthly)}
+          </div>
+          <div style="font-size:11px;color:${mtfColor};font-weight:600;">${mtfText}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Gizli veri -->
+    <div class="plan-data" data-entry="${entry}" data-sl="${sl}" data-price="${price}"
+      data-t1="${targets[0]||0}" data-t2="${targets[1]||0}" data-t3="${targets[2]||0}"
+      data-dir="${dir}" style="display:none;"></div>
+  </div>`;
+}
+
+function renderIndicatorBar(label, val, min, max, color, text) {
+  const pct = Math.min(100, Math.max(0, (val - min) / (max - min) * 100)).toFixed(1);
+  return `<div>
+    <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;">
+      <span style="color:var(--text-muted);">${label}: <b style="color:var(--text);">${Number(val).toFixed(1)}</b></span>
+      <span style="color:${color};font-size:10px;">${text}</span>
+    </div>
+    <div style="height:4px;background:var(--bg-input);border-radius:2px;overflow:hidden;">
+      <div style="height:100%;width:${pct}%;background:${color};border-radius:2px;transition:width 0.3s;"></div>
+    </div>
+  </div>`;
+}
+
+function updatePositionFromLot(card) {
+  const data = card.querySelector('.plan-data');
+  const entry = parseFloat(data.dataset.entry) || 0;
+  const lot = parseFloat(card.querySelector('.plan-lot-input').value) || 0;
+  if (entry > 0 && lot > 0) {
+    const kom = parseFloat(document.getElementById('planKomisyon')?.value) || 0.05;
+    const sermaye = lot * entry * (1 + kom / 100);
+    card.querySelector('.plan-sermaye-input').value = Math.round(sermaye);
+  }
+  updatePosition(card);
+}
+
+function updatePositionFromSermaye(card) {
+  const data = card.querySelector('.plan-data');
+  const entry = parseFloat(data.dataset.entry) || 0;
+  const sermaye = parseFloat(card.querySelector('.plan-sermaye-input').value) || 0;
+  if (entry > 0 && sermaye > 0) {
+    const kom = parseFloat(document.getElementById('planKomisyon')?.value) || 0.05;
+    const lot = Math.floor(sermaye / entry / (1 + kom / 100));
+    card.querySelector('.plan-lot-input').value = lot > 0 ? lot : '';
+  }
+  updatePosition(card);
+}
+
+function updatePosition(card) {
+  const data    = card.querySelector('.plan-data');
+  const resEl   = card.querySelector('.plan-calc-result');
+  const recEl   = card.querySelector('.plan-recommended');
+  if (!data || !resEl) return;
+
+  const entry   = parseFloat(data.dataset.entry) || 0;
+  const sl      = parseFloat(data.dataset.sl)    || 0;
+  const t1      = parseFloat(data.dataset.t1)    || 0;
+  const t2      = parseFloat(data.dataset.t2)    || 0;
+  const t3      = parseFloat(data.dataset.t3)    || 0;
+  const dir     = data.dataset.dir || 'buy';
+  const lot     = parseFloat(card.querySelector('.plan-lot-input')?.value) || 0;
+  const hesap   = parseFloat(document.getElementById('planHesap')?.value)  || 100000;
+  const riskPct = parseFloat(document.getElementById('planRisk')?.value)   || 1;
+  const kom     = parseFloat(document.getElementById('planKomisyon')?.value) || 0.05;
+
+  if (!entry || !sl) { resEl.innerHTML = ''; recEl.innerHTML = ''; return; }
+
+  // Önerilen lot
+  const risk1lot = dir === 'buy' ? (entry - sl) : (sl - entry);
+  const onerilenRiskTL = hesap * riskPct / 100;
+  const onerilenLot = risk1lot > 0 ? Math.floor(onerilenRiskTL / risk1lot) : 0;
+
+  // Lot girilmemişse önerileni kullan
+  const efLot = lot > 0 ? lot : onerilenLot;
+
+  if (efLot <= 0) { resEl.innerHTML = ''; recEl.innerHTML = ''; return; }
+
+  const maliyet    = efLot * entry * (1 + kom / 100);
+  const riskTL     = efLot * Math.abs(risk1lot);
+  const riskHesap  = hesap > 0 ? (riskTL / hesap * 100) : 0;
+  const riskPozPct = entry > 0 ? (Math.abs(risk1lot) / entry * 100) : 0;
+
+  function targetRow(label, tp) {
+    if (!tp) return '';
+    const getiriTL  = efLot * Math.abs(tp - entry) * (1 - kom / 100);
+    const getiriPct = maliyet > 0 ? (getiriTL / maliyet * 100) : 0;
+    const rr        = riskTL > 0 ? (getiriTL / riskTL) : 0;
+    const col = (dir === 'buy') ? (tp > entry ? 'var(--green)' : 'var(--red)') : (tp < entry ? 'var(--green)' : 'var(--red)');
+    return `<div style="background:var(--bg-secondary);padding:8px 10px;border-radius:6px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">${label}</div>
+      <div style="font-weight:700;color:${col};font-size:13px;">+${fmt(getiriTL)} ₺</div>
+      <div style="font-size:10px;color:var(--text-muted);">%${fmt(getiriPct)} · R/R ${fmt(rr,1)}x</div>
+    </div>`;
+  }
+
+  resEl.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-top:4px;">
+      <div style="background:var(--bg-secondary);padding:8px 10px;border-radius:6px;text-align:center;">
+        <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">Toplam Maliyet</div>
+        <div style="font-weight:700;font-size:13px;">${fmt(maliyet)} ₺</div>
+        <div style="font-size:10px;color:var(--text-muted);">%${fmt(maliyet/hesap*100)} hesap</div>
+      </div>
+      <div style="background:var(--bg-secondary);padding:8px 10px;border-radius:6px;text-align:center;">
+        <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">Risk (SL'e)</div>
+        <div style="font-weight:700;color:var(--red);font-size:13px;">-${fmt(riskTL)} ₺</div>
+        <div style="font-size:10px;color:var(--text-muted);">-%${fmt(riskHesap)} hesap · -%${fmt(riskPozPct)} poz.</div>
+      </div>
+      ${targetRow('Hedef 1 Getiri', t1)}
+      ${targetRow('Hedef 2 Getiri', t2)}
+      ${targetRow('Hedef 3 Getiri', t3)}
+    </div>`;
+
+  if (recEl) {
+    recEl.innerHTML = onerilenLot > 0
+      ? `Önerilen Lot: <b style="color:var(--accent);">${onerilenLot} lot</b> &nbsp;·&nbsp; Hesabın <b>%${fmt(riskPct,1)}</b>'i risk &nbsp;·&nbsp; ${fmt(onerilenRiskTL)} TL kayıp limiti`
+      : 'Stop-loss bilgisi olmadan öneri hesaplanamıyor.';
+  }
 }
 
 // =============================================================================
