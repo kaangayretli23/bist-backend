@@ -1271,6 +1271,11 @@ function dismissLoadingPopup() {
 // NAVIGATION
 // =============================================================================
 function navigate(page, params) {
+  // Otomatik yenileme için aktif sayfa takibi
+  _currentPage = page;
+  _lastRefresh[page] = Date.now();
+  _arUpdateBadge();
+
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-link').forEach(n => n.classList.remove('active'));
 
@@ -1280,8 +1285,9 @@ function navigate(page, params) {
   const nav = document.querySelector(`.nav-link[data-page="${page}"]`);
   if (nav) nav.classList.add('active');
 
-  // Close mobile nav
+  // Close mobile nav & scroll to top
   document.querySelector('.nav-links').classList.remove('show');
+  window.scrollTo(0, 0);
 
   // Load data
   switch(page) {
@@ -5456,15 +5462,6 @@ let _currentPage   = 'dashboard';
 let _lastRefresh   = {};   // { page: timestamp }
 let _arTimer       = null; // setInterval id
 let _arCountdown   = null; // countdown setInterval id
-
-// navigate() çağrısında aktif sayfayı kaydet
-const _origNavigate = navigate;
-function navigate(page, params) {
-  _currentPage = page;
-  _lastRefresh[page] = Date.now();
-  _arUpdateBadge();
-  _origNavigate(page, params);
-}
 
 function _autoRefreshInit() {
   // Her 10 sn bir kontrol et — vakti geldiyse yenile
