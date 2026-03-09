@@ -1285,8 +1285,9 @@ function navigate(page, params) {
   const nav = document.querySelector(`.nav-link[data-page="${page}"]`);
   if (nav) nav.classList.add('active');
 
-  // Close mobile nav
+  // Close mobile nav & scroll to top
   document.querySelector('.nav-links').classList.remove('show');
+  window.scrollTo(0, 0);
 
   // Load data
   switch(page) {
