@@ -4873,6 +4873,10 @@ def _load_index_html():
 
 _load_index_html()
 
+@app.route('/ping')
+def ping():
+    return 'ok', 200
+
 @app.route('/')
 def index():
     with _html_page_cache_lock:
