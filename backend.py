@@ -1684,6 +1684,25 @@ def calc_recommendation(hist, indicators):
             regime = {'regime': 'unknown', 'description': ''}
         regime_type = regime.get('regime', 'unknown')
 
+        # Diverjans hesapla (tum periyotlar icin ortak)
+        try:
+            div_data = calc_divergence(hist)
+            div_summary = div_data.get('summary', {})
+            div_signal = div_summary.get('signal', 'neutral')
+            div_has_recent = div_summary.get('hasRecent', False)
+            div_recent = div_data.get('recentDivergences', [])
+        except:
+            div_signal = 'neutral'; div_has_recent = False; div_recent = []
+
+        # MTF sinyal hesapla (tum periyotlar icin ortak)
+        try:
+            mtf_data = calc_mtf_signal(hist)
+            mtf_direction = mtf_data.get('mtfDirection', 'neutral')
+            mtf_score_val = mtf_data.get('mtfScore', 0)
+            mtf_strength = mtf_data.get('mtfStrength', 'Uyumsuz')
+        except:
+            mtf_direction = 'neutral'; mtf_score_val = 0; mtf_strength = 'Uyumsuz'; mtf_data = {}
+
         for label, days in [('weekly',5),('monthly',22),('yearly',252)]:
             if n<days+14: recommendations[label]={'action':'neutral','confidence':0,'reasons':[],'score':0,'strategy':'Yeterli veri yok','reason':'Yeterli veri yok','indicatorBreakdown':{}}; continue
 
@@ -1780,12 +1799,13 @@ def calc_recommendation(hist, indicators):
                 vol_recent=np.mean(sv[-5:])
                 vol_ratio = vol_recent / vol_avg if vol_avg > 0 else 1
                 total_indicators += 1
-                if vol_ratio > 1.5:
+                if vol_ratio > 1.2:
+                    vol_pts = 1.5 if vol_ratio > 2.0 else 1.0
                     if c[-1]>c[-5]:
-                        score+=1; buy_indicators+=1
+                        score+=vol_pts; buy_indicators+=1
                         reasons.append(f'Hacim ortalamanin {sf(vol_ratio)}x uzerinde + yukari hareket → Guclu alis')
                     else:
-                        score-=1; sell_indicators+=1
+                        score-=vol_pts; sell_indicators+=1
                         reasons.append(f'Hacim ortalamanin {sf(vol_ratio)}x uzerinde + dusus → Guclu satis baskisi')
                 elif vol_ratio < 0.5:
                     reasons.append(f'Hacim ortalamanin altinda ({sf(vol_ratio)}x) → Dusuk ilgi, sinyal gucsuslesiyor')
@@ -1806,17 +1826,18 @@ def calc_recommendation(hist, indicators):
             if stoch_k<20: score+=1; buy_indicators+=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri satim bolgesi')
             elif stoch_k>80: score-=1; sell_indicators+=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri alim bolgesi')
 
-            # 8. ADX - Trend gucu
+            # 8. ADX - Trend gucu (arttirilmis agirlik: ADX gucune gore 0.5-1.5 puan)
             adx_data = calc_adx(h, l, c)
             adx_val = adx_data.get('value', 25)
             total_indicators += 1
             if adx_val > 25:
                 trend_dir = 'yukari' if adx_data.get('plusDI', 0) > adx_data.get('minusDI', 0) else 'asagi'
-                reasons.append(f'ADX={sf(adx_val)}: Guclu {trend_dir} trend')
-                if trend_dir == 'yukari': score += 0.5; buy_indicators += 1
-                else: score -= 0.5; sell_indicators += 1
+                adx_pts = 1.5 if adx_val > 40 else (1.0 if adx_val > 30 else 0.5)
+                reasons.append(f'ADX={sf(adx_val)}: Guclu {trend_dir} trend (agirlik: {adx_pts})')
+                if trend_dir == 'yukari': score += adx_pts; buy_indicators += 1
+                else: score -= adx_pts; sell_indicators += 1
             else:
-                reasons.append(f'ADX={sf(adx_val)}: Zayif trend (<25), yatay piyasa')
+                reasons.append(f'ADX={sf(adx_val)}: Zayif trend (<25), yatay piyasa - sinyaller zayifliyor')
 
             # 9. Ichimoku (eger yeterli veri varsa)
             if n >= 52:
@@ -1853,15 +1874,41 @@ def calc_recommendation(hist, indicators):
                         sell_indicators += 1
                         reasons.append(f'Mum: {p["name"]} → {p["description"][:60]}')
 
-            # 12. Piyasa rejimi etkisi
+            # 12. Diverjans sinyali (±2.0 puan - guclu ve nadir sinyal)
+            if n >= 50:
+                total_indicators += 1
+                if div_signal == 'buy':
+                    div_pts = 2.0 if div_has_recent else 1.0
+                    score += div_pts; buy_indicators += 1
+                    recent_labels = [d['label'] for d in div_recent if d['signal'] == 'buy'][:2]
+                    reasons.append(f'Boga diverjans{"i (son 20 bar icinde)" if div_has_recent else ""}: {", ".join(recent_labels) if recent_labels else "RSI/MACD uyumsuzlugu"}')
+                elif div_signal == 'sell':
+                    div_pts = 2.0 if div_has_recent else 1.0
+                    score -= div_pts; sell_indicators += 1
+                    recent_labels = [d['label'] for d in div_recent if d['signal'] == 'sell'][:2]
+                    reasons.append(f'Ayi diverjans{"i (son 20 bar icinde)" if div_has_recent else ""}: {", ".join(recent_labels) if recent_labels else "RSI/MACD uyumsuzlugu"}')
+
+            # 13. MTF (Coklu Zaman Dilimi) uyum sinyali (±1.5 puan)
+            if mtf_strength != 'Uyumsuz':
+                total_indicators += 1
+                if mtf_direction == 'buy':
+                    mtf_pts = 1.5 if mtf_score_val == 3 else 1.0
+                    score += mtf_pts; buy_indicators += 1
+                    reasons.append(f'MTF uyumu: {mtf_data.get("description", "")} → {mtf_strength} alis')
+                elif mtf_direction == 'sell':
+                    mtf_pts = 1.5 if mtf_score_val == 3 else 1.0
+                    score -= mtf_pts; sell_indicators += 1
+                    reasons.append(f'MTF uyumu: {mtf_data.get("description", "")} → {mtf_strength} satis')
+
+            # 14. Piyasa rejimi etkisi (skor +-14 ile sinirlandirilir)
             if regime_type in ('strong_bull', 'bull') and score > 0:
-                score *= 1.15
+                score = min(score * 1.15, 14.0)
                 reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Alis sinyali gucleniyor')
             elif regime_type in ('strong_bear', 'bear') and score < 0:
-                score *= 1.15
+                score = max(score * 1.15, -14.0)
                 reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Satis sinyali gucleniyor')
             elif regime_type in ('strong_bear', 'bear') and score > 0:
-                score *= 0.85
+                score = score * 0.85
                 reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Alis sinyali zayifliyor (ayi piyasasi)')
 
             # 13. Destek/Direnc bazli yorumlar
@@ -1896,13 +1943,19 @@ def calc_recommendation(hist, indicators):
                     strategy_parts.append(f"Fibonacci {fib_res['level']} direnci ({fib_res['price']} TL) yakininda")
 
             # Sonuc
-            max_score=14.0
-            conf=min(abs(score)/max_score*100, 100)
-            if score>=3: action='AL'
-            elif score>=1.5: action='TUTUN/AL'
-            elif score<=-3: action='SAT'
-            elif score<=-1.5: action='TUTUN/SAT'
-            else: action='NOTR'
+            max_score = 14.0
+            score = max(-14.0, min(14.0, score))  # skor siniri
+            conf = min(abs(score) / max_score * 100, 100)
+
+            # Confluence filtresi: AL/SAT icin en az %40 gosterge uyumu gerekli
+            consensus_pct = (buy_indicators / total_indicators * 100) if total_indicators > 0 else 50
+            sell_consensus_pct = (sell_indicators / total_indicators * 100) if total_indicators > 0 else 50
+
+            if score >= 3 and consensus_pct >= 40: action = 'AL'
+            elif score >= 1.5: action = 'TUTUN/AL'
+            elif score <= -3 and sell_consensus_pct >= 40: action = 'SAT'
+            elif score <= -1.5: action = 'TUTUN/SAT'
+            else: action = 'NOTR'
 
             # KISA OZET REASON (tek satirlik aciklama)
             if action == 'AL':
@@ -4207,7 +4260,7 @@ def calc_ml_confidence(hist, indicators, recommendation_score, signal_type='buy'
             vol_avg = float(np.mean(v[-20:]))
             vol_recent = float(np.mean(v[-3:]))
             vol_ratio = vol_recent / vol_avg if vol_avg > 0 else 1
-            if vol_ratio > 1.5:
+            if vol_ratio > 1.2:
                 # Hacim teyidi var
                 price_direction = 'up' if c[-1] > c[-3] else 'down'
                 if (signal_type == 'buy' and price_direction == 'up') or (signal_type == 'sell' and price_direction == 'down'):
@@ -4277,20 +4330,28 @@ def calc_ml_confidence(hist, indicators, recommendation_score, signal_type='buy'
         max_score += 10
         factors.append({'name': 'Destek/Direnc', 'value': 'Yakin' if sr_score >= 7 else 'Uzak', 'score': sf(sr_score), 'max': 10})
 
-        # 7. Geçmiş Sinyal Performansı (agirlik: 10%)
-        backtest = calc_signal_backtest(hist)
+        # 7. Coklu Zaman Dilimi (MTF) Uyumu (agirlik: 10%)
+        # Backtest win rate yerine MTF kullaniyoruz - circular logic'i onler
         bt_score = 0
-        if backtest.get('totalSignals', 0) > 5:
-            if signal_type == 'buy':
-                win_rate = float(backtest.get('buySignals', {}).get('winRate10d', 50))
+        mtf_label = 'N/A'
+        try:
+            mtf_res = calc_mtf_signal(hist)
+            mtf_dir = mtf_res.get('mtfDirection', 'neutral')
+            mtf_sc = mtf_res.get('mtfScore', 0)
+            if signal_type == 'buy' and mtf_dir == 'buy':
+                bt_score = 5 + mtf_sc * 2.5  # 2/3: 7.5, 3/3: 10
+            elif signal_type == 'sell' and mtf_dir == 'sell':
+                bt_score = 5 + mtf_sc * 2.5
+            elif mtf_dir == 'neutral':
+                bt_score = 5
             else:
-                win_rate = float(backtest.get('sellSignals', {}).get('winRate10d', 50))
-            bt_score = min(win_rate / 100 * 10, 10)
-        else:
-            bt_score = 5  # Yeterli veri yok, notr
+                bt_score = 2  # Ters yon
+            mtf_label = mtf_res.get('mtfAlignment', 'N/A')
+        except:
+            bt_score = 5
         score += bt_score
         max_score += 10
-        factors.append({'name': 'Gecmis Performans', 'value': f'{sf(win_rate)}%' if backtest.get('totalSignals', 0) > 5 else 'N/A', 'score': sf(bt_score), 'max': 10})
+        factors.append({'name': 'MTF Uyumu', 'value': mtf_label, 'score': sf(bt_score), 'max': 10})
 
         # Final confidence
         confidence = sf(score / max_score * 100) if max_score > 0 else 50
