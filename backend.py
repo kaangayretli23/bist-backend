@@ -788,10 +788,10 @@ def _fetch_yahoo_http(symbol, period1_days=14):
         opens = quote.get('open', []); highs = quote.get('high', [])
         lows = quote.get('low', []); volumes = quote.get('volume', [])
 
-        o_val = float(opens[last_i]) if last_i < len(opens) and opens[last_i] else float(cur)
-        h_val = float(highs[last_i]) if last_i < len(highs) and highs[last_i] else float(cur)
-        l_val = float(lows[last_i]) if last_i < len(lows) and lows[last_i] else float(cur)
-        v_val = int(volumes[last_i]) if last_i < len(volumes) and volumes[last_i] else 0
+        o_val = float(opens[last_i]) if last_i < len(opens) and opens[last_i] is not None else float(cur)
+        h_val = float(highs[last_i]) if last_i < len(highs) and highs[last_i] is not None else float(cur)
+        l_val = float(lows[last_i]) if last_i < len(lows) and lows[last_i] is not None else float(cur)
+        v_val = int(volumes[last_i]) if last_i < len(volumes) and volumes[last_i] is not None else 0
         return {
             'close': float(cur), 'prev': float(prev),
             'open': o_val, 'high': max(h_val, float(cur)), 'low': min(l_val, float(cur)),
@@ -1582,9 +1582,9 @@ def calc_aroon(highs, lows, period=25):
     """Aroon Up/Down - trend yonu gostergesi"""
     if len(highs)<period+1: return {'name':'Aroon','up':50,'down':50,'signal':'neutral'}
     h_slice=list(highs[-period-1:]); l_slice=list(lows[-period-1:])
-    days_since_high=period-h_slice.index(max(h_slice))
-    days_since_low=period-l_slice.index(min(l_slice))
-    up=sf((days_since_high/period)*100); down=sf((days_since_low/period)*100)
+    # h_slice[0]=oldest, h_slice[period]=newest; Aroon Up = (index_of_max / period) * 100
+    up=sf((h_slice.index(max(h_slice))/period)*100)
+    down=sf((l_slice.index(min(l_slice))/period)*100)
     if up>70 and down<30: sig='buy'
     elif down>70 and up<30: sig='sell'
     else: sig='neutral'
@@ -1599,7 +1599,7 @@ def calc_trix(closes, period=15):
             result.append(float(data[i])*k + result[-1]*(1-k))
         return result
     e1=ema_arr(closes,period); e2=ema_arr(e1,period); e3=ema_arr(e2,period)
-    if len(e3)<2 or e3[-2]==0: return {'name':'TRIX','value':0,'signal':'neutral'}
+    if len(e3)<2 or abs(e3[-2])<1e-9: return {'name':'TRIX','value':0,'signal':'neutral'}
     trix=sf(((e3[-1]-e3[-2])/e3[-2])*10000)
     sig='buy' if trix>0 else ('sell' if trix<0 else 'neutral')
     return {'name':'TRIX','value':trix,'signal':sig}
@@ -1914,7 +1914,7 @@ def calc_recommendation(hist, indicators):
             # 13. Destek/Direnc bazli yorumlar
             if supports:
                 nearest_sup = supports[0]
-                sup_dist = sf(((cur - nearest_sup) / nearest_sup) * 100)
+                sup_dist = sf(((cur - nearest_sup) / nearest_sup) * 100) if nearest_sup > 0 else sf(0)
                 if float(sup_dist) < 2:
                     score += 1
                     reasons.append(f'Fiyat destege ({sf(nearest_sup)}) cok yakin (%{sup_dist}) → Destek bolgesi')
@@ -1922,7 +1922,7 @@ def calc_recommendation(hist, indicators):
                 elif float(sup_dist) < 5:
                     strategy_parts.append(f'{sf(nearest_sup)} TL destegine yaklasirsa alis firsati')
 
-            if resistances:
+            if resistances and cur > 0:
                 nearest_res = resistances[0]
                 res_dist = sf(((nearest_res - cur) / cur) * 100)
                 if float(res_dist) < 2:
@@ -5401,9 +5401,10 @@ def get_portfolio():
         for r in rows:
             cd=_cget(_stock_cache, r['symbol'])
             if not cd: continue
-            q,ac,cp=r['quantity'],r['avg_cost'],cd['price']
+            q,ac,cp=r['quantity'],r['avg_cost'],float(cd.get('price') or 0)
+            if cp<=0: continue
             mv=cp*q; cb=ac*q; upnl=mv-cb; tv+=mv; tc+=cb
-            pos.append({'id':r['id'],'symbol':r['symbol'],'name':cd['name'],'quantity':q,'avgCost':sf(ac),'currentPrice':sf(cp),'marketValue':sf(mv),'costBasis':sf(cb),'unrealizedPnL':sf(upnl),'unrealizedPnLPct':sf(upnl/cb*100 if cb else 0),'changePct':cd.get('changePct',0),'weight':0})
+            pos.append({'id':r['id'],'symbol':r['symbol'],'name':cd.get('name',r['symbol']),'quantity':q,'avgCost':sf(ac),'currentPrice':sf(cp),'marketValue':sf(mv),'costBasis':sf(cb),'unrealizedPnL':sf(upnl),'unrealizedPnLPct':sf(upnl/cb*100 if cb else 0),'changePct':float(cd.get('changePct') or 0),'weight':0})
         for p in pos: p['weight']=sf(float(p['marketValue'])/tv*100 if tv>0 else 0)
         tp=tv-tc
         dp=sum(float(p['marketValue'])*p['changePct']/100 for p in pos)
