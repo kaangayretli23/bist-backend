@@ -285,7 +285,7 @@ def _db_load_market_snapshot():
         if price_row:
             payload, saved_at = price_row
             age = time.time() - float(saved_at)
-            if age < CACHE_STALE_TTL:  # 30 dakikadan eskiyse yükleme
+            if age < CACHE_STALE_TTL:  # 30 dakikadan tazeyse yükle
                 snapshot = json.loads(payload)
                 now = time.time()
                 with _lock:
@@ -305,7 +305,7 @@ def _db_load_market_snapshot():
         if hist_row:
             payload, saved_at = hist_row
             age = time.time() - float(saved_at)
-            if age < HIST_CACHE_TTL:  # 1 saatten eskiyse yükleme
+            if age < HIST_CACHE_TTL:  # 1 saatten tazeyse yükle
                 hist_payload = json.loads(payload)
                 loaded = 0
                 for hk, compressed in hist_payload.items():
@@ -1911,7 +1911,7 @@ def calc_recommendation(hist, indicators):
                 score = score * 0.85
                 reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Alis sinyali zayifliyor (ayi piyasasi)')
 
-            # 13. Destek/Direnc bazli yorumlar
+            # 15. Destek/Direnc bazli yorumlar
             if supports:
                 nearest_sup = supports[0]
                 sup_dist = sf(((cur - nearest_sup) / nearest_sup) * 100) if nearest_sup > 0 else sf(0)
@@ -1932,7 +1932,7 @@ def calc_recommendation(hist, indicators):
                 elif float(res_dist) < 5:
                     strategy_parts.append(f'{sf(nearest_res)} TL direncini kirarsa alis guclenir')
 
-            # 14. Fibonacci bazli yorumlar
+            # 16. Fibonacci bazli yorumlar
             if fib_sup and fib_sup.get('price'):
                 fib_sup_dist = sf(((cur - fib_sup['price']) / cur) * 100)
                 if float(fib_sup_dist) < 3:
@@ -4347,7 +4347,7 @@ def calc_ml_confidence(hist, indicators, recommendation_score, signal_type='buy'
             else:
                 bt_score = 2  # Ters yon
             mtf_label = mtf_res.get('mtfAlignment', 'N/A')
-        except:
+        except Exception:
             bt_score = 5
         score += bt_score
         max_score += 10
