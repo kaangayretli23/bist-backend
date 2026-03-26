@@ -462,6 +462,7 @@ tr:hover td { background: rgba(26,34,52,0.5); }
     <button class="nav-link" data-page="signals" onclick="navigate('signals')" style="color:var(--green);font-weight:700;">Sinyaller</button>
     <button class="nav-link" data-page="opportunities" onclick="navigate('opportunities')">Fırsatlar</button>
     <button class="nav-link" data-page="plans" onclick="navigate('plans')" style="color:var(--accent);font-weight:700;">Plan Merkezi</button>
+    <button class="nav-link" data-page="autotrade" onclick="navigate('autotrade')" style="color:#ff6b35;font-weight:700;">Oto-Trade</button>
     <button class="nav-link" data-page="strategies" onclick="navigate('strategies')">Stratejiler</button>
     <button class="nav-link" data-page="dividends" onclick="navigate('dividends')">Temettü</button>
     <button class="nav-link" data-page="bist100" onclick="navigate('bist100')">BIST 100</button>
@@ -1026,6 +1027,96 @@ tr:hover td { background: rgba(26,34,52,0.5); }
   </div>
 </div>
 
+<!-- ═══════════ OTO-TRADE ═══════════ -->
+<div class="page" id="page-autotrade">
+  <div class="section-title mb-24"><span class="icon">🤖</span> Otomatik Alim-Satim Motoru</div>
+
+  <!-- Durum Banner -->
+  <div id="atStatusBanner" class="card mb-16" style="border-left:4px solid var(--text-dim);padding:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span id="atStatusIcon" style="font-size:20px;">⏸</span>
+        <span id="atStatusText" style="font-weight:600;margin-left:8px;">Deaktif</span>
+      </div>
+      <button id="atToggleBtn" onclick="toggleAutoTrade()" class="btn-signal btn-buy" style="font-size:14px;padding:8px 20px;">
+        Basla
+      </button>
+    </div>
+  </div>
+
+  <!-- Performans Ozeti -->
+  <div id="atPerformance" class="grid-2 mb-16"></div>
+
+  <!-- Acik Pozisyonlar -->
+  <div class="card mb-16">
+    <div class="section-title mb-12"><span class="icon">📊</span> Acik Pozisyonlar</div>
+    <div id="atPositions" style="font-size:13px;color:var(--text-dim);">Veri bekleniyor...</div>
+  </div>
+
+  <!-- Son Islemler -->
+  <div class="card mb-16">
+    <div class="section-title mb-12"><span class="icon">📜</span> Son Islemler</div>
+    <div id="atTrades" style="font-size:13px;color:var(--text-dim);">Veri bekleniyor...</div>
+  </div>
+
+  <!-- Kapatilmis Pozisyonlar -->
+  <div class="card mb-16">
+    <div class="section-title mb-12"><span class="icon">✅</span> Kapatilmis Pozisyonlar</div>
+    <div id="atClosed" style="font-size:13px;color:var(--text-dim);">Veri bekleniyor...</div>
+  </div>
+
+  <!-- Konfigürasyon -->
+  <div class="card mb-16">
+    <div class="section-title mb-12"><span class="icon">⚙</span> Konfigürasyon</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
+      <label style="font-size:12px;color:var(--text-dim);">Sermaye (TL)
+        <input id="atCapital" type="number" value="100000" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Max Pozisyon
+        <input id="atMaxPos" type="number" value="5" min="1" max="20" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Risk/Trade (%)
+        <input id="atRisk" type="number" value="2" step="0.5" min="0.5" max="10" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Min Sinyal Skoru
+        <input id="atMinScore" type="number" value="8" step="0.5" min="5" max="14" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Min Guven (%)
+        <input id="atMinConf" type="number" value="60" step="5" min="30" max="95" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Stop-Loss (%)
+        <input id="atSL" type="number" value="3" step="0.5" min="1" max="10" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Take-Profit (%)
+        <input id="atTP" type="number" value="6" step="0.5" min="2" max="30" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Gunluk Max Islem
+        <input id="atMaxDaily" type="number" value="3" min="1" max="10" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Islem Stili
+        <select id="atStyle" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+          <option value="daily">Gunluk</option>
+          <option value="swing" selected>Swing</option>
+          <option value="monthly">Aylik</option>
+        </select>
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Trailing Stop
+        <select id="atTrailing" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+          <option value="1" selected>Aktif</option>
+          <option value="0">Deaktif</option>
+        </select>
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);">Trailing (%)
+        <input id="atTrailPct" type="number" value="2" step="0.5" min="0.5" max="5" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px;">
+      <button onclick="saveAutoTradeConfig()" class="btn-signal btn-buy" style="padding:8px 20px;font-size:13px;">Kaydet</button>
+      <span id="atSaveMsg" style="font-size:12px;color:var(--green);align-self:center;"></span>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════ CANLI STRATEJİLER ═══════════ -->
 <div class="page" id="page-strategies">
   <div class="section-title mb-24"><span class="icon">⚡</span> Canlı Strateji Sinyalleri</div>
@@ -1306,6 +1397,7 @@ function navigate(page, params) {
     case 'signals': loadSignals(); break;
     case 'opportunities': loadOpportunities(); break;
     case 'plans': loadPlans(); break;
+    case 'autotrade': loadAutoTrade(); break;
     case 'strategies': loadStrategies(); break;
     case 'dividends': loadDividends(); break;
     case 'bes': besLoadTopFunds(); break;
@@ -5422,6 +5514,231 @@ function updatePosition(card) {
 }
 
 // =============================================================================
+// OTO-TRADE
+// =============================================================================
+let _atEnabled = false;
+
+function _getUid() {
+  try { const u = JSON.parse(localStorage.getItem('bistUser') || '{}'); return u.id || u.userId || ''; }
+  catch { return ''; }
+}
+
+async function loadAutoTrade() {
+  const uid = _getUid();
+  if (!uid) {
+    document.getElementById('atStatusText').textContent = 'Giris yapmaniz gerekiyor';
+    return;
+  }
+  try {
+    const [statusRes, tradesRes] = await Promise.all([
+      fetch(`${API_BASE}/api/auto-trade/status?userId=${uid}`),
+      fetch(`${API_BASE}/api/auto-trade/trades?userId=${uid}&limit=30`),
+    ]);
+    const status = await statusRes.json();
+    const trades = await tradesRes.json();
+
+    if (!status.success) return;
+
+    // Config'i formlara doldur
+    const cfg = status.config;
+    if (cfg) {
+      _atEnabled = cfg.enabled;
+      document.getElementById('atCapital').value = cfg.capital;
+      document.getElementById('atMaxPos').value = cfg.maxPositions;
+      document.getElementById('atRisk').value = cfg.riskPerTrade;
+      document.getElementById('atMinScore').value = cfg.minScore;
+      document.getElementById('atMinConf').value = cfg.minConfidence;
+      document.getElementById('atSL').value = cfg.stopLossPct;
+      document.getElementById('atTP').value = cfg.takeProfitPct;
+      document.getElementById('atMaxDaily').value = cfg.maxDailyTrades;
+      document.getElementById('atStyle').value = cfg.tradeStyle;
+      document.getElementById('atTrailing').value = cfg.trailingStop ? '1' : '0';
+      document.getElementById('atTrailPct').value = cfg.trailingPct;
+    }
+
+    // Durum banner
+    const banner = document.getElementById('atStatusBanner');
+    const icon = document.getElementById('atStatusIcon');
+    const text = document.getElementById('atStatusText');
+    const btn = document.getElementById('atToggleBtn');
+    if (_atEnabled) {
+      banner.style.borderLeftColor = 'var(--green)';
+      icon.textContent = '🟢';
+      text.textContent = 'Aktif — Motor calisiyor';
+      btn.textContent = 'Durdur';
+      btn.className = 'btn-signal btn-sell';
+    } else {
+      banner.style.borderLeftColor = 'var(--text-dim)';
+      icon.textContent = '⏸';
+      text.textContent = 'Deaktif';
+      btn.textContent = 'Basla';
+      btn.className = 'btn-signal btn-buy';
+    }
+
+    // Performans
+    const perf = status.performance || {};
+    document.getElementById('atPerformance').innerHTML = `
+      <div class="card" style="padding:12px;text-align:center;">
+        <div style="font-size:11px;color:var(--text-dim);">Acik PnL</div>
+        <div style="font-size:20px;font-weight:700;color:${perf.openPnL >= 0 ? 'var(--green)' : 'var(--red)'};">
+          ${perf.openPnL >= 0 ? '+' : ''}${(perf.openPnL||0).toLocaleString('tr-TR',{minimumFractionDigits:2})} TL
+        </div>
+      </div>
+      <div class="card" style="padding:12px;text-align:center;">
+        <div style="font-size:11px;color:var(--text-dim);">Kapali PnL</div>
+        <div style="font-size:20px;font-weight:700;color:${perf.closedPnL >= 0 ? 'var(--green)' : 'var(--red)'};">
+          ${perf.closedPnL >= 0 ? '+' : ''}${(perf.closedPnL||0).toLocaleString('tr-TR',{minimumFractionDigits:2})} TL
+        </div>
+      </div>
+      <div class="card" style="padding:12px;text-align:center;">
+        <div style="font-size:11px;color:var(--text-dim);">Toplam PnL</div>
+        <div style="font-size:20px;font-weight:700;color:${perf.totalPnL >= 0 ? 'var(--green)' : 'var(--red)'};">
+          ${perf.totalPnL >= 0 ? '+' : ''}${(perf.totalPnL||0).toLocaleString('tr-TR',{minimumFractionDigits:2})} TL
+        </div>
+      </div>
+      <div class="card" style="padding:12px;text-align:center;">
+        <div style="font-size:11px;color:var(--text-dim);">Basari Orani</div>
+        <div style="font-size:20px;font-weight:700;color:var(--accent);">
+          %${perf.winRate||0} <span style="font-size:11px;color:var(--text-dim);">(${perf.winCount||0}K/${perf.lossCount||0}Z)</span>
+        </div>
+      </div>
+    `;
+
+    // Acik Pozisyonlar
+    const positions = status.positions || [];
+    if (positions.length === 0) {
+      document.getElementById('atPositions').innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);">Acik pozisyon yok</div>';
+    } else {
+      document.getElementById('atPositions').innerHTML = positions.map(p => {
+        const pnlColor = p.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const pnlSign = p.pnl >= 0 ? '+' : '';
+        return `<div class="card" style="padding:12px;margin-bottom:8px;border-left:3px solid ${pnlColor};">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+            <div>
+              <strong>${p.symbol}</strong>
+              <span style="font-size:11px;color:var(--text-dim);margin-left:8px;">Giris: ${p.entryPrice.toFixed(2)} TL | Guncel: ${(p.currentPrice||0).toFixed(2)} TL</span>
+            </div>
+            <div style="text-align:right;">
+              <span style="font-weight:600;color:${pnlColor};">${pnlSign}${p.pnl.toFixed(2)} TL (${pnlSign}${p.pnlPct.toFixed(1)}%)</span>
+              <button onclick="closePosition(${p.id})" style="margin-left:8px;background:var(--red);color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:11px;">Kapat</button>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
+            SL: ${(p.stopLoss||0).toFixed(2)} | TP1: ${(p.takeProfit1||0).toFixed(2)} | TP2: ${(p.takeProfit2||0).toFixed(2)} | TP3: ${(p.takeProfit3||0).toFixed(2)}
+            ${p.trailingStop > 0 ? ` | Trail: ${p.trailingStop.toFixed(2)}` : ''}
+            | Lot: ${p.quantity}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    // Son Islemler
+    const tradeList = (trades.trades || []);
+    if (tradeList.length === 0) {
+      document.getElementById('atTrades').innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);">Henuz islem yok</div>';
+    } else {
+      document.getElementById('atTrades').innerHTML = `<div style="max-height:300px;overflow-y:auto;">` +
+        tradeList.map(t => {
+          const isBuy = t.action === 'BUY';
+          const color = isBuy ? 'var(--green)' : 'var(--red)';
+          const label = isBuy ? 'ALIS' : t.action.replace('SELL_', 'SATIS-');
+          return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">
+            <div><span style="color:${color};font-weight:600;">${label}</span> <strong>${t.symbol}</strong> @ ${t.price.toFixed(2)} x${t.quantity}</div>
+            <div style="color:var(--text-dim);font-size:11px;">${t.reason || ''}</div>
+          </div>`;
+        }).join('') + `</div>`;
+    }
+
+    // Kapatilmis Pozisyonlar
+    const closed = status.recentClosed || [];
+    if (closed.length === 0) {
+      document.getElementById('atClosed').innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);">Henuz kapatilmis pozisyon yok</div>';
+    } else {
+      document.getElementById('atClosed').innerHTML = closed.map(c => {
+        const pnlColor = c.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const pnlSign = c.pnl >= 0 ? '+' : '';
+        return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">
+          <div><strong>${c.symbol}</strong> ${c.entryPrice.toFixed(2)} → ${c.closePrice.toFixed(2)}</div>
+          <div><span style="color:${pnlColor};font-weight:600;">${pnlSign}${c.pnl.toFixed(2)} TL (${pnlSign}${c.pnlPct.toFixed(1)}%)</span>
+          <span style="color:var(--text-dim);font-size:10px;margin-left:8px;">${c.reason}</span></div>
+        </div>`;
+      }).join('');
+    }
+
+  } catch(e) {
+    console.error('Auto-trade yukleme hatasi:', e);
+  }
+}
+
+async function toggleAutoTrade() {
+  const uid = _getUid();
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
+  const newState = !_atEnabled;
+  if (newState && !confirm('Otomatik alim-satim motorunu baslatmak istediginize emin misiniz?\n\nMotor, sinyal skoruna gore otomatik pozisyon acip kapatacaktir.')) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/auto-trade/toggle`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ userId: uid, enabled: newState ? 1 : 0 })
+    });
+    const data = await res.json();
+    if (data.success) {
+      _atEnabled = newState;
+      loadAutoTrade();
+    }
+  } catch(e) { console.error('Toggle hatasi:', e); }
+}
+
+async function saveAutoTradeConfig() {
+  const uid = _getUid();
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
+  try {
+    const body = {
+      userId: uid,
+      capital: parseFloat(document.getElementById('atCapital').value) || 100000,
+      maxPositions: parseInt(document.getElementById('atMaxPos').value) || 5,
+      riskPerTrade: parseFloat(document.getElementById('atRisk').value) || 2,
+      minScore: parseFloat(document.getElementById('atMinScore').value) || 8,
+      minConfidence: parseFloat(document.getElementById('atMinConf').value) || 60,
+      stopLossPct: parseFloat(document.getElementById('atSL').value) || 3,
+      takeProfitPct: parseFloat(document.getElementById('atTP').value) || 6,
+      maxDailyTrades: parseInt(document.getElementById('atMaxDaily').value) || 3,
+      tradeStyle: document.getElementById('atStyle').value,
+      trailingStop: parseInt(document.getElementById('atTrailing').value),
+      trailingPct: parseFloat(document.getElementById('atTrailPct').value) || 2,
+    };
+    const res = await fetch(`${API_BASE}/api/auto-trade/config`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    const msg = document.getElementById('atSaveMsg');
+    if (data.success) {
+      msg.textContent = 'Kaydedildi!';
+      msg.style.color = 'var(--green)';
+    } else {
+      msg.textContent = data.error || 'Hata';
+      msg.style.color = 'var(--red)';
+    }
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+  } catch(e) { console.error('Config kaydetme hatasi:', e); }
+}
+
+async function closePosition(posId) {
+  const uid = _getUid();
+  if (!uid) return;
+  if (!confirm('Bu pozisyonu kapatmak istediginize emin misiniz?')) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/auto-trade/close`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ userId: uid, positionId: posId })
+    });
+    const data = await res.json();
+    if (data.success) loadAutoTrade();
+    else alert(data.error || 'Hata');
+  } catch(e) { console.error('Pozisyon kapatma hatasi:', e); }
+}
+
+// =============================================================================
 // INIT
 // =============================================================================
 document.addEventListener('DOMContentLoaded', () => {
@@ -5445,12 +5762,14 @@ const AUTO_REFRESH_INTERVALS = {
   strategies:    10 * 60,  // 10 dk
   dividends:     15 * 60,  // 15 dk
   report:        10 * 60,  // 10 dk
+  autotrade:     1 * 60,   // 1 dk (pozisyon takibi icin sik)
 };
 const PAGE_LOADERS = {
   dashboard:     () => loadDashboard(),
   signals:       () => loadSignals(),
   opportunities: () => loadOpportunities(),
   plans:         () => loadPlans(),
+  autotrade:     () => loadAutoTrade(),
   bist100:       () => loadBist100(),
   heatmap:       () => loadHeatmap(),
   strategies:    () => loadStrategies(),
