@@ -5051,6 +5051,26 @@ _load_index_html()
 def ping():
     return 'ok', 200
 
+@app.route('/api/network-info')
+def network_info():
+    """Yerel ag bilgisi — telefondan erisim icin IP goster"""
+    import socket
+    local_ip = '127.0.0.1'
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+    port = int(os.environ.get("PORT", 5000))
+    return jsonify({
+        'localIP': local_ip,
+        'port': port,
+        'localURL': f'http://{local_ip}:{port}',
+        'info': 'Ayni WiFi agindaki telefondan bu URL ile erisebilirsin'
+    })
+
 @app.route('/')
 def index():
     with _html_page_cache_lock:
