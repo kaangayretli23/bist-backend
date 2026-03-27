@@ -26,6 +26,10 @@ def _get_db_save_snapshot():
     from database import _db_save_market_snapshot
     return _db_save_market_snapshot
 
+def _get_db_load_snapshot():
+    from database import _db_load_market_snapshot
+    return _db_load_market_snapshot
+
 def _get_start_telegram_thread():
     try:
         from backend import _start_telegram_thread
@@ -669,7 +673,10 @@ def _ensure_loader():
     if _loader_started: return
     _loader_started = True
     # Cold-start: DB snapshot'ından cache'i önceden doldur (kullanıcı anında veri görür)
-    _db_load_market_snapshot()
+    try:
+        _get_db_load_snapshot()()
+    except Exception as e:
+        print(f"[WARN] Market snapshot yuklenemedi: {e}")
     print("[LOADER] Thread baslatiliyor (before_request)")
     t = threading.Thread(target=_background_loop, daemon=True)
     t.start()
