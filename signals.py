@@ -5,6 +5,7 @@ import numpy as np
 import time, traceback
 from config import sf, si, _lock, _stock_cache, _index_cache, _cget, _get_stocks, BIST100_STOCKS, SECTOR_MAP
 from indicators import *
+from indicators import _market_regime_cache, _resample_to_tf
 
 def calc_recommendation(hist, indicators):
     """Haftalik/Aylik/Yillik al-sat onerisi - guclendirilmis analiz + detayli reason"""

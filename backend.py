@@ -5,6 +5,13 @@ trade_plans, auto_trader, bes_system
 """
 # Foundation
 from config import *
+# Python'da import * underscore ile baslayan isimleri atlar, bu yuzden acikca import ediyoruz
+from config import (
+    _lock, _stock_cache, _index_cache, _hist_cache,
+    _loader_started, _status, _plan_lock_cache, _plan_lock_cache_lock,
+    _html_page_cache, _html_page_cache_lock,
+    _cget, _cset, _ctouch, _cget_hist, _get_stocks, _get_indices
+)
 
 # Database init & cache
 try:
