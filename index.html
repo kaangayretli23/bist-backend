@@ -5646,7 +5646,6 @@ async function loadAutoTrade() {
     `;
 
     // Acik Pozisyonlar
-    const positions = status.positions || [];
     if (positions.length === 0) {
       document.getElementById('atPositions').innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);">Acik pozisyon yok</div>';
     } else {
