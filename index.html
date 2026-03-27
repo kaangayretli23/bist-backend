@@ -1029,7 +1029,10 @@ tr:hover td { background: rgba(26,34,52,0.5); }
 
 <!-- ═══════════ OTO-TRADE ═══════════ -->
 <div class="page" id="page-autotrade">
-  <div class="section-title mb-24"><span class="icon">🤖</span> Otomatik Alim-Satim Motoru</div>
+  <div class="section-title mb-24"><span class="icon">🤖</span> Paper Trading — Sanal Alim-Satim Motoru</div>
+  <div style="background:rgba(255,107,53,0.1);border:1px solid rgba(255,107,53,0.3);border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#ff6b35;">
+    PAPER TRADING MODU — Gercek para kullanilmaz. Sanal bakiye ile sistem performansi test ediliyor.
+  </div>
 
   <!-- Durum Banner -->
   <div id="atStatusBanner" class="card mb-16" style="border-left:4px solid var(--text-dim);padding:16px;">
@@ -1041,6 +1044,27 @@ tr:hover td { background: rgba(26,34,52,0.5); }
       <button id="atToggleBtn" onclick="toggleAutoTrade()" class="btn-signal btn-buy" style="font-size:14px;padding:8px 20px;">
         Basla
       </button>
+    </div>
+  </div>
+
+  <!-- Sanal Bakiye -->
+  <div class="card mb-16" style="padding:16px;background:linear-gradient(135deg,var(--card-bg),rgba(255,107,53,0.05));">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+      <div>
+        <div style="font-size:11px;color:var(--text-dim);">Sanal Bakiye (Equity)</div>
+        <div id="atEquity" style="font-size:28px;font-weight:700;color:var(--text);">100,000.00 TL</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:11px;color:var(--text-dim);">Toplam Getiri</div>
+        <div id="atTotalReturn" style="font-size:20px;font-weight:700;">%0.00</div>
+      </div>
+    </div>
+    <div id="atEquityBar" style="margin-top:10px;height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+      <div id="atEquityFill" style="height:100%;width:50%;background:var(--green);border-radius:3px;transition:width 0.5s;"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-dim);margin-top:4px;">
+      <span>Kullanilan: <span id="atUsedCapital">0</span> TL</span>
+      <span>Serbest: <span id="atFreeCapital">100,000</span> TL</span>
     </div>
   </div>
 
@@ -5575,8 +5599,25 @@ async function loadAutoTrade() {
       btn.className = 'btn-signal btn-buy';
     }
 
-    // Performans
+    // Sanal Bakiye hesapla
     const perf = status.performance || {};
+    const capital = cfg ? cfg.capital : 100000;
+    const totalPnL = perf.totalPnL || 0;
+    const equity = capital + totalPnL;
+    const returnPct = capital > 0 ? (totalPnL / capital * 100) : 0;
+    const positions = status.positions || [];
+    const usedCap = positions.reduce((s, p) => s + p.entryPrice * p.quantity, 0);
+    const freeCap = Math.max(0, equity - usedCap);
+
+    document.getElementById('atEquity').textContent = equity.toLocaleString('tr-TR', {minimumFractionDigits:2}) + ' TL';
+    const retEl = document.getElementById('atTotalReturn');
+    retEl.textContent = (returnPct >= 0 ? '+' : '') + returnPct.toFixed(2) + '%';
+    retEl.style.color = returnPct >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('atUsedCapital').textContent = usedCap.toLocaleString('tr-TR', {minimumFractionDigits:0});
+    document.getElementById('atFreeCapital').textContent = freeCap.toLocaleString('tr-TR', {minimumFractionDigits:0});
+    const barPct = capital > 0 ? Math.min(100, Math.max(0, (usedCap / capital) * 100)) : 0;
+    document.getElementById('atEquityFill').style.width = barPct + '%';
+    document.getElementById('atEquityFill').style.background = barPct > 80 ? 'var(--red)' : barPct > 50 ? 'var(--accent)' : 'var(--green)';
     document.getElementById('atPerformance').innerHTML = `
       <div class="card" style="padding:12px;text-align:center;">
         <div style="font-size:11px;color:var(--text-dim);">Acik PnL</div>
