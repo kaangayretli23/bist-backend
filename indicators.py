@@ -6,6 +6,25 @@ import numpy as np
 import pandas as pd
 from config import sf, si
 
+
+# =====================================================================
+# ORTAK HELPER FONKSIYONLAR
+# =====================================================================
+
+def _extract_ohlcv(hist):
+    """DataFrame'den OHLCV array'lerini cikar ve NaN temizle"""
+    c = hist['Close'].values.astype(float)
+    h = hist['High'].values.astype(float) if 'High' in hist.columns else c.copy()
+    l = hist['Low'].values.astype(float) if 'Low' in hist.columns else c.copy()
+    v = hist['Volume'].values.astype(float) if 'Volume' in hist.columns else np.zeros(len(c))
+    o = hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
+    h = np.where(np.isnan(h), c, h)
+    l = np.where(np.isnan(l), c, l)
+    v = np.where(np.isnan(v), 0, v)
+    o = np.where(np.isnan(o), c, o)
+    return o, h, l, c, v
+
+
 def _resample_to_tf(hist_daily, tf):
     """
     Gunluk OHLCV verisini haftalik ('weekly') veya aylik ('monthly') bara donustur.
@@ -177,98 +196,6 @@ def calc_support_resistance(hist):
         return {'supports':[sf(s) for s in sorted([s for s in sups if s<cur],reverse=True)[:3]],'resistances':[sf(r) for r in sorted([r for r in ress if r>cur])[:3]],'current':sf(cur)}
     except Exception: return {'supports':[],'resistances':[],'current':0}
 
-def calc_fibonacci(hist):
-    try:
-        c=hist['Close'].values.astype(float)
-        h=hist['High'].values.astype(float)
-        l=hist['Low'].values.astype(float)
-
-        # Birden fazla periyot dene: 90, 60, 30, tum veri
-        for lookback in [90, 60, 30, len(c)]:
-            n=min(lookback, len(c))
-            if n < 5: continue
-            rc, rh, rl = c[-n:], h[-n:], l[-n:]
-            hi = float(np.nanmax(rh))
-            lo = float(np.nanmin(rl))
-            if hi != hi: hi = float(np.nanmax(rc))  # NaN fallback
-            if lo != lo: lo = float(np.nanmin(rc))
-            d = hi - lo
-            if d > 0: break
-        else:
-            return {'levels':{},'currentZone':'-','trend':'-','description':'Yeterli veri yok'}
-
-        # Trend yonu belirle
-        mid_idx = n // 2
-        first_half_avg = float(np.mean(rc[:mid_idx]))
-        second_half_avg = float(np.mean(rc[mid_idx:]))
-        trend = 'yukari' if second_half_avg > first_half_avg else 'asagi'
-
-        # Yukari trendde: dip->tepe (retracement), asagi trendde: tepe->dip
-        if trend == 'yukari':
-            levels = {
-                '0.0 (Tepe)': sf(hi),
-                '23.6': sf(hi - d * 0.236),
-                '38.2': sf(hi - d * 0.382),
-                '50.0': sf(hi - d * 0.5),
-                '61.8': sf(hi - d * 0.618),
-                '78.6': sf(hi - d * 0.786),
-                '100.0 (Dip)': sf(lo)
-            }
-        else:
-            levels = {
-                '0.0 (Dip)': sf(lo),
-                '23.6': sf(lo + d * 0.236),
-                '38.2': sf(lo + d * 0.382),
-                '50.0': sf(lo + d * 0.5),
-                '61.8': sf(lo + d * 0.618),
-                '78.6': sf(lo + d * 0.786),
-                '100.0 (Tepe)': sf(hi)
-            }
-
-        cur = float(c[-1])
-        zone = "Belirsiz"
-        lk = list(levels.keys())
-        lv = list(levels.values())
-        sorted_vals = sorted([(lk[i], lv[i]) for i in range(len(lv))], key=lambda x: -x[1])
-
-        for i in range(len(sorted_vals) - 1):
-            if cur <= sorted_vals[i][1] and cur >= sorted_vals[i+1][1]:
-                zone = f"{sorted_vals[i][0]} - {sorted_vals[i+1][0]}"
-                break
-
-        # Destek ve direnc seviyeleri
-        nearest_support = None
-        nearest_resistance = None
-        for k, v in sorted(levels.items(), key=lambda x: x[1]):
-            if v < cur:
-                nearest_support = {'level': k, 'price': v}
-            elif v > cur and nearest_resistance is None:
-                nearest_resistance = {'level': k, 'price': v}
-
-        # Aciklama olustur
-        desc_parts = [f"Son {n} barda analiz"]
-        desc_parts.append(f"Trend: {'Yukari' if trend == 'yukari' else 'Asagi'}")
-        desc_parts.append(f"Aralik: {sf(lo)} - {sf(hi)} ({sf(d)} TL fark)")
-        if nearest_support:
-            desc_parts.append(f"En yakin destek: {nearest_support['price']} TL ({nearest_support['level']})")
-        if nearest_resistance:
-            desc_parts.append(f"En yakin direnc: {nearest_resistance['price']} TL ({nearest_resistance['level']})")
-        pos_pct = sf((cur - lo) / d * 100) if d > 0 else 50
-        desc_parts.append(f"Fiyat araliktaki konum: %{pos_pct}")
-
-        return {
-            'levels': levels, 'high': sf(hi), 'low': sf(lo),
-            'currentZone': zone, 'trend': trend,
-            'nearestSupport': nearest_support,
-            'nearestResistance': nearest_resistance,
-            'positionPct': pos_pct,
-            'lookbackBars': n,
-            'description': ' | '.join(desc_parts)
-        }
-    except Exception as e:
-        print(f"  [FIB] Hata: {e}")
-        return {'levels':{},'currentZone':'-','trend':'-','description':'Hesaplama hatasi'}
-
 def calc_williams_r(closes, highs, lows, period=14):
     if len(closes)<period: return {'name':'Williams %R','value':-50,'signal':'neutral'}
     hh=float(np.max(highs[-period:])); ll=float(np.min(lows[-period:])); cur=float(closes[-1])
@@ -337,35 +264,6 @@ def calc_psar(closes, highs, lows, af_start=0.02, af_step=0.02, af_max=0.2):
                 if lo<ep: ep=lo; af=min(af+af_step,af_max)
     trend='up' if bull else 'down'
     return {'name':'Parabolic SAR','value':sf(sar),'trend':trend,'signal':'buy' if bull else 'sell'}
-
-def calc_pivot_points(hist):
-    """Klasik, Camarilla, Woodie pivot noktalari"""
-    try:
-        c=float(hist['Close'].iloc[-1])
-        h=float(hist['High'].iloc[-1])
-        l=float(hist['Low'].iloc[-1])
-        o=float(hist['Open'].iloc[-1])
-        # NaN fallback: Close kullan
-        if h != h: h = c
-        if l != l: l = c
-        if o != o: o = c
-        pp=(h+l+c)/3
-        classic={
-            'pp':sf(pp),'r1':sf(2*pp-l),'r2':sf(pp+(h-l)),'r3':sf(h+2*(pp-l)),
-            's1':sf(2*pp-h),'s2':sf(pp-(h-l)),'s3':sf(l-2*(h-pp))
-        }
-        d=h-l
-        camarilla={
-            'pp':sf(pp),'r1':sf(c+d*1.1/12),'r2':sf(c+d*1.1/6),'r3':sf(c+d*1.1/4),'r4':sf(c+d*1.1/2),
-            's1':sf(c-d*1.1/12),'s2':sf(c-d*1.1/6),'s3':sf(c-d*1.1/4),'s4':sf(c-d*1.1/2)
-        }
-        wpp=(h+l+2*c)/4
-        woodie={
-            'pp':sf(wpp),'r1':sf(2*wpp-l),'r2':sf(wpp+(h-l)),
-            's1':sf(2*wpp-h),'s2':sf(wpp-(h-l))
-        }
-        return {'classic':classic,'camarilla':camarilla,'woodie':woodie,'current':sf(c)}
-    except Exception: return {'classic':{},'camarilla':{},'woodie':{},'current':0}
 
 def calc_roc(closes, period=12):
     """Rate of Change - momentum osilatoru"""

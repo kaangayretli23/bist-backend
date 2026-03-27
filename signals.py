@@ -32,7 +32,7 @@ def calc_recommendation(hist, indicators):
         supports = sr.get('supports', [])
         resistances = sr.get('resistances', [])
         try:
-            fib = calc_fibonacci(hist)
+            fib = calc_fibonacci_adv(hist)
         except Exception:
             fib = {'levels': {}}
         fib_sup = fib.get('nearestSupport')

@@ -90,12 +90,12 @@ def calc_trade_plan(hist, indicators=None, symbol=None):
         resistances = sr.get('resistances', [])
 
         # Fibonacci
-        fib = calc_fibonacci(hist)
+        fib = calc_fibonacci_adv(hist)
         fib_levels = fib.get('levels', {})
         fib_values = sorted([float(v) for v in fib_levels.values() if v > 0])
 
         # Pivot Points
-        pp = calc_pivot_points(hist)
+        pp = calc_pivot_points_adv(hist)
         classic = pp.get('classic', {})
 
         # ATR (volatilite bazli hedef)

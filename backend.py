@@ -36,8 +36,8 @@ try:
         calc_rsi, calc_rsi_single, calc_macd,
         calc_bollinger, calc_ema,
         calc_stochastic, calc_atr, calc_adx, calc_obv,
-        calc_support_resistance, calc_fibonacci, calc_williams_r, calc_cci,
-        calc_mfi, calc_vwap, calc_ichimoku, calc_psar, calc_pivot_points,
+        calc_support_resistance, calc_williams_r, calc_cci,
+        calc_mfi, calc_vwap, calc_ichimoku, calc_psar,
         calc_roc, calc_aroon, calc_trix, calc_dmi,
         calc_all_indicators, calc_mtf_signal, calc_divergence,
         calc_volume_profile, calc_smc, calc_chart_patterns,
@@ -502,9 +502,9 @@ def stock_detail(symbol):
             'marketValue':sf(cp * si(hist['Volume'].iloc[-1])),
             'indicators':ind,
             'chartData':prepare_chart_data(hist),
-            'fibonacci':calc_fibonacci(hist),
+            'fibonacci':calc_fibonacci_adv(hist),
             'supportResistance':calc_support_resistance(hist),
-            'pivotPoints':calc_pivot_points(hist),
+            'pivotPoints':calc_pivot_points_adv(hist),
             'recommendation':rec,
             'mlConfidence':ml_conf,
             'signalBacktest':calc_signal_backtest(hist),
@@ -641,9 +641,9 @@ def commodity_detail(symbol):
             'week52': w52,
             'indicators': calc_all_indicators(hist, cp),
             'chartData': prepare_chart_data(hist),
-            'fibonacci': calc_fibonacci(hist),
+            'fibonacci': calc_fibonacci_adv(hist),
             'supportResistance': calc_support_resistance(hist),
-            'pivotPoints': calc_pivot_points(hist),
+            'pivotPoints': calc_pivot_points_adv(hist),
             'recommendation': calc_recommendation(hist, None),
             'fundamentals': calc_fundamentals(hist, symbol),
         }))
@@ -2439,181 +2439,34 @@ def sectors_analysis():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/stock/<symbol>/backtest-signals')
-def stock_signal_backtest(symbol):
-    """Hisse bazli sinyal backtest sonuclari"""
+# Tekil indikatör route'ları - generic handler
+_ANALYSIS_MAP = {
+    'backtest-signals':     (calc_signal_backtest, 50),
+    'mtf':                  (calc_mtf_signal, 30),
+    'divergence':           (calc_divergence, 50),
+    'volume-profile':       (calc_volume_profile, 20),
+    'smc':                  (calc_smc, 30),
+    'patterns':             (calc_chart_patterns, 30),
+    'fibonacci':            (calc_fibonacci_adv, 20),
+    'pivots':               (calc_pivot_points_adv, 3),
+    'advanced-indicators':  (calc_advanced_indicators, 14),
+}
+
+@app.route('/api/stock/<symbol>/<analysis_type>')
+def stock_analysis_generic(symbol, analysis_type):
+    """Tekil indikatör analizi - generic handler"""
+    entry = _ANALYSIS_MAP.get(analysis_type)
+    if not entry:
+        return jsonify({'error': f'Bilinmeyen analiz tipi: {analysis_type}'}), 404
+    calc_fn, min_bars = entry
     try:
         symbol = symbol.upper()
         hist = _cget_hist(f"{symbol}_1y")
         if hist is None:
             hist = _fetch_hist_df(symbol, '1y')
-        if hist is None or len(hist) < 50:
-            return jsonify({'error': f'{symbol} icin yeterli veri yok'}), 400
-        result = calc_signal_backtest(hist)
-        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result}))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stock/<symbol>/mtf')
-def stock_mtf(symbol):
-    """
-    Hisse icin gercek coklu zaman dilimi (MTF) analizi.
-    Gunluk OHLCV verisini haftalik ve aylik bara resample ederek
-    her zaman diliminde RSI/MACD/EMA/Bollinger indikatörlerini hesaplar.
-    Kac zaman diliminin ayni yonde oldugunu MTF skoru olarak doner (0-3).
-    """
-    try:
-        symbol = symbol.upper()
-        hist = _cget_hist(f"{symbol}_1y")
-        if hist is None:
-            hist = _fetch_hist_df(symbol, '1y')
-        if hist is None or len(hist) < 30:
-            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 30 bar gerekli)'}), 400
-
-        mtf = calc_mtf_signal(hist)
-        return jsonify(safe_dict({
-            'success': True,
-            'symbol': symbol,
-            'mtf': mtf,
-            'timestamp': datetime.now().isoformat(),
-        }))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stock/<symbol>/divergence')
-def stock_divergence(symbol):
-    """
-    Hisse icin RSI ve MACD uyumsuzluk (divergence) analizi.
-    Klasik Boğa/Ayı + Gizli Boğa/Ayı + MACD divergence tespit eder.
-    Son 90 barda tarama yapar; son 20 barda tespit edilenleri 'recentDivergences' olarak isaretler.
-    """
-    try:
-        symbol = symbol.upper()
-        hist = _cget_hist(f"{symbol}_1y")
-        if hist is None:
-            hist = _fetch_hist_df(symbol, '1y')
-        if hist is None or len(hist) < 50:
-            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 50 bar)'}), 400
-        result = calc_divergence(hist)
-        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
-                                  'timestamp': datetime.now().isoformat()}))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stock/<symbol>/volume-profile')
-def stock_volume_profile(symbol):
-    """
-    Hisse icin Hacim Profili ve VWAP analizi.
-    POC (Point of Control), VAH/VAL (Value Area), VWAP, hacim anomalisi döner.
-    """
-    try:
-        symbol = symbol.upper()
-        hist = _cget_hist(f"{symbol}_1y")
-        if hist is None:
-            hist = _fetch_hist_df(symbol, '1y')
-        if hist is None or len(hist) < 20:
-            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 20 bar)'}), 400
-        result = calc_volume_profile(hist)
-        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
-                                  'timestamp': datetime.now().isoformat()}))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stock/<symbol>/smc')
-def stock_smc(symbol):
-    """
-    Hisse icin Smart Money Concepts (SMC) analizi.
-    Fair Value Gap, Order Block, Break of Structure (BOS), Change of Character (CHoCH) döner.
-    Kurumsal işlem izleri ve potansiyel giriş bölgeleri tespit eder.
-    """
-    try:
-        symbol = symbol.upper()
-        hist = _cget_hist(f"{symbol}_1y")
-        if hist is None:
-            hist = _fetch_hist_df(symbol, '1y')
-        if hist is None or len(hist) < 30:
-            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 30 bar)'}), 400
-        result = calc_smc(hist)
-        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
-                                  'timestamp': datetime.now().isoformat()}))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stock/<symbol>/patterns')
-def stock_chart_patterns(symbol):
-    """
-    Hisse icin grafik formasyon analizi.
-    Çift Tepe/Dip, OBO/Ters OBO, Üçgen, Bayrak formasyonlarini tespit eder.
-    Tamamlanmis formasyonlar ve hedef fiyat seviyeleri döner.
-    """
-    try:
-        symbol = symbol.upper()
-        hist = _cget_hist(f"{symbol}_1y")
-        if hist is None:
-            hist = _fetch_hist_df(symbol, '1y')
-        if hist is None or len(hist) < 30:
-            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 30 bar)'}), 400
-        result = calc_chart_patterns(hist)
-        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
-                                  'timestamp': datetime.now().isoformat()}))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stock/<symbol>/fibonacci')
-def stock_fibonacci(symbol):
-    """
-    Fibonacci retracement ve extension seviyeleri.
-    Son 60 barin swing high/low noktasindan hesaplanir.
-    Golden Pocket (0.618-0.65) bolgesi de isaretlenir.
-    """
-    try:
-        symbol = symbol.upper()
-        hist = _cget_hist(f"{symbol}_1y")
-        if hist is None:
-            hist = _fetch_hist_df(symbol, '1y')
-        if hist is None or len(hist) < 20:
-            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 20 bar)'}), 400
-        result = calc_fibonacci_adv(hist)
-        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
-                                  'timestamp': datetime.now().isoformat()}))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stock/<symbol>/pivots')
-def stock_pivot_points(symbol):
-    """
-    Klasik, Camarilla ve Woodie Pivot Noktalari.
-    Son kapanan gunun OHLC'sinden hesaplanir.
-    Destek/direnc seviyeleri + fiyat bias (bullish/bearish).
-    """
-    try:
-        symbol = symbol.upper()
-        hist = _cget_hist(f"{symbol}_1y")
-        if hist is None:
-            hist = _fetch_hist_df(symbol, '1y')
-        if hist is None or len(hist) < 3:
-            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 3 bar)'}), 400
-        result = calc_pivot_points_adv(hist)
-        return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
-                                  'timestamp': datetime.now().isoformat()}))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stock/<symbol>/advanced-indicators')
-def stock_advanced_indicators(symbol):
-    """
-    Ileri teknik indikatörler:
-    Ichimoku Cloud (bulut analizi), Stochastic (14,3,3), Williams %R (14).
-    Her indikatörün sinyal + asiri alim/satim durumu döner.
-    """
-    try:
-        symbol = symbol.upper()
-        hist = _cget_hist(f"{symbol}_1y")
-        if hist is None:
-            hist = _fetch_hist_df(symbol, '1y')
-        if hist is None or len(hist) < 14:
-            return jsonify({'error': f'{symbol} icin yeterli veri yok (min 14 bar)'}), 400
-        result = calc_advanced_indicators(hist)
+        if hist is None or len(hist) < min_bars:
+            return jsonify({'error': f'{symbol} icin yeterli veri yok (min {min_bars} bar)'}), 400
+        result = calc_fn(hist)
         return jsonify(safe_dict({'success': True, 'symbol': symbol, **result,
                                   'timestamp': datetime.now().isoformat()}))
     except Exception as e:
@@ -2645,7 +2498,7 @@ def stock_full_analysis(symbol):
             try: return fn(*args, **kwargs)
             except Exception as ex: return {'error': str(ex)}
 
-        ind          = _safe(calc_indicators, hist)
+        ind          = _safe(calc_all_indicators, hist, cp)
         mtf          = _safe(calc_mtf_signal,       hist)
         div          = _safe(calc_divergence,        hist)
         vp           = _safe(calc_volume_profile,    hist)
