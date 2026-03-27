@@ -26,6 +26,13 @@ def _get_db_save_snapshot():
     from database import _db_save_market_snapshot
     return _db_save_market_snapshot
 
+def _get_start_telegram_thread():
+    try:
+        from backend import _start_telegram_thread
+        return _start_telegram_thread
+    except Exception:
+        return None
+
 def _get_auto_engine():
     try:
         from auto_trader import _auto_engine_cycle
@@ -671,7 +678,9 @@ def _ensure_loader():
 def before_req():
     """Her request'te loader'in calistigini garanti et"""
     _ensure_loader()
-    _start_telegram_thread()
+    fn = _get_start_telegram_thread()
+    if fn:
+        fn()
 
 
 def _fetch_index_data(key, tsym, name):
