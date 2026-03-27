@@ -27,13 +27,13 @@ def calc_recommendation(hist, indicators):
         # Destek/direnc hesapla (tum periyotlar icin ortak)
         try:
             sr = calc_support_resistance(hist)
-        except:
+        except Exception:
             sr = {'supports': [], 'resistances': [], 'current': 0}
         supports = sr.get('supports', [])
         resistances = sr.get('resistances', [])
         try:
             fib = calc_fibonacci(hist)
-        except:
+        except Exception:
             fib = {'levels': {}}
         fib_sup = fib.get('nearestSupport')
         fib_res = fib.get('nearestResistance')
@@ -41,7 +41,7 @@ def calc_recommendation(hist, indicators):
         # Bollinger bantlari
         try:
             bb = calc_bollinger(c, cur)
-        except:
+        except Exception:
             bb = {'upper': 0, 'lower': 0, 'middle': 0}
         bb_upper = bb.get('upper', 0)
         bb_lower = bb.get('lower', 0)
@@ -50,7 +50,7 @@ def calc_recommendation(hist, indicators):
         # Dinamik esikler
         try:
             dyn = calc_dynamic_thresholds(c, h, l, v) if n >= 60 else {'rsi_oversold': 30, 'rsi_overbought': 70}
-        except:
+        except Exception:
             dyn = {'rsi_oversold': 30, 'rsi_overbought': 70}
         dyn_oversold = float(dyn.get('rsi_oversold', 30))
         dyn_overbought = float(dyn.get('rsi_overbought', 70))
@@ -58,13 +58,13 @@ def calc_recommendation(hist, indicators):
         # Mum formasyonlari
         try:
             candle_data = calc_candlestick_patterns(o, h, l, c) if n >= 5 else {'patterns': [], 'signal': 'neutral'}
-        except:
+        except Exception:
             candle_data = {'patterns': [], 'signal': 'neutral'}
 
         # Piyasa rejimi
         try:
             regime = calc_market_regime()
-        except:
+        except Exception:
             regime = {'regime': 'unknown', 'description': ''}
         regime_type = regime.get('regime', 'unknown')
 
@@ -75,7 +75,7 @@ def calc_recommendation(hist, indicators):
             div_signal = div_summary.get('signal', 'neutral')
             div_has_recent = div_summary.get('hasRecent', False)
             div_recent = div_data.get('recentDivergences', [])
-        except:
+        except Exception:
             div_signal = 'neutral'; div_has_recent = False; div_recent = []
 
         # MTF sinyal hesapla (tum periyotlar icin ortak)
@@ -84,7 +84,7 @@ def calc_recommendation(hist, indicators):
             mtf_direction = mtf_data.get('mtfDirection', 'neutral')
             mtf_score_val = mtf_data.get('mtfScore', 0)
             mtf_strength = mtf_data.get('mtfStrength', 'Uyumsuz')
-        except:
+        except Exception:
             mtf_direction = 'neutral'; mtf_score_val = 0; mtf_strength = 'Uyumsuz'; mtf_data = {}
 
         for label, days in [('weekly',5),('monthly',22),('yearly',252)]:
@@ -485,7 +485,7 @@ def calc_52w(hist):
         rng=hi52-lo52
         pos=sf((c-lo52)/rng*100 if rng>0 else 50)
         return {'high52w':hi52,'low52w':lo52,'currentPct':pos,'range':sf(rng)}
-    except: return {'high52w':0,'low52w':0,'currentPct':50,'range':0}
+    except Exception: return {'high52w':0,'low52w':0,'currentPct':50,'range':0}
 
 def calc_signal_backtest(hist, lookback_days=252):
     """Enhanced backtest: 9 indikatör, Profit Factor / Sharpe / benchmark, BIST RSI kalibrasyonu"""
@@ -1161,7 +1161,7 @@ def _parse_fundamental_data(rows, symbol):
             elif 'OZKAYN' in key:
                 result['equity'] = sf(float(val)) if val else 0
         return result
-    except:
+    except Exception:
         return {'source': 'isyatirim'}
 
 
@@ -1227,7 +1227,7 @@ def check_signal_alerts():
                 alerts.append({'symbol': sym, 'type': 'rsi_dynamic', 'signal': 'bearish',
                     'message': f"RSI ASIRI ALIM: {sym} ({sf(cp)} TL) RSI={sf(rsi_val)} > {thresholds['rsi_overbought']} (dinamik esik)", 'strength': 3})
 
-        except:
+        except Exception:
             continue
 
     # Strength'e gore sirala

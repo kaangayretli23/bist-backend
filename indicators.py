@@ -175,7 +175,7 @@ def calc_support_resistance(hist):
             if rl[i]<rl[i-1] and rl[i]<rl[i-2] and rl[i]<rl[i+1] and rl[i]<rl[i+2]: sups.append(float(rl[i]))
         cur=float(c[-1])
         return {'supports':[sf(s) for s in sorted([s for s in sups if s<cur],reverse=True)[:3]],'resistances':[sf(r) for r in sorted([r for r in ress if r>cur])[:3]],'current':sf(cur)}
-    except: return {'supports':[],'resistances':[],'current':0}
+    except Exception: return {'supports':[],'resistances':[],'current':0}
 
 def calc_fibonacci(hist):
     try:
@@ -365,7 +365,7 @@ def calc_pivot_points(hist):
             's1':sf(2*wpp-h),'s2':sf(wpp-(h-l))
         }
         return {'classic':classic,'camarilla':camarilla,'woodie':woodie,'current':sf(c)}
-    except: return {'classic':{},'camarilla':{},'woodie':{},'current':0}
+    except Exception: return {'classic':{},'camarilla':{},'woodie':{},'current':0}
 
 def calc_roc(closes, period=12):
     """Rate of Change - momentum osilatoru"""
@@ -420,97 +420,6 @@ def calc_dmi(highs, lows, closes, period=14):
     sig='buy' if diP>diM and dx>20 else ('sell' if diM>diP and dx>20 else 'neutral')
     return {'name':'DMI','diPlus':diP,'diMinus':diM,'adx':sf(dx),'signal':sig}
 
-
-def calc_fundamentals(hist, symbol):
-    """Temel verileri mevcut fiyat/hacim verisinden hesapla"""
-    try:
-        c = hist['Close'].values.astype(float)
-        v = hist['Volume'].values.astype(float)
-        h = hist['High'].values.astype(float)
-        l = hist['Low'].values.astype(float)
-        # NaN temizligi
-        h = np.where(np.isnan(h), c, h)
-        l = np.where(np.isnan(l), c, l)
-        v = np.where(np.isnan(v), 0, v)
-        n = len(c)
-        cur = float(c[-1])
-
-        # Ortalama gunluk hacim (son 20 gun)
-        avg_vol_20 = float(np.mean(v[-20:])) if n >= 20 else float(np.mean(v))
-        avg_vol_60 = float(np.mean(v[-60:])) if n >= 60 else avg_vol_20
-
-        # Volatilite (yillik)
-        if n >= 20:
-            daily_returns = np.diff(c[-60:]) / c[-60:-1] if n >= 60 else np.diff(c) / c[:-1]
-            volatility = sf(float(np.std(daily_returns)) * (252 ** 0.5) * 100)
-        else:
-            volatility = 0
-
-        # Beta hesapla (BIST100'e gore) - basit yaklasim: volatilite bazli
-        beta = sf(volatility / 25) if volatility else 1.0  # BIST100 avg vol ~25%
-
-        # Ortalama islem hacmi (TL)
-        avg_turnover = sf(cur * avg_vol_20)
-
-        # 1 aylik, 3 aylik, 6 aylik, 1 yillik getiri
-        returns = {}
-        for label, days in [('1ay', 22), ('3ay', 66), ('6ay', 132), ('1yil', 252)]:
-            if n > days:
-                ret = sf(((cur - float(c[-days])) / float(c[-days])) * 100)
-                returns[label] = ret
-
-        # Gunluk ortalama aralik (ATR benzeri) - NaN-safe
-        if n >= 14:
-            daily_range = [(float(h[i]) - float(l[i])) for i in range(-14, 0) if h[i] == h[i] and l[i] == l[i]]
-            avg_daily_range = sf(np.mean(daily_range)) if daily_range else 0
-            avg_daily_range_pct = sf(avg_daily_range / cur * 100) if cur > 0 else 0
-        else:
-            avg_daily_range = 0
-            avg_daily_range_pct = 0
-
-        # 52 haftalik high/low'dan uzaklik (NaN-safe)
-        if n >= 252:
-            hi52 = float(np.nanmax(h[-252:]))
-            lo52 = float(np.nanmin(l[-252:]))
-        else:
-            hi52 = float(np.nanmax(h))
-            lo52 = float(np.nanmin(l))
-        # NaN kontrolu
-        if hi52 != hi52: hi52 = cur  # NaN ise cur kullan
-        if lo52 != lo52: lo52 = cur
-        dist_from_high = sf(((cur - hi52) / hi52) * 100) if hi52 else 0
-        dist_from_low = sf(((cur - lo52) / lo52) * 100) if lo52 else 0
-
-        return {
-            'avgVolume20': si(avg_vol_20),
-            'avgVolume60': si(avg_vol_60),
-            'avgTurnover': avg_turnover,
-            'volatility': volatility,
-            'beta': beta,
-            'returns': returns,
-            'avgDailyRange': avg_daily_range,
-            'avgDailyRangePct': avg_daily_range_pct,
-            'distFromHigh52w': dist_from_high,
-            'distFromLow52w': dist_from_low,
-        }
-    except Exception as e:
-        print(f"  [FUND] {symbol} hata: {e}")
-        return {}
-
-def calc_52w(hist):
-    """52 hafta (veya mevcut veri) high/low hesapla - NaN-safe"""
-    try:
-        h=hist['High'].values.astype(float)
-        l=hist['Low'].values.astype(float)
-        c=float(hist['Close'].iloc[-1])
-        hi52=sf(float(np.nanmax(h))); lo52=sf(float(np.nanmin(l)))
-        # NaN fallback
-        if hi52 == 0 and c > 0: hi52 = sf(c)
-        if lo52 == 0 and c > 0: lo52 = sf(c)
-        rng=hi52-lo52
-        pos=sf((c-lo52)/rng*100 if rng>0 else 50)
-        return {'high52w':hi52,'low52w':lo52,'currentPct':pos,'range':sf(rng)}
-    except: return {'high52w':0,'low52w':0,'currentPct':50,'range':0}
 
 def calc_all_indicators(hist, cp):
     c,h,l,v=hist['Close'].values.astype(float),hist['High'].values.astype(float),hist['Low'].values.astype(float),hist['Volume'].values.astype(float)
@@ -1750,7 +1659,7 @@ def calc_dynamic_thresholds(closes, highs, lows, volumes):
             'vol_spike': sf(vol_spike),
             'bb_std': sf(bb_std),
         }
-    except:
+    except Exception:
         return {'rsi_oversold': 30, 'rsi_overbought': 70, 'vol_spike': 2.0, 'bb_std': 2.0}
 
 
@@ -1850,200 +1759,13 @@ def calc_candlestick_patterns(opens, highs, lows, closes):
         return {'patterns': [], 'signal': 'neutral'}
 
 
-# =====================================================================
-# FEATURE 4: MARKET REGIME DETECTION (Piyasa Rejimi)
-# =====================================================================
+# Market regime cache (signals.py tarafindan kullanilir)
 _market_regime_cache = {'regime': None, 'ts': 0}
-
-
-def calc_market_regime():
-    """BIST100 trend durumunu analiz et: bull/bear/sideways"""
-    try:
-        # Cache kontrol (5 dakika)
-        if _market_regime_cache['regime'] and time.time() - _market_regime_cache['ts'] < 300:
-            return _market_regime_cache['regime']
-
-        # XU100 tarihsel verisini al
-        hist = _cget_hist("XU100_1y")
-        if hist is None:
-            # Cache'de yoksa senkron olarak cek
-            try:
-                xu_df = _fetch_isyatirim_df("XU100", 365)
-                if xu_df is not None and len(xu_df) >= 30:
-                    _cset(_hist_cache, "XU100_1y", xu_df)
-                    hist = xu_df
-                    print("[REGIME] XU100 verisi senkron olarak cekildi")
-            except Exception as xe:
-                print(f"[REGIME] XU100 senkron cekme hatasi: {xe}")
-
-        if hist is None:
-            # Hala yoksa stock cache'den basit rejim hesapla
-            stocks = _get_stocks()
-            if stocks:
-                advancing = sum(1 for s in stocks if s.get('changePct', 0) > 0)
-                declining = sum(1 for s in stocks if s.get('changePct', 0) < 0)
-                total = len(stocks)
-                ratio = advancing / max(declining, 1)
-                if ratio > 2:
-                    regime_name, desc = 'strong_bull', 'Guclu Boga Piyasasi'
-                elif ratio > 1.3:
-                    regime_name, desc = 'bull', 'Boga Piyasasi'
-                elif ratio < 0.5:
-                    regime_name, desc = 'strong_bear', 'Guclu Ayi Piyasasi'
-                elif ratio < 0.8:
-                    regime_name, desc = 'bear', 'Ayi Piyasasi'
-                else:
-                    regime_name, desc = 'sideways', 'Yatay Piyasa'
-                return {
-                    'regime': regime_name, 'strength': sf(min(abs(ratio - 1) * 50, 100)),
-                    'description': desc,
-                    'reasons': [f'Yukselen: {advancing}, Dusen: {declining} (toplam {total})',
-                                f'A/D orani: {sf(ratio)}'],
-                    'indicators': {'breadthRatio': sf(ratio)},
-                }
-            return {'regime': 'unknown', 'strength': 0, 'description': 'Piyasa verisi mevcut degil'}
-
-        c = hist['Close'].values.astype(float)
-        n = len(c)
-        if n < 50:
-            return {'regime': 'unknown', 'strength': 0, 'description': 'Yeterli veri yok'}
-
-        cur = float(c[-1])
-
-        # SMA hesapla
-        sma20 = float(np.mean(c[-20:])) if n >= 20 else cur
-        sma50 = float(np.mean(c[-50:])) if n >= 50 else sma20
-        sma200 = float(np.mean(c[-200:])) if n >= 200 else sma50
-
-        # EMA hesapla
-        s = pd.Series(c)
-        ema20 = float(s.ewm(span=20).mean().iloc[-1])
-        ema50 = float(s.ewm(span=50).mean().iloc[-1])
-
-        # ADX (trend gucu)
-        h = hist['High'].values.astype(float)
-        l = hist['Low'].values.astype(float)
-        adx_data = calc_adx(h, l, c)
-        adx_val = float(adx_data.get('value', 25))
-        plus_di = float(adx_data.get('plusDI', 0))
-        minus_di = float(adx_data.get('minusDI', 0))
-
-        # RSI
-        rsi = calc_rsi(c).get('value', 50)
-
-        # Son 20 gun momentum
-        ret_20d = ((cur - float(c[-20])) / float(c[-20])) * 100 if n >= 20 else 0
-        ret_50d = ((cur - float(c[-50])) / float(c[-50])) * 100 if n >= 50 else 0
-
-        # Volatilite
-        if n >= 20:
-            daily_returns = np.diff(c[-30:]) / c[-30:-1]
-            volatility = float(np.std(daily_returns)) * (252 ** 0.5) * 100
-        else:
-            volatility = 25
-
-        # Piyasa genisligi (cache'deki hisselerden)
-        stocks = _get_stocks()
-        advancing = sum(1 for s in stocks if s.get('changePct', 0) > 0)
-        declining = sum(1 for s in stocks if s.get('changePct', 0) < 0)
-        breadth_ratio = advancing / max(declining, 1)
-
-        # Rejim belirleme skoru
-        score = 0
-        reasons = []
-
-        # Fiyat > SMA pozisyonu
-        if cur > sma20: score += 1; reasons.append('Fiyat SMA20 uzerinde')
-        else: score -= 1; reasons.append('Fiyat SMA20 altinda')
-
-        if cur > sma50: score += 1; reasons.append('Fiyat SMA50 uzerinde')
-        else: score -= 1; reasons.append('Fiyat SMA50 altinda')
-
-        if n >= 200:
-            if cur > sma200: score += 1.5; reasons.append('Fiyat SMA200 uzerinde (uzun vadeli boga)')
-            else: score -= 1.5; reasons.append('Fiyat SMA200 altinda (uzun vadeli ayi)')
-
-        # SMA siralamasi
-        if sma20 > sma50: score += 1; reasons.append('SMA20 > SMA50 (yukari trend)')
-        else: score -= 1; reasons.append('SMA20 < SMA50 (asagi trend)')
-
-        # Momentum
-        if ret_20d > 5: score += 1; reasons.append(f'20 gunluk getiri: %{sf(ret_20d)} (guclu)')
-        elif ret_20d > 0: score += 0.5
-        elif ret_20d < -5: score -= 1; reasons.append(f'20 gunluk getiri: %{sf(ret_20d)} (zayif)')
-        else: score -= 0.5
-
-        # ADX trend gucu
-        if adx_val > 25:
-            if plus_di > minus_di: score += 1; reasons.append(f'ADX={sf(adx_val)}: Guclu yukari trend')
-            else: score -= 1; reasons.append(f'ADX={sf(adx_val)}: Guclu asagi trend')
-
-        # Piyasa genisligi
-        if breadth_ratio > 1.5: score += 0.5; reasons.append(f'Piyasa genisligi pozitif ({advancing}/{declining})')
-        elif breadth_ratio < 0.7: score -= 0.5; reasons.append(f'Piyasa genisligi negatif ({advancing}/{declining})')
-
-        # Rejim siniflandirma
-        if score >= 3:
-            regime = 'strong_bull'
-            desc = 'Guclu Boga Piyasasi - Alis sinyalleri daha guvenilir'
-        elif score >= 1:
-            regime = 'bull'
-            desc = 'Boga Piyasasi - Genel yukari trend'
-        elif score <= -3:
-            regime = 'strong_bear'
-            desc = 'Guclu Ayi Piyasasi - Satis sinyalleri daha guvenilir'
-        elif score <= -1:
-            regime = 'bear'
-            desc = 'Ayi Piyasasi - Genel asagi trend'
-        else:
-            regime = 'sideways'
-            desc = 'Yatay Piyasa - Belirsizlik hakim, dikkatli olun'
-
-        # Sinyal guven carpani
-        if regime in ('strong_bull', 'bull'):
-            buy_confidence_mult = 1.2
-            sell_confidence_mult = 0.8
-        elif regime in ('strong_bear', 'bear'):
-            buy_confidence_mult = 0.8
-            sell_confidence_mult = 1.2
-        else:
-            buy_confidence_mult = 1.0
-            sell_confidence_mult = 1.0
-
-        result = {
-            'regime': regime,
-            'score': sf(score),
-            'strength': sf(min(abs(score) / 5 * 100, 100)),
-            'description': desc,
-            'reasons': reasons[:6],
-            'indicators': {
-                'sma20': sf(sma20), 'sma50': sf(sma50), 'sma200': sf(sma200) if n >= 200 else None,
-                'adx': sf(adx_val), 'rsi': sf(rsi),
-                'ret20d': sf(ret_20d), 'ret50d': sf(ret_50d),
-                'volatility': sf(volatility),
-                'breadthRatio': sf(breadth_ratio),
-            },
-            'confidence_multiplier': {
-                'buy': buy_confidence_mult,
-                'sell': sell_confidence_mult,
-            },
-        }
-
-        _market_regime_cache['regime'] = result
-        _market_regime_cache['ts'] = time.time()
-        return result
-    except Exception as e:
-        print(f"  [REGIME] Hata: {e}")
-        return {'regime': 'unknown', 'strength': 0, 'description': str(e)}
-
-
-# =====================================================================
-# FEATURE 5: SECTOR ANALYSIS & RELATIVE STRENGTH
 
 def prepare_chart_data(hist):
     try:
         cs=[{'date':d.strftime('%Y-%m-%d'),'open':sf(r['Open']),'high':sf(r['High']),'low':sf(r['Low']),'close':sf(r['Close']),'volume':si(r['Volume'])} for d,r in hist.iterrows()]
         return {'candlestick':cs,'dates':[c['date'] for c in cs],'prices':[c['close'] for c in cs],'volumes':[c['volume'] for c in cs],'dataPoints':len(cs)}
-    except: return {'candlestick':[],'dates':[],'prices':[],'volumes':[],'dataPoints':0}
+    except Exception: return {'candlestick':[],'dates':[],'prices':[],'volumes':[],'dataPoints':0}
 
 

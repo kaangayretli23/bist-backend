@@ -110,11 +110,11 @@ def sf(v, d=2):
     try:
         f = float(v)
         return 0.0 if f != f else round(f, d)
-    except: return 0.0
+    except (ValueError, TypeError): return 0.0
 
 def si(v):
     try: return int(v)
-    except: return 0
+    except (ValueError, TypeError): return 0
 
 def safe_dict(d):
     if isinstance(d, dict): return {str(k): safe_dict(v) for k, v in d.items()}

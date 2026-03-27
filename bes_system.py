@@ -492,7 +492,7 @@ def _parse_tefas_date(date_val):
         for fmt in ['%d.%m.%Y', '%Y-%m-%d', '%Y-%m-%dT%H:%M:%S']:
             try:
                 return datetime.strptime(date_val, fmt)
-            except:
+            except Exception:
                 continue
     return None
 
@@ -521,7 +521,7 @@ def _analyze_fund_performance(history_data, fund_code):
     # Tarihe gore sirala (en eski en basta) - datetime objeleriyle dogru siralama
     try:
         prices.sort(key=lambda x: x['date_parsed'] or datetime.min)
-    except:
+    except Exception:
         # Fallback: string siralama
         prices.sort(key=lambda x: x['date'])
 
