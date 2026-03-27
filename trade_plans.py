@@ -1,13 +1,14 @@
 """
 BIST Pro - Trade Plan Module
 """
-import time, json, traceback
+import time, json, traceback, threading
 import numpy as np
 from config import (
     sf, _lock, _plan_lock_cache, _plan_lock_cache_lock,
     PLAN_LOCK_CONFIG, PLAN_MAX_LOCK_SECONDS, _hist_cache, _cget_hist
 )
 from indicators import *
+from database import _db_save_plan_locks
 
 def _is_plan_valid(lock_entry, cur_price, cur_signal, cfg=None):
     """Kilitli bir planin hala gecerli olup olmadigini kontrol et.
@@ -403,22 +404,5 @@ def calc_trade_plan(hist, indicators=None, symbol=None):
     except Exception as e:
         print(f"  [TRADE-PLAN] Hata: {e}")
         return {}
-
-
-def _db_save_plan_locks():
-    """Plan kilitleme cache'ini DB'ye kaydet"""
-    try:
-        with _plan_lock_cache_lock:
-            snap = dict(_plan_lock_cache)
-        _db_upsert_cache('plan_locks', json.dumps(snap), time.time())
-    except Exception as e:
-        print(f"[PLAN-LOCK-SAVE] Hata: {e}")
-
-
-def prepare_chart_data(hist):
-    try:
-        cs=[{'date':d.strftime('%Y-%m-%d'),'open':sf(r['Open']),'high':sf(r['High']),'low':sf(r['Low']),'close':sf(r['Close']),'volume':si(r['Volume'])} for d,r in hist.iterrows()]
-        return {'candlestick':cs,'dates':[c['date'] for c in cs],'prices':[c['close'] for c in cs],'volumes':[c['volume'] for c in cs],'dataPoints':len(cs)}
-    except: return {'candlestick':[],'dates':[],'prices':[],'volumes':[],'dataPoints':0}
 
 

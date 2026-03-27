@@ -33,9 +33,9 @@ except ImportError as e:
 # Technical indicators
 try:
     from indicators import (
-        calc_rsi, calc_rsi_single, calc_macd, calc_macd_history,
-        calc_bollinger, calc_bollinger_history, calc_ema, calc_ema_history,
-        calc_stochastic, calc_stochastic_history, calc_atr, calc_adx, calc_obv,
+        calc_rsi, calc_rsi_single, calc_macd,
+        calc_bollinger, calc_ema,
+        calc_stochastic, calc_atr, calc_adx, calc_obv,
         calc_support_resistance, calc_fibonacci, calc_williams_r, calc_cci,
         calc_mfi, calc_vwap, calc_ichimoku, calc_psar, calc_pivot_points,
         calc_roc, calc_aroon, calc_trix, calc_dmi,
@@ -74,7 +74,7 @@ except ImportError as e:
 # Trade plans
 try:
     from trade_plans import (
-        calc_trade_plan, _is_plan_valid,
+        calc_trade_plan,
     )
 except ImportError as e:
     print(f"[HATA] trade_plans.py import hatasi: {e}")
@@ -564,7 +564,7 @@ def commodity_detail(symbol):
                     if usd_hist is None and YF_OK:
                         try:
                             usd_hist = yf.Ticker('USDTRY=X').history(period=period, timeout=15)
-                        except:
+                        except Exception:
                             pass
                     if usd_hist is not None and len(usd_hist) >= 2:
                         # Normalize dates (remove time component for matching)
@@ -768,7 +768,7 @@ def screener():
                 try:
                     if op=='>' and not(float(sv)>val): ok=False; break
                     elif op=='<' and not(float(sv)<val): ok=False; break
-                except: ok=False; break
+                except Exception: ok=False; break
             if ok: matches.append(s)
         return jsonify(safe_dict({'success':True,'matches':matches[:50],'totalMatches':len(matches)}))
     except Exception as e:
@@ -1496,7 +1496,7 @@ def _compute_signal_for_stock(stock, timeframe):
             'williamsR':         adv.get('williamsR', {}).get('value', -50),
             'williamsSignal':    adv.get('williamsR', {}).get('signal', 'neutral'),
         }
-    except:
+    except Exception:
         return None
 
 @app.route('/api/signals')
@@ -1829,7 +1829,7 @@ def _compute_opportunity_for_stock(stock):
             'candlestickPatterns': candles.get('patterns', []),
             'tradePlan': calc_trade_plan(hist, symbol=sym),
         }
-    except:
+    except Exception:
         return None
 
 @app.route('/api/opportunities')
@@ -1987,7 +1987,7 @@ def _compute_strategy_for_stock(stock):
             }
 
         return result
-    except:
+    except Exception:
         return None
 
 @app.route('/api/strategies/live')
@@ -2104,7 +2104,7 @@ def dividend_calendar():
                                 'yearlyTotals': {str(k): sf(v) for k, v in sorted(yearly_divs.items())},
                                 'changePct': stock.get('changePct', 0),
                             })
-            except:
+            except Exception:
                 continue
 
         # Temettu verimine gore sirala
@@ -2135,7 +2135,7 @@ def send_telegram(message):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         req.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'HTML'}, timeout=10)
         return True
-    except:
+    except Exception:
         return False
 
 def _auto_signal_check():
@@ -2170,7 +2170,7 @@ def _auto_signal_check():
                 msg = header + '\n'.join(alerts_text)
                 send_telegram(msg)
 
-        except:
+        except Exception:
             continue
 
 # Telegram bildirim thread'ini baslat
@@ -2224,7 +2224,7 @@ def send_telegram_report():
                     strong_buys.append((sym, sf(cp), bc, total, stock.get('changePct', 0)))
                 elif sc >= total * 0.6:
                     strong_sells.append((sym, sf(cp), sc, total, stock.get('changePct', 0)))
-            except:
+            except Exception:
                 continue
 
         msg = f"📊 <b>BIST Gunluk Sinyal Raporu</b>\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
@@ -2339,7 +2339,7 @@ def check_session():
         user = db.execute("SELECT id FROM users WHERE id=?", (uid,)).fetchone()
         db.close()
         return jsonify({'valid': user is not None})
-    except:
+    except Exception:
         return jsonify({'valid': False})
 
 
@@ -2412,9 +2412,9 @@ def _send_telegram_alerts(user_id, triggered_alerts):
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             try:
                 req_lib.post(url, json={'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}, timeout=5)
-            except:
+            except Exception:
                 pass
-    except:
+    except Exception:
         pass
 
 
@@ -2755,7 +2755,7 @@ def signals_performance():
                         'winRate20d': overall.get('winRate20d', 0),
                         'avgReturn10d': overall.get('avgRet10d', 0),
                     })
-            except:
+            except Exception:
                 continue
 
         results.sort(key=lambda x: float(x.get('winRate10d', 0)), reverse=True)
@@ -3349,7 +3349,7 @@ def _parse_tefas_date(date_val):
         for fmt in ['%d.%m.%Y', '%Y-%m-%d', '%Y-%m-%dT%H:%M:%S']:
             try:
                 return datetime.strptime(date_val, fmt)
-            except:
+            except Exception:
                 continue
     return None
 
@@ -3378,7 +3378,7 @@ def _analyze_fund_performance(history_data, fund_code):
     # Tarihe gore sirala (en eski en basta) - datetime objeleriyle dogru siralama
     try:
         prices.sort(key=lambda x: x['date_parsed'] or datetime.min)
-    except:
+    except Exception:
         # Fallback: string siralama
         prices.sort(key=lambda x: x['date'])
 

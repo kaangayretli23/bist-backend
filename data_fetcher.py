@@ -37,6 +37,17 @@ def _get_start_telegram_thread():
     except Exception:
         return None
 
+def _get_db():
+    from config import get_db
+    return get_db
+
+def _get_send_telegram_alerts():
+    try:
+        from backend import _send_telegram_alerts
+        return _send_telegram_alerts
+    except Exception:
+        return None
+
 def _get_auto_engine():
     try:
         from auto_trader import _auto_engine_cycle
@@ -391,42 +402,6 @@ def _fetch_hist_df(sym, period='1y'):
     return None
 
 
-def _resample_to_tf(hist_daily, tf):
-    """
-    Gunluk OHLCV verisini haftalik ('weekly') veya aylik ('monthly') bara donustur.
-    Portabl yaklasim: pandas groupby + Period kullanır (resample versiyonuna bagli degil).
-    """
-    try:
-        df = hist_daily.copy()
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-
-        period_code = 'W' if tf == 'weekly' else 'M'
-        df['_p'] = df.index.to_period(period_code)
-
-        agg = {'Close': 'last', 'High': 'max', 'Low': 'min', 'Volume': 'sum'}
-        if 'Open' in df.columns:
-            agg['Open'] = 'first'
-
-        resampled = df.groupby('_p').agg(agg)
-        resampled.index = resampled.index.to_timestamp()
-        resampled = resampled.dropna(subset=['Close'])
-
-        # Son bar tamamlanmamis olabilir (suanki hafta/ay) — cikar
-        if len(resampled) > 2:
-            resampled = resampled.iloc[:-1]
-
-        if 'High' not in resampled.columns:
-            resampled['High'] = resampled['Close']
-        if 'Low' not in resampled.columns:
-            resampled['Low'] = resampled['Close']
-
-        return resampled if len(resampled) >= 5 else None
-    except Exception as e:
-        print(f"  [MTF-RESAMPLE] {tf}: {e}")
-        return None
-
-
 def _process_stock(sym, retry_count=2):
     """Tek hisseyi cek ve cache formatinda dondur (thread-safe)"""
     try:
@@ -565,7 +540,7 @@ def _background_loop():
 def _auto_check_all_alerts():
     """Background loop'ta tum aktif alert'leri kontrol et (cooldown destekli)"""
     try:
-        db = get_db()
+        db = _get_db()()
         rows = db.execute("SELECT * FROM alerts WHERE active=1 AND triggered=0").fetchall()
         if not rows:
             db.close()
@@ -581,7 +556,7 @@ def _auto_check_all_alerts():
                     cd_time = datetime.fromisoformat(cooldown_until)
                     if now < cd_time:
                         continue
-                except:
+                except Exception:
                     pass
 
             stock = _cget(_stock_cache, r['symbol'])
@@ -606,7 +581,8 @@ def _auto_check_all_alerts():
                 triggered_count += 1
 
                 # Telegram bildirim
-                _send_telegram_alerts(r['user_id'], [{
+                _tg = _get_send_telegram_alerts()
+                if _tg: _tg(r['user_id'], [{
                     'symbol': r['symbol'], 'condition': r['condition'],
                     'targetValue': r['target_value'], 'currentPrice': price,
                     'message': f"{r['symbol']} uyarisi tetiklendi: {r['condition']} {r['target_value']} (Guncel: {price})"
@@ -723,9 +699,5 @@ def _fetch_index_data(key, tsym, name):
     return None
 
 
-# =====================================================================
-# BACKGROUND LOADER (paralel - ThreadPoolExecutor)
-# =====================================================================
-PARALLEL_WORKERS = 12  # Paralel hisse cekme sayisi (performans iyilestirmesi)
 
 
