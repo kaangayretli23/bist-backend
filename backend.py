@@ -7,53 +7,82 @@ trade_plans, auto_trader, bes_system
 from config import *
 
 # Database init & cache
-from database import (
-    init_db, _db_upsert_cache, _db_get_cache,
-    _db_save_market_snapshot, _db_load_market_snapshot, _db_save_plan_locks
-)
+try:
+    from database import (
+        init_db, _db_upsert_cache, _db_get_cache,
+        _db_save_market_snapshot, _db_load_market_snapshot, _db_save_plan_locks
+    )
+except ImportError as e:
+    print(f"[HATA] database.py import hatasi: {e}")
+    print("[BILGI] 'git pull origin main' yaparak dosyalari guncelle")
+    # Dummy fonksiyonlar — crash onleme
+    def init_db(): pass
+    def _db_load_market_snapshot(): pass
+    def _db_save_market_snapshot(): pass
+    def _db_save_plan_locks(): pass
+    def _db_upsert_cache(*a): pass
+    def _db_get_cache(*a): return None
 
 # Technical indicators
-from indicators import (
-    calc_rsi, calc_rsi_single, calc_macd, calc_macd_history,
-    calc_bollinger, calc_bollinger_history, calc_ema, calc_ema_history,
-    calc_stochastic, calc_stochastic_history, calc_atr, calc_adx, calc_obv,
-    calc_support_resistance, calc_fibonacci, calc_williams_r, calc_cci,
-    calc_mfi, calc_vwap, calc_ichimoku, calc_psar, calc_pivot_points,
-    calc_roc, calc_aroon, calc_trix, calc_dmi,
-    calc_all_indicators, calc_mtf_signal, calc_divergence,
-    calc_volume_profile, calc_smc, calc_chart_patterns,
-    calc_fibonacci_adv, calc_pivot_points_adv, calc_advanced_indicators,
-    calc_dynamic_thresholds, calc_candlestick_patterns,
-    prepare_chart_data, _resample_to_tf,
-)
+try:
+    from indicators import (
+        calc_rsi, calc_rsi_single, calc_macd, calc_macd_history,
+        calc_bollinger, calc_bollinger_history, calc_ema, calc_ema_history,
+        calc_stochastic, calc_stochastic_history, calc_atr, calc_adx, calc_obv,
+        calc_support_resistance, calc_fibonacci, calc_williams_r, calc_cci,
+        calc_mfi, calc_vwap, calc_ichimoku, calc_psar, calc_pivot_points,
+        calc_roc, calc_aroon, calc_trix, calc_dmi,
+        calc_all_indicators, calc_mtf_signal, calc_divergence,
+        calc_volume_profile, calc_smc, calc_chart_patterns,
+        calc_fibonacci_adv, calc_pivot_points_adv, calc_advanced_indicators,
+        calc_dynamic_thresholds, calc_candlestick_patterns,
+        prepare_chart_data, _resample_to_tf,
+    )
+except ImportError as e:
+    print(f"[HATA] indicators.py import hatasi: {e}")
 
 # Signal & recommendation system
-from signals import (
-    calc_recommendation, calc_fundamentals, calc_52w,
-    calc_signal_backtest, calc_market_regime, calc_sector_relative_strength,
-    fetch_fundamental_data, check_signal_alerts, calc_ml_confidence,
-)
+try:
+    from signals import (
+        calc_recommendation, calc_fundamentals, calc_52w,
+        calc_signal_backtest, calc_market_regime, calc_sector_relative_strength,
+        fetch_fundamental_data, check_signal_alerts, calc_ml_confidence,
+    )
+except ImportError as e:
+    print(f"[HATA] signals.py import hatasi: {e}")
 
 # Data fetcher & background loader
-from data_fetcher import (
-    _fetch_stock_data, _fetch_hist_df, _fetch_index_data,
-    _process_stock, _fetch_stocks_parallel, _background_loop,
-    _auto_check_all_alerts, _preload_hist_data, _ensure_loader,
-    _fetch_isyatirim_df, _fetch_isyatirim_quick,
-    _fetch_yahoo_http, _fetch_yahoo_http_df,
-    IS_YATIRIM_BASE, IS_YATIRIM_HEADERS,
-)
+try:
+    from data_fetcher import (
+        _fetch_stock_data, _fetch_hist_df, _fetch_index_data,
+        _process_stock, _fetch_stocks_parallel, _background_loop,
+        _auto_check_all_alerts, _preload_hist_data, _ensure_loader,
+        _fetch_isyatirim_df, _fetch_isyatirim_quick,
+        _fetch_yahoo_http, _fetch_yahoo_http_df,
+        IS_YATIRIM_BASE, IS_YATIRIM_HEADERS,
+    )
+except ImportError as e:
+    print(f"[HATA] data_fetcher.py import hatasi: {e}")
 
 # Trade plans
-from trade_plans import (
-    calc_trade_plan, _is_plan_valid,
-)
+try:
+    from trade_plans import (
+        calc_trade_plan, _is_plan_valid,
+    )
+except ImportError as e:
+    print(f"[HATA] trade_plans.py import hatasi: {e}")
 
-# Auto-trading engine (routes included via @app.route in module)
-import auto_trader
+# Auto-trading engine
+try:
+    import auto_trader
+except ImportError as e:
+    print(f"[HATA] auto_trader.py import hatasi: {e}")
 
-# BES fund system (routes included via @app.route in module)
-import bes_system
+# BES fund system
+try:
+    import bes_system
+except ImportError as e:
+    print(f"[HATA] bes_system.py import hatasi: {e}")
 
 # Initialize database
 init_db()
