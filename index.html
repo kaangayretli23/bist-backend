@@ -5555,8 +5555,8 @@ async function loadAutoTrade() {
   }
   try {
     const [statusRes, tradesRes] = await Promise.all([
-      fetch(`${API_BASE}/api/auto-trade/status?userId=${uid}`),
-      fetch(`${API_BASE}/api/auto-trade/trades?userId=${uid}&limit=30`),
+      fetch(`${API_BASE}/auto-trade/status?userId=${uid}`),
+      fetch(`${API_BASE}/auto-trade/trades?userId=${uid}&limit=30`),
     ]);
     const status = await statusRes.json();
     const trades = await tradesRes.json();
@@ -5716,7 +5716,7 @@ async function toggleAutoTrade() {
   const newState = !_atEnabled;
   if (newState && !confirm('Otomatik alim-satim motorunu baslatmak istediginize emin misiniz?\n\nMotor, sinyal skoruna gore otomatik pozisyon acip kapatacaktir.')) return;
   try {
-    const res = await fetch(`${API_BASE}/api/auto-trade/toggle`, {
+    const res = await fetch(`${API_BASE}/auto-trade/toggle`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ userId: uid, enabled: newState ? 1 : 0 })
     });
@@ -5746,7 +5746,7 @@ async function saveAutoTradeConfig() {
       trailingStop: parseInt(document.getElementById('atTrailing').value),
       trailingPct: parseFloat(document.getElementById('atTrailPct').value) || 2,
     };
-    const res = await fetch(`${API_BASE}/api/auto-trade/config`, {
+    const res = await fetch(`${API_BASE}/auto-trade/config`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
     });
@@ -5768,7 +5768,7 @@ async function closePosition(posId) {
   if (!uid) return;
   if (!confirm('Bu pozisyonu kapatmak istediginize emin misiniz?')) return;
   try {
-    const res = await fetch(`${API_BASE}/api/auto-trade/close`, {
+    const res = await fetch(`${API_BASE}/auto-trade/close`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ userId: uid, positionId: posId })
     });
