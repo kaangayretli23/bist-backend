@@ -163,11 +163,22 @@ def _api_meta(data_quality=None, extra=None):
 
 @app.route('/api/health')
 def health():
+    import shutil
     now = time.time()
     with _lock:
         fresh = [k for k, v in _stock_cache.items() if now - v['ts'] < CACHE_TTL]
         stale = [k for k, v in _stock_cache.items() if CACHE_TTL <= now - v['ts'] < CACHE_STALE_TTL]
     hist_ready = sum(1 for s in BIST100_STOCKS if _cget_hist(f"{s}_1y") is not None)
+    try:
+        usage = shutil.disk_usage('/')
+        disk_info = {
+            'totalMB': round(usage.total / 1024**2),
+            'usedMB': round(usage.used / 1024**2),
+            'freeMB': round(usage.free / 1024**2),
+            'usedPercent': round(usage.used / usage.total * 100, 1),
+        }
+    except Exception as e:
+        disk_info = {'error': str(e)}
     return jsonify({
         'status': 'ok', 'version': '7.0.0', 'yf': YF_OK,
         'time': datetime.now().isoformat(),
@@ -183,6 +194,7 @@ def health():
         'cachedIndices': list(_index_cache.keys()),
         'totalDefined': len(BIST100_STOCKS),
         'missingStocks': [s for s in BIST100_STOCKS.keys() if s not in _stock_cache],
+        'disk': disk_info,
     })
 
 @app.route('/api/debug')
