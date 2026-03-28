@@ -61,6 +61,15 @@ import requests as req_lib
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+def _normalize_ohlcv_df(df):
+    """DataFrame OHLCV normalizasyonu: NaN doldur, High>=Close, Low<=Close"""
+    df['Open'] = df['Open'].fillna(df['Close'])
+    df['High'] = df['High'].fillna(df['Close'])
+    df['Low'] = df['Low'].fillna(df['Close'])
+    df['High'] = df[['High', 'Close']].max(axis=1)
+    df['Low'] = df[['Low', 'Close']].min(axis=1)
+    return df
+
 IS_YATIRIM_BASE = "https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/HisseTekil"
 IS_YATIRIM_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -186,15 +195,7 @@ def _fetch_isyatirim_df(symbol, days=365):
         else:
             df['Volume'] = 0
 
-        # NaN degerlerini doldur: Open/High/Low icin Close kullan (kritik fix)
-        df['Open'] = df['Open'].fillna(df['Close'])
-        df['High'] = df['High'].fillna(df['Close'])
-        df['Low'] = df['Low'].fillna(df['Close'])
-
-        # High en az Close kadar, Low en fazla Close kadar olmali
-        df['High'] = df[['High', 'Close']].max(axis=1)
-        df['Low'] = df[['Low', 'Close']].min(axis=1)
-
+        df = _normalize_ohlcv_df(df)
         df = df.dropna(subset=['Close']).sort_index()
 
         if len(df) < 2:
@@ -313,12 +314,7 @@ def _fetch_yahoo_http_df(symbol, period1_days=365):
         }, index=pd.DatetimeIndex(dates))
         df = df.dropna(subset=['Close'])
 
-        # NaN degerlerini doldur: Open/High/Low icin Close kullan
-        df['Open'] = df['Open'].fillna(df['Close'])
-        df['High'] = df['High'].fillna(df['Close'])
-        df['Low'] = df['Low'].fillna(df['Close'])
-        df['High'] = df[['High', 'Close']].max(axis=1)
-        df['Low'] = df[['Low', 'Close']].min(axis=1)
+        df = _normalize_ohlcv_df(df)
 
         if len(df) < 10: return None
         print(f"  [YAHOO-DF] {symbol}: {len(df)} bar")
