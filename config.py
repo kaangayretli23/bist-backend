@@ -100,6 +100,17 @@ def get_db():
         db.execute("PRAGMA journal_mode=WAL")
         return db
 
+from contextlib import contextmanager
+
+@contextmanager
+def db_conn():
+    """Context manager: DB baglantiyi otomatik kapatir, exception'da da."""
+    db = get_db()
+    try:
+        yield db
+    finally:
+        db.close()
+
 # =====================================================================
 # UTILITY FUNCTIONS
 # =====================================================================

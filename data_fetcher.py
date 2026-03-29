@@ -32,7 +32,7 @@ def _get_db_load_snapshot():
 
 def _get_start_telegram_thread():
     try:
-        from backend import _start_telegram_thread
+        from routes_telegram import _start_telegram_thread
         return _start_telegram_thread
     except Exception:
         return None
