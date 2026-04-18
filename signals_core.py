@@ -1,19 +1,57 @@
 """
 BIST Pro - Signal Core Module
-calc_recommendation, calc_fundamentals, calc_52w,
-fetch_fundamental_data, check_signal_alerts, calc_ml_confidence
+calc_recommendation
+check_signal_alerts, calc_ml_confidence → signals_confidence.py
 """
 import numpy as np
 import time, traceback, threading
-from config import sf, si, _lock, _stock_cache, _index_cache, _cget, _get_stocks, BIST100_STOCKS, SECTOR_MAP
-from indicators import *
-from indicators import _market_regime_cache, _resample_to_tf
+from config import sf, si, _lock, _stock_cache, _index_cache, _cget, _cget_hist, _get_stocks, BIST100_STOCKS, SECTOR_MAP
+from indicators import (
+    calc_rsi, calc_macd, calc_bollinger, calc_stochastic, calc_adx,
+    calc_support_resistance, calc_fibonacci, calc_dynamic_thresholds,
+    calc_candlestick_patterns, calc_divergence, calc_mtf_signal,
+    calc_ichimoku, calc_psar,
+)
+from signals_market import calc_market_regime, REGIMES_BULLISH, REGIMES_BEARISH
 
-# Fundamental data cache
-_fundamental_cache = {}
-_fundamental_cache_lock = threading.Lock()
+# İşlem stiline göre indikatör parametreleri
+_TF_PARAMS = {
+    'daily':   {'days': 1,   'rsi': 9,  'bb': 10, 'stoch': 9,  'adx': 7,  'atr': 7,  'macd': (6, 13, 5),   'sma': (5, 20, 50),    'vol': 5},
+    'weekly':  {'days': 5,   'rsi': 14, 'bb': 20, 'stoch': 14, 'adx': 14, 'atr': 14, 'macd': (12, 26, 9),  'sma': (20, 50, 200),  'vol': 20},
+    'monthly': {'days': 22,  'rsi': 21, 'bb': 20, 'stoch': 14, 'adx': 14, 'atr': 14, 'macd': (12, 26, 9),  'sma': (50, 200, 200), 'vol': 60},
+    'yearly':  {'days': 252, 'rsi': 21, 'bb': 20, 'stoch': 14, 'adx': 14, 'atr': 14, 'macd': (12, 26, 9),  'sma': (50, 200, 200), 'vol': 60},
+}
 
-def calc_recommendation(hist, indicators):
+def _splice_live_close(hist, live_price):
+    """Son bar'ın Close/High/Low'unu canlı fiyatla güncelle (intraday resample).
+    Hist'in kopyası döner; orijinal mutate edilmez. live_price geçersizse hist'i olduğu gibi döner."""
+    try:
+        if hist is None or len(hist) == 0 or live_price is None:
+            return hist
+        lp = float(live_price)
+        if lp <= 0:
+            return hist
+        h2 = hist.copy()
+        last_idx = h2.index[-1]
+        h2.at[last_idx, 'Close'] = lp
+        try:
+            cur_high = float(h2.at[last_idx, 'High'])
+            if lp > cur_high:
+                h2.at[last_idx, 'High'] = lp
+        except Exception:
+            h2.at[last_idx, 'High'] = lp
+        try:
+            cur_low = float(h2.at[last_idx, 'Low'])
+            if lp < cur_low:
+                h2.at[last_idx, 'Low'] = lp
+        except Exception:
+            h2.at[last_idx, 'Low'] = lp
+        return h2
+    except Exception:
+        return hist
+
+
+def calc_recommendation(hist, indicators, symbol=None):
     """Haftalik/Aylik/Yillik al-sat onerisi - guclendirilmis analiz + detayli reason"""
     try:
         c=hist['Close'].values.astype(float)
@@ -44,15 +82,6 @@ def calc_recommendation(hist, indicators):
         fib_sup = fib.get('nearestSupport')
         fib_res = fib.get('nearestResistance')
 
-        # Bollinger bantlari
-        try:
-            bb = calc_bollinger(c, cur)
-        except Exception:
-            bb = {'upper': 0, 'lower': 0, 'middle': 0}
-        bb_upper = bb.get('upper', 0)
-        bb_lower = bb.get('lower', 0)
-        bb_middle = bb.get('middle', 0)
-
         # Dinamik esikler
         try:
             dyn = calc_dynamic_thresholds(c, h, l, v) if n >= 60 else {'rsi_oversold': 30, 'rsi_overbought': 70}
@@ -67,9 +96,8 @@ def calc_recommendation(hist, indicators):
         except Exception:
             candle_data = {'patterns': [], 'signal': 'neutral'}
 
-        # Piyasa rejimi (lazy import - signals_backtest'te)
+        # Piyasa rejimi — calc_market_regime signals_market'tan module-level import edildi
         try:
-            from signals_backtest import calc_market_regime
             regime = calc_market_regime()
         except Exception:
             regime = {'regime': 'unknown', 'description': ''}
@@ -94,62 +122,74 @@ def calc_recommendation(hist, indicators):
         except Exception:
             mtf_direction = 'neutral'; mtf_score_val = 0; mtf_strength = 'Uyumsuz'; mtf_data = {}
 
-        for label, days in [('weekly',5),('monthly',22),('yearly',252)]:
+        for label in ['daily', 'weekly', 'monthly', 'yearly']:
+            p = _TF_PARAMS[label]; days = p['days']
             if n<days+14: recommendations[label]={'action':'neutral','confidence':0,'reasons':[],'score':0,'strategy':'Yeterli veri yok','reason':'Yeterli veri yok','indicatorBreakdown':{}}; continue
 
             sl=slice(-days,None)
             sc=c[sl]; sh=h[sl]; slow=l[sl]; sv=v[sl]
 
+            try:
+                bb = calc_bollinger(c, cur, period=p['bb'])
+            except Exception:
+                bb = {'upper': 0, 'lower': 0, 'middle': 0}
+            bb_upper = bb.get('upper', 0)
+            bb_lower = bb.get('lower', 0)
+            bb_middle = bb.get('middle', 0)
+
             score=0; reasons=[]; strategy_parts=[]
             buy_indicators = 0; sell_indicators = 0; total_indicators = 0
 
-            # 1. Trend (SMA) - Agirlik: 2 puan
-            sma20=np.mean(c[-20:]) if n>=20 else c[-1]
-            sma50=np.mean(c[-50:]) if n>=50 else sma20
-            sma200=np.mean(c[-200:]) if n>=200 else sma50
-            total_indicators += 1
-            if cur>sma20:
-                score+=1; buy_indicators+=1
-                reasons.append(f'Fiyat ({sf(cur)}) SMA20 ({sf(sma20)}) uzerinde')
+            # 1. Trend (SMA) - tek bir gösterge sayılır (3 alt-check birleşik, consensus'u şişirmesin)
+            ps, pm, pl = p['sma']
+            sma_s = np.mean(c[-ps:]) if n >= ps else c[-1]
+            sma_m = np.mean(c[-pm:]) if n >= pm else sma_s
+            sma_l = np.mean(c[-pl:]) if n >= pl else sma_m
+            sma_buy_sub = 0; sma_sell_sub = 0
+            if cur > sma_s:
+                score += 1; sma_buy_sub += 1
+                reasons.append(f'Fiyat ({sf(cur)}) SMA{ps} ({sf(sma_s)}) uzerinde')
             else:
-                score-=1; sell_indicators+=1
-                reasons.append(f'Fiyat ({sf(cur)}) SMA20 ({sf(sma20)}) altinda')
-
-            total_indicators += 1
-            if sma20>sma50:
-                score+=1; buy_indicators+=1
-                reasons.append(f'SMA20 ({sf(sma20)}) > SMA50 ({sf(sma50)}) → Yukari trend')
+                score -= 1; sma_sell_sub += 1
+                reasons.append(f'Fiyat ({sf(cur)}) SMA{ps} ({sf(sma_s)}) altinda')
+            if sma_s > sma_m:
+                score += 1; sma_buy_sub += 1
+                reasons.append(f'SMA{ps} ({sf(sma_s)}) > SMA{pm} ({sf(sma_m)}) → Yukari trend')
             else:
-                score-=1; sell_indicators+=1
-                reasons.append(f'SMA20 ({sf(sma20)}) < SMA50 ({sf(sma50)}) → Asagi trend')
-
-            # SMA200 bonus (uzun vadeli trend)
-            if n >= 200:
-                total_indicators += 1
-                if cur > sma200:
-                    score += 0.5; buy_indicators += 1
-                    reasons.append(f'Fiyat SMA200 ({sf(sma200)}) uzerinde → Uzun vadeli boga')
+                score -= 1; sma_sell_sub += 1
+                reasons.append(f'SMA{ps} ({sf(sma_s)}) < SMA{pm} ({sf(sma_m)}) → Asagi trend')
+            if n >= pl:
+                if cur > sma_l:
+                    score += 0.5; sma_buy_sub += 1
+                    reasons.append(f'Fiyat SMA{pl} ({sf(sma_l)}) uzerinde → Uzun vadeli boga')
                 else:
-                    score -= 0.5; sell_indicators += 1
-                    reasons.append(f'Fiyat SMA200 ({sf(sma200)}) altinda → Uzun vadeli ayi')
+                    score -= 0.5; sma_sell_sub += 1
+                    reasons.append(f'Fiyat SMA{pl} ({sf(sma_l)}) altinda → Uzun vadeli ayi')
+            total_indicators += 1
+            if sma_buy_sub > sma_sell_sub:
+                buy_indicators += 1
+            elif sma_sell_sub > sma_buy_sub:
+                sell_indicators += 1
 
-            # 2. RSI (Dinamik esikler ile)
-            rsi_val=calc_rsi(c)
+            # 2. RSI (dinamik eşiklere göre bucket sınırları — süreksizlik yok)
+            rsi_val=calc_rsi(c, period=p['rsi'])
             rsi_v = rsi_val.get('value', 50)
             total_indicators += 1
+            _rsi_lo_mid = (dyn_oversold + 50) / 2
+            _rsi_hi_mid = (dyn_overbought + 50) / 2
             if rsi_v < dyn_oversold:
                 score+=2; buy_indicators+=1
                 reasons.append(f'RSI={sf(rsi_v)}: Asiri satim bolgesi (<{sf(dyn_oversold)}) → Guclu alis firsati')
-            elif rsi_v<40:
+            elif rsi_v < _rsi_lo_mid:
                 score+=1; buy_indicators+=1
-                reasons.append(f'RSI={sf(rsi_v)}: Zayif bolge → Toparlanma bekleniyor')
+                reasons.append(f'RSI={sf(rsi_v)}: Zayif bolge (<{sf(_rsi_lo_mid)}) → Toparlanma bekleniyor')
             elif rsi_v > dyn_overbought:
                 score-=2; sell_indicators+=1
                 reasons.append(f'RSI={sf(rsi_v)}: Asiri alim bolgesi (>{sf(dyn_overbought)}) → Kar realizasyonu bekleniyor')
-            elif rsi_v>60:
+            elif rsi_v > _rsi_hi_mid:
                 score-=0.5; sell_indicators+=1
-                reasons.append(f'RSI={sf(rsi_v)}: Guclu bolge (60-70)')
-            elif rsi_v>=50:
+                reasons.append(f'RSI={sf(rsi_v)}: Guclu bolge (>{sf(_rsi_hi_mid)})')
+            elif rsi_v >= 50:
                 score+=0.5; buy_indicators+=1
                 reasons.append(f'RSI={sf(rsi_v)}: Notr-pozitif')
             else:
@@ -157,7 +197,7 @@ def calc_recommendation(hist, indicators):
                 reasons.append(f'RSI={sf(rsi_v)}: Notr-negatif')
 
             # 3. MACD
-            macd=calc_macd(c)
+            macd=calc_macd(c, *p['macd'])
             macd_type = macd.get('signalType', 'neutral')
             macd_hist = macd.get('histogram', 0)
             total_indicators += 1
@@ -168,26 +208,32 @@ def calc_recommendation(hist, indicators):
                 score-=1.5; sell_indicators+=1
                 reasons.append(f'MACD satis sinyali (histogram: {macd_hist})')
 
-            # 4. Bollinger
-            total_indicators += 1
+            # 4. Bollinger — sadece band dışı sinyal consensus'a sayılır; orta bant sadece bilgi
             if bb_lower > 0 and cur < bb_lower:
+                total_indicators += 1
                 score+=1; buy_indicators+=1
                 reasons.append(f'Fiyat ({sf(cur)}) alt Bollinger bandinin ({sf(bb_lower)}) altinda → Toparlanma bekleniyor')
             elif bb_upper > 0 and cur > bb_upper:
+                total_indicators += 1
                 score-=1; sell_indicators+=1
                 reasons.append(f'Fiyat ({sf(cur)}) ust Bollinger bandinin ({sf(bb_upper)}) uzerinde → Geri cekilme bekleniyor')
             elif bb_middle > 0:
+                # Orta bant konumu — skora/consensus'a etkisi yok, sadece bilgi amaçlı
                 if cur > bb_middle:
-                    buy_indicators+=1
                     reasons.append(f'Fiyat Bollinger orta bant ({sf(bb_middle)}) uzerinde')
                 else:
-                    sell_indicators+=1
                     reasons.append(f'Fiyat Bollinger orta bant ({sf(bb_middle)}) altinda')
 
-            # 5. Hacim trendi
-            if len(sv)>5:
-                vol_avg=np.mean(sv[-20:]) if len(sv)>=20 else np.mean(sv)
-                vol_recent=np.mean(sv[-5:])
+            # 5. Hacim trendi — son kısa pencere vs daha önceki uzun pencere (overlap yok)
+            _vol_recent_n = min(5, len(sv))
+            _vol_base_n   = max(p['vol'], _vol_recent_n + 5)
+            if len(sv) > _vol_recent_n + 5:
+                vol_recent = float(np.mean(sv[-_vol_recent_n:]))
+                # Taban: son N bar öncesindeki daha geniş pencere
+                _base_end = len(sv) - _vol_recent_n
+                _base_start = max(0, _base_end - _vol_base_n)
+                _base_slice = sv[_base_start:_base_end]
+                vol_avg = float(np.mean(_base_slice)) if len(_base_slice) > 0 else vol_recent
                 vol_ratio = vol_recent / vol_avg if vol_avg > 0 else 1
                 total_indicators += 1
                 if vol_ratio > 1.2:
@@ -211,14 +257,14 @@ def calc_recommendation(hist, indicators):
                 elif period_return<-5: score-=1; sell_indicators+=1; reasons.append(f'{label} getiri: %{period_return} (negatif)')
 
             # 7. Stochastic
-            stoch=calc_stochastic(c,h,l)
+            stoch=calc_stochastic(c,h,l, period=p['stoch'])
             stoch_k = stoch.get('k', 50)
             total_indicators += 1
             if stoch_k<20: score+=1; buy_indicators+=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri satim bolgesi')
             elif stoch_k>80: score-=1; sell_indicators+=1; reasons.append(f'Stochastic K={sf(stoch_k)}: Asiri alim bolgesi')
 
             # 8. ADX - Trend gucu (arttirilmis agirlik: ADX gucune gore 0.5-1.5 puan)
-            adx_data = calc_adx(h, l, c)
+            adx_data = calc_adx(h, l, c, period=p['adx'])
             adx_val = adx_data.get('value', 25)
             total_indicators += 1
             if adx_val > 25:
@@ -252,18 +298,18 @@ def calc_recommendation(hist, indicators):
                     score -= 0.5; sell_indicators += 1
                     reasons.append(f'Parabolic SAR asagi trend (SAR={sf(psar.get("value", 0))})')
 
-            # 11. Mum formasyonlari
-            for p in candle_data.get('patterns', []):
-                if p.get('strength', 0) >= 3:
+            # 11. Mum formasyonlari (p değişkeni dış döngüde _TF_PARAMS; shadowing önleme)
+            for pat in candle_data.get('patterns', []):
+                if pat.get('strength', 0) >= 3:
                     total_indicators += 1
-                    if p['type'] == 'bullish':
-                        score += 0.5 * (p['strength'] / 5)
+                    if pat['type'] == 'bullish':
+                        score += 0.5 * (pat['strength'] / 5)
                         buy_indicators += 1
-                        reasons.append(f'Mum: {p["name"]} → {p["description"][:60]}')
-                    elif p['type'] == 'bearish':
-                        score -= 0.5 * (p['strength'] / 5)
+                        reasons.append(f'Mum: {pat["name"]} → {pat["description"][:60]}')
+                    elif pat['type'] == 'bearish':
+                        score -= 0.5 * (pat['strength'] / 5)
                         sell_indicators += 1
-                        reasons.append(f'Mum: {p["name"]} → {p["description"][:60]}')
+                        reasons.append(f'Mum: {pat["name"]} → {pat["description"][:60]}')
 
             # 12. Diverjans sinyali (±2.0 puan - guclu ve nadir sinyal)
             if n >= 50:
@@ -291,14 +337,14 @@ def calc_recommendation(hist, indicators):
                     score -= mtf_pts; sell_indicators += 1
                     reasons.append(f'MTF uyumu: {mtf_data.get("description", "")} → {mtf_strength} satis')
 
-            # 14. Piyasa rejimi etkisi (skor +-14 ile sinirlandirilir)
-            if regime_type in ('strong_bull', 'bull') and score > 0:
-                score = min(score * 1.15, 14.0)
+            # 14. Piyasa rejimi etkisi (final clamp 394'te score'u ±14'e sınırlar; sentiment muted olmasın)
+            if regime_type in REGIMES_BULLISH and score > 0:
+                score = score * 1.15
                 reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Alis sinyali gucleniyor')
-            elif regime_type in ('strong_bear', 'bear') and score < 0:
-                score = max(score * 1.15, -14.0)
+            elif regime_type in REGIMES_BEARISH and score < 0:
+                score = score * 1.15
                 reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Satis sinyali gucleniyor')
-            elif regime_type in ('strong_bear', 'bear') and score > 0:
+            elif regime_type in REGIMES_BEARISH and score > 0:
                 score = score * 0.85
                 reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Alis sinyali zayifliyor (ayi piyasasi)')
 
@@ -333,6 +379,22 @@ def calc_recommendation(hist, indicators):
                 if float(fib_res_dist) < 3:
                     strategy_parts.append(f"Fibonacci {fib_res['level']} direnci ({fib_res['price']} TL) yakininda")
 
+            # Haber sentiment modifier (opsiyonel): -0.5..+0.5 → ±1.5 puan
+            sentiment_bonus = 0.0
+            if symbol:
+                try:
+                    from news_sentiment import get_sentiment_score_for_signal
+                    raw_sent = get_sentiment_score_for_signal(symbol)
+                    if raw_sent is not None:
+                        sentiment_bonus = max(-1.5, min(1.5, float(raw_sent) * 3.0))
+                        if sentiment_bonus > 0.3:
+                            reasons.append(f'Pozitif haber sentiment (+{sf(sentiment_bonus)})')
+                        elif sentiment_bonus < -0.3:
+                            reasons.append(f'Negatif haber sentiment ({sf(sentiment_bonus)})')
+                        score += sentiment_bonus
+                except Exception:
+                    pass
+
             # Sonuc
             max_score = 14.0
             score = max(-14.0, min(14.0, score))  # skor siniri
@@ -342,8 +404,10 @@ def calc_recommendation(hist, indicators):
             consensus_pct = (buy_indicators / total_indicators * 100) if total_indicators > 0 else 50
             sell_consensus_pct = (sell_indicators / total_indicators * 100) if total_indicators > 0 else 50
 
-            if score >= 3 and consensus_pct >= 40: action = 'AL'
+            if score >= 7 and consensus_pct >= 55: action = 'GÜÇLÜ AL'
+            elif score >= 3 and consensus_pct >= 40: action = 'AL'
             elif score >= 1.5: action = 'TUTUN/AL'
+            elif score <= -7 and sell_consensus_pct >= 55: action = 'GÜÇLÜ SAT'
             elif score <= -3 and sell_consensus_pct >= 40: action = 'SAT'
             elif score <= -1.5: action = 'TUTUN/SAT'
             else: action = 'NOTR'
@@ -389,9 +453,9 @@ def calc_recommendation(hist, indicators):
                 'keyLevels': {
                     'supports': supports[:3],
                     'resistances': resistances[:3],
-                    'sma20': sf(sma20),
-                    'sma50': sf(sma50),
-                    'sma200': sf(sma200) if n >= 200 else None,
+                    f'sma{ps}': sf(sma_s),
+                    f'sma{pm}': sf(sma_m),
+                    f'sma{pl}': sf(sma_l) if n >= pl else None,
                     'bollingerUpper': sf(bb_upper),
                     'bollingerLower': sf(bb_lower),
                 },
@@ -403,415 +467,5 @@ def calc_recommendation(hist, indicators):
         print(f"  [REC] Hata: {e}")
         return {'weekly':{'action':'neutral','confidence':0,'reasons':[],'strategy':'','reason':'Hesaplama hatasi','indicatorBreakdown':{}},'monthly':{'action':'neutral','confidence':0,'reasons':[],'strategy':'','reason':'Hesaplama hatasi','indicatorBreakdown':{}},'yearly':{'action':'neutral','confidence':0,'reasons':[],'strategy':'','reason':'Hesaplama hatasi','indicatorBreakdown':{}}}
 
-def calc_fundamentals(hist, symbol):
-    """Temel verileri mevcut fiyat/hacim verisinden hesapla"""
-    try:
-        c = hist['Close'].values.astype(float)
-        v = hist['Volume'].values.astype(float)
-        h = hist['High'].values.astype(float)
-        l = hist['Low'].values.astype(float)
-        # NaN temizligi
-        h = np.where(np.isnan(h), c, h)
-        l = np.where(np.isnan(l), c, l)
-        v = np.where(np.isnan(v), 0, v)
-        n = len(c)
-        cur = float(c[-1])
-
-        # Ortalama gunluk hacim (son 20 gun)
-        avg_vol_20 = float(np.mean(v[-20:])) if n >= 20 else float(np.mean(v))
-        avg_vol_60 = float(np.mean(v[-60:])) if n >= 60 else avg_vol_20
-
-        # Volatilite (yillik)
-        if n >= 20:
-            daily_returns = np.diff(c[-60:]) / c[-60:-1] if n >= 60 else np.diff(c) / c[:-1]
-            volatility = sf(float(np.std(daily_returns)) * (252 ** 0.5) * 100)
-        else:
-            volatility = 0
-
-        # Beta hesapla (BIST100'e gore) - basit yaklasim: volatilite bazli
-        beta = sf(volatility / 25) if volatility else 1.0  # BIST100 avg vol ~25%
-
-        # Ortalama islem hacmi (TL)
-        avg_turnover = sf(cur * avg_vol_20)
-
-        # 1 aylik, 3 aylik, 6 aylik, 1 yillik getiri
-        returns = {}
-        for label, days in [('1ay', 22), ('3ay', 66), ('6ay', 132), ('1yil', 252)]:
-            if n > days:
-                ret = sf(((cur - float(c[-days])) / float(c[-days])) * 100)
-                returns[label] = ret
-
-        # Gunluk ortalama aralik (ATR benzeri) - NaN-safe
-        if n >= 14:
-            daily_range = [(float(h[i]) - float(l[i])) for i in range(-14, 0) if h[i] == h[i] and l[i] == l[i]]
-            avg_daily_range = sf(np.mean(daily_range)) if daily_range else 0
-            avg_daily_range_pct = sf(avg_daily_range / cur * 100) if cur > 0 else 0
-        else:
-            avg_daily_range = 0
-            avg_daily_range_pct = 0
-
-        # 52 haftalik high/low'dan uzaklik (NaN-safe)
-        if n >= 252:
-            hi52 = float(np.nanmax(h[-252:]))
-            lo52 = float(np.nanmin(l[-252:]))
-        else:
-            hi52 = float(np.nanmax(h))
-            lo52 = float(np.nanmin(l))
-        # NaN kontrolu
-        if hi52 != hi52: hi52 = cur  # NaN ise cur kullan
-        if lo52 != lo52: lo52 = cur
-        dist_from_high = sf(((cur - hi52) / hi52) * 100) if hi52 else 0
-        dist_from_low = sf(((cur - lo52) / lo52) * 100) if lo52 else 0
-
-        return {
-            'avgVolume20': si(avg_vol_20),
-            'avgVolume60': si(avg_vol_60),
-            'avgTurnover': avg_turnover,
-            'volatility': volatility,
-            'beta': beta,
-            'returns': returns,
-            'avgDailyRange': avg_daily_range,
-            'avgDailyRangePct': avg_daily_range_pct,
-            'distFromHigh52w': dist_from_high,
-            'distFromLow52w': dist_from_low,
-        }
-    except Exception as e:
-        print(f"  [FUND] {symbol} hata: {e}")
-        return {}
-
-def calc_52w(hist):
-    """52 hafta (veya mevcut veri) high/low hesapla - NaN-safe"""
-    try:
-        h=hist['High'].values.astype(float)
-        l=hist['Low'].values.astype(float)
-        c=float(hist['Close'].iloc[-1])
-        hi52=sf(float(np.nanmax(h))); lo52=sf(float(np.nanmin(l)))
-        # NaN fallback
-        if hi52 == 0 and c > 0: hi52 = sf(c)
-        if lo52 == 0 and c > 0: lo52 = sf(c)
-        rng=hi52-lo52
-        pos=sf((c-lo52)/rng*100 if rng>0 else 50)
-        return {'high52w':hi52,'low52w':lo52,'currentPct':pos,'range':sf(rng)}
-    except Exception: return {'high52w':0,'low52w':0,'currentPct':50,'range':0}
-
-
-def fetch_fundamental_data(symbol):
-    """Is Yatirim'dan temel analiz verilerini cek (F/K, PD/DD vs.)"""
-    try:
-        # Cache kontrol (1 saat)
-        with _fundamental_cache_lock:
-            cached = _fundamental_cache.get(symbol)
-        if cached and time.time() - cached['ts'] < 3600:
-            return cached['data']
-
-        url = f"https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/MaliTablo?hession={symbol}&doession=2024&dession=4"
-        headers = IS_YATIRIM_HEADERS.copy()
-
-        try:
-            resp = req_lib.get(url, headers=headers, timeout=10, verify=False)
-            if resp.status_code == 200:
-                data = resp.json()
-                rows = data.get('value', [])
-                if rows:
-                    result = _parse_fundamental_data(rows, symbol)
-                    with _fundamental_cache_lock:
-                        _fundamental_cache[symbol] = {'data': result, 'ts': time.time()}
-                    return result
-        except Exception as e:
-            print(f"  [FUNDAMENTAL] {symbol} Is Yatirim hata: {e}")
-
-        # Fallback: yfinance info
-        if YF_OK:
-            try:
-                tkr = yf.Ticker(f"{symbol}.IS")
-                info = tkr.info or {}
-                result = {
-                    'pe': sf(info.get('trailingPE', 0)),
-                    'forwardPE': sf(info.get('forwardPE', 0)),
-                    'pb': sf(info.get('priceToBook', 0)),
-                    'marketCap': info.get('marketCap', 0),
-                    'dividendYield': sf(info.get('dividendYield', 0) * 100) if info.get('dividendYield') else 0,
-                    'debtToEquity': sf(info.get('debtToEquity', 0)),
-                    'roe': sf(info.get('returnOnEquity', 0) * 100) if info.get('returnOnEquity') else 0,
-                    'roa': sf(info.get('returnOnAssets', 0) * 100) if info.get('returnOnAssets') else 0,
-                    'profitMargin': sf(info.get('profitMargins', 0) * 100) if info.get('profitMargins') else 0,
-                    'source': 'yfinance',
-                }
-                with _fundamental_cache_lock:
-                    _fundamental_cache[symbol] = {'data': result, 'ts': time.time()}
-                return result
-            except Exception as e:
-                print(f"  [FUNDAMENTAL] {symbol} yfinance hata: {e}")
-
-        return {}
-    except Exception as e:
-        print(f"  [FUNDAMENTAL] {symbol}: {e}")
-        return {}
-
-def _parse_fundamental_data(rows, symbol):
-    """Is Yatirim mali tablo verisini parse et"""
-    try:
-        result = {'source': 'isyatirim'}
-        for row in rows:
-            key = str(row.get('KALEM', '')).upper()
-            val = row.get('DEGER', 0)
-            if 'NET KAR' in key or 'NET DONEM' in key:
-                result['netProfit'] = sf(float(val)) if val else 0
-            elif 'SATIS' in key or 'GELIR' in key:
-                result['revenue'] = sf(float(val)) if val else 0
-            elif 'OZKAYN' in key:
-                result['equity'] = sf(float(val)) if val else 0
-        return result
-    except Exception:
-        return {'source': 'isyatirim'}
-
-
-# =====================================================================
-# FEATURE 7: ENHANCED TELEGRAM/EMAIL ALERT SYSTEM
-# =====================================================================
-
-def check_signal_alerts():
-    """Sinyal bazli otomatik uyari kontrolu - enhanced"""
-    stocks = _get_stocks()
-    if not stocks:
-        return []
-
-    alerts = []
-    regime = calc_market_regime()
-    regime_str = regime.get('regime', 'unknown')
-
-    for stock in stocks:
-        sym = stock['code']
-        try:
-            hist = _cget_hist(f"{sym}_1y")
-            if hist is None or len(hist) < 50:
-                continue
-
-            c = hist['Close'].values.astype(float)
-            h = hist['High'].values.astype(float)
-            l = hist['Low'].values.astype(float)
-            o = hist['Open'].values.astype(float)
-            v = hist['Volume'].values.astype(float)
-            cp = float(c[-1])
-            n = len(c)
-
-            # Mum formasyonlari
-            candles = calc_candlestick_patterns(o, h, l, c)
-            for p in candles.get('patterns', []):
-                if p.get('strength', 0) >= 4:
-                    alerts.append({
-                        'symbol': sym,
-                        'type': 'candlestick',
-                        'signal': p['type'],
-                        'message': f"{sym} ({sf(cp)} TL): {p['name']} - {p['description']}",
-                        'strength': p['strength'],
-                    })
-
-            # Altin/Olum kesisim
-            if n >= 200:
-                ema50 = pd.Series(c).ewm(span=50).mean().values
-                ema200 = pd.Series(c).ewm(span=200).mean().values
-                if ema50[-1] > ema200[-1] and ema50[-2] <= ema200[-2]:
-                    alerts.append({'symbol': sym, 'type': 'golden_cross', 'signal': 'bullish',
-                        'message': f"ALTIN KESISIM: {sym} ({sf(cp)} TL) - EMA50 > EMA200", 'strength': 5})
-                elif ema50[-1] < ema200[-1] and ema50[-2] >= ema200[-2]:
-                    alerts.append({'symbol': sym, 'type': 'death_cross', 'signal': 'bearish',
-                        'message': f"OLUM KESISIMI: {sym} ({sf(cp)} TL) - EMA50 < EMA200", 'strength': 5})
-
-            # Dinamik RSI esikleri
-            thresholds = calc_dynamic_thresholds(c, h, l, v)
-            rsi_val = calc_rsi(c).get('value', 50)
-            if rsi_val < float(thresholds['rsi_oversold']):
-                alerts.append({'symbol': sym, 'type': 'rsi_dynamic', 'signal': 'bullish',
-                    'message': f"RSI ASIRI SATIM: {sym} ({sf(cp)} TL) RSI={sf(rsi_val)} < {thresholds['rsi_oversold']} (dinamik esik)", 'strength': 3})
-            elif rsi_val > float(thresholds['rsi_overbought']):
-                alerts.append({'symbol': sym, 'type': 'rsi_dynamic', 'signal': 'bearish',
-                    'message': f"RSI ASIRI ALIM: {sym} ({sf(cp)} TL) RSI={sf(rsi_val)} > {thresholds['rsi_overbought']} (dinamik esik)", 'strength': 3})
-
-        except Exception:
-            continue
-
-    # Strength'e gore sirala
-    alerts.sort(key=lambda x: x.get('strength', 0), reverse=True)
-    return alerts
-
-
-# =====================================================================
-# FEATURE 8: ML-BASED SIGNAL CONFIDENCE SCORING
-# =====================================================================
-
-def calc_ml_confidence(hist, indicators, recommendation_score, signal_type='buy'):
-    """Sinyal guven skorunu coklu faktore gore hesapla (ML-inspired weighted scoring)"""
-    try:
-        c = hist['Close'].values.astype(float)
-        h = hist['High'].values.astype(float)
-        l = hist['Low'].values.astype(float)
-        v = hist['Volume'].values.astype(float)
-        n = len(c)
-        if n < 50:
-            return {'confidence': 50, 'grade': 'C', 'factors': []}
-
-        factors = []
-        score = 0
-        max_score = 0
-
-        # 1. Indikatör Konsensüsü (agirlik: 25%)
-        summary = indicators.get('summary', {})
-        bc = summary.get('buySignals', 0)
-        sc = summary.get('sellSignals', 0)
-        total = summary.get('totalIndicators', 1)
-        if signal_type == 'buy':
-            consensus = bc / total * 100
-        else:
-            consensus = sc / total * 100
-        consensus_score = min(consensus / 100 * 25, 25)
-        score += consensus_score
-        max_score += 25
-        factors.append({'name': 'Indikatör Konsensüsü', 'value': sf(consensus), 'score': sf(consensus_score), 'max': 25})
-
-        # 2. Piyasa Rejimi Uyumu (agirlik: 15%)
-        regime = calc_market_regime()
-        regime_type = regime.get('regime', 'unknown')
-        regime_score = 0
-        if signal_type == 'buy' and regime_type in ('strong_bull', 'bull'):
-            regime_score = 15
-        elif signal_type == 'sell' and regime_type in ('strong_bear', 'bear'):
-            regime_score = 15
-        elif regime_type == 'sideways':
-            regime_score = 7.5
-        elif signal_type == 'buy' and regime_type in ('strong_bear', 'bear'):
-            regime_score = 3
-        elif signal_type == 'sell' and regime_type in ('strong_bull', 'bull'):
-            regime_score = 3
-        else:
-            regime_score = 10
-        score += regime_score
-        max_score += 15
-        factors.append({'name': 'Piyasa Rejimi Uyumu', 'value': regime_type, 'score': sf(regime_score), 'max': 15})
-
-        # 3. Hacim Teyidi (agirlik: 15%)
-        vol_score = 0
-        if n >= 20:
-            vol_avg = float(np.mean(v[-20:]))
-            vol_recent = float(np.mean(v[-3:]))
-            vol_ratio = vol_recent / vol_avg if vol_avg > 0 else 1
-            if vol_ratio > 1.2:
-                # Hacim teyidi var
-                price_direction = 'up' if c[-1] > c[-3] else 'down'
-                if (signal_type == 'buy' and price_direction == 'up') or (signal_type == 'sell' and price_direction == 'down'):
-                    vol_score = 15  # Hacim sinyal yonunu destekliyor
-                else:
-                    vol_score = 5  # Hacim ters yonde
-            elif vol_ratio > 1.0:
-                vol_score = 10  # Normal hacim
-            else:
-                vol_score = 5  # Dusuk hacim
-        score += vol_score
-        max_score += 15
-        factors.append({'name': 'Hacim Teyidi', 'value': sf(vol_ratio) if n >= 20 else '-', 'score': sf(vol_score), 'max': 15})
-
-        # 4. Trend Uyumu (agirlik: 15%)
-        trend_score = 0
-        if n >= 50:
-            s = pd.Series(c)
-            ema20 = float(s.ewm(span=20).mean().iloc[-1])
-            ema50 = float(s.ewm(span=50).mean().iloc[-1])
-            cp = float(c[-1])
-            if signal_type == 'buy':
-                if cp > ema20 > ema50: trend_score = 15
-                elif cp > ema20: trend_score = 10
-                elif cp > ema50: trend_score = 7
-                else: trend_score = 3
-            else:
-                if cp < ema20 < ema50: trend_score = 15
-                elif cp < ema20: trend_score = 10
-                elif cp < ema50: trend_score = 7
-                else: trend_score = 3
-        score += trend_score
-        max_score += 15
-        factors.append({'name': 'Trend Uyumu', 'value': 'EMA20/50', 'score': sf(trend_score), 'max': 15})
-
-        # 5. Mum Formasyon Teyidi (agirlik: 10%)
-        o = hist['Open'].values.astype(float)
-        candles = calc_candlestick_patterns(o, h, l, c)
-        candle_score = 0
-        matching_patterns = [p for p in candles.get('patterns', [])
-                            if (p['type'] == 'bullish' and signal_type == 'buy') or
-                               (p['type'] == 'bearish' and signal_type == 'sell')]
-        if matching_patterns:
-            best_strength = max(p['strength'] for p in matching_patterns)
-            candle_score = min(best_strength * 2, 10)
-        score += candle_score
-        max_score += 10
-        factors.append({'name': 'Mum Formasyonu', 'value': matching_patterns[0]['name'] if matching_patterns else 'Yok', 'score': sf(candle_score), 'max': 10})
-
-        # 6. Destek/Direnc Yakinligi (agirlik: 10%)
-        sr_score = 0
-        sr = calc_support_resistance(hist)
-        cp = float(c[-1])
-        if signal_type == 'buy' and sr.get('supports'):
-            nearest_sup = sr['supports'][0]
-            dist = abs(cp - nearest_sup) / cp * 100
-            if dist < 2: sr_score = 10  # Desteğe çok yakin
-            elif dist < 5: sr_score = 7
-            else: sr_score = 3
-        elif signal_type == 'sell' and sr.get('resistances'):
-            nearest_res = sr['resistances'][0]
-            dist = abs(nearest_res - cp) / cp * 100
-            if dist < 2: sr_score = 10  # Dirence çok yakin
-            elif dist < 5: sr_score = 7
-            else: sr_score = 3
-        score += sr_score
-        max_score += 10
-        factors.append({'name': 'Destek/Direnc', 'value': 'Yakin' if sr_score >= 7 else 'Uzak', 'score': sf(sr_score), 'max': 10})
-
-        # 7. Coklu Zaman Dilimi (MTF) Uyumu (agirlik: 10%)
-        # Backtest win rate yerine MTF kullaniyoruz - circular logic'i onler
-        bt_score = 0
-        mtf_label = 'N/A'
-        try:
-            mtf_res = calc_mtf_signal(hist)
-            mtf_dir = mtf_res.get('mtfDirection', 'neutral')
-            mtf_sc = mtf_res.get('mtfScore', 0)
-            if signal_type == 'buy' and mtf_dir == 'buy':
-                bt_score = 5 + mtf_sc * 2.5  # 2/3: 7.5, 3/3: 10
-            elif signal_type == 'sell' and mtf_dir == 'sell':
-                bt_score = 5 + mtf_sc * 2.5
-            elif mtf_dir == 'neutral':
-                bt_score = 5
-            else:
-                bt_score = 2  # Ters yon
-            mtf_label = mtf_res.get('mtfAlignment', 'N/A')
-        except Exception:
-            bt_score = 5
-        score += bt_score
-        max_score += 10
-        factors.append({'name': 'MTF Uyumu', 'value': mtf_label, 'score': sf(bt_score), 'max': 10})
-
-        # Final confidence
-        confidence = sf(score / max_score * 100) if max_score > 0 else 50
-
-        # Grade
-        conf_val = float(confidence)
-        if conf_val >= 80: grade = 'A'
-        elif conf_val >= 65: grade = 'B'
-        elif conf_val >= 50: grade = 'C'
-        elif conf_val >= 35: grade = 'D'
-        else: grade = 'F'
-
-        return {
-            'confidence': confidence,
-            'grade': grade,
-            'score': sf(score),
-            'maxScore': sf(max_score),
-            'factors': factors,
-        }
-    except Exception as e:
-        print(f"  [ML-CONF] Hata: {e}")
-        return {'confidence': 50, 'grade': 'C', 'factors': [], 'error': str(e)}
-
-
-# =====================================================================
-# FEATURE 9: DETAYLI TRADE PLAN (Gunluk/Haftalik/Aylik giriş/çıkış)
-# =====================================================================
+# check_signal_alerts ve calc_ml_confidence → signals_confidence.py
 

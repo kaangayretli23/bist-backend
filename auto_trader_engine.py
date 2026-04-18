@@ -21,6 +21,7 @@ from auto_trader_risk import (
 )
 
 from trade_plans import calc_trade_plan
+from signals_market import REGIMES_BEARISH
 
 # auto_trader — lazy import (fonksiyon içinde), circular import/partial load önlemi
 
@@ -284,7 +285,7 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
             try:
                 from signals import calc_market_regime
                 _regime = calc_market_regime()
-                if _regime.get('regime') in ('bear', 'strong_bear') and float(_regime.get('strength', 0)) > 60:
+                if _regime.get('regime') in REGIMES_BEARISH and float(_regime.get('strength', 0)) > 60:
                     print(f"[AUTO-TRADE] {sym} plan ertelendi — güçlü ayı piyasası "
                           f"(güç={_regime.get('strength', 0):.0f})")
                     continue
@@ -506,7 +507,7 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         try:
             from signals import calc_market_regime as _cmr
             _reg = _cmr()
-            if _reg.get('regime') in ('bear', 'strong_bear') and float(_reg.get('strength', 0)) > 60:
+            if _reg.get('regime') in REGIMES_BEARISH and float(_reg.get('strength', 0)) > 60:
                 print(f"[AUTO-TRADE] {sym} atlandi — ayi piyasasi (guc={_reg.get('strength')})")
                 continue
         except Exception:

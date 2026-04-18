@@ -203,16 +203,16 @@ def stock_detail(symbol):
         prev = float(hist['Close'].iloc[-2]) if len(hist) > 1 else cp
         w52 = calc_52w(hist)
         ind = calc_all_indicators(hist, cp)
-        rec = calc_recommendation(hist, ind)
+        rec = calc_recommendation(hist, ind, symbol=symbol)
 
         ml_conf = {}
         for tf_label in ['weekly', 'monthly', 'yearly']:
             tf_rec = rec.get(tf_label, {})
             tf_action = tf_rec.get('action', 'NOTR')
             if tf_action in ('AL', 'TUTUN/AL'):
-                ml_conf[tf_label] = calc_ml_confidence(hist, ind, float(tf_rec.get('score', 0)), 'buy')
+                ml_conf[tf_label] = calc_ml_confidence(hist, ind, float(tf_rec.get('score', 0)), 'buy', symbol=symbol)
             elif tf_action in ('SAT', 'TUTUN/SAT'):
-                ml_conf[tf_label] = calc_ml_confidence(hist, ind, float(tf_rec.get('score', 0)), 'sell')
+                ml_conf[tf_label] = calc_ml_confidence(hist, ind, float(tf_rec.get('score', 0)), 'sell', symbol=symbol)
             else:
                 ml_conf[tf_label] = {'confidence': 50, 'grade': 'C', 'factors': []}
 
@@ -364,12 +364,12 @@ def commodity_detail(symbol):
             'currency': currency,
             'period': period, 'dataPoints': len(hist),
             'week52': w52,
-            'indicators': calc_all_indicators(hist, cp),
+            'indicators': (cmd_indics := calc_all_indicators(hist, cp)),
             'chartData': prepare_chart_data(hist),
             'fibonacci': calc_fibonacci(hist),
             'supportResistance': calc_support_resistance(hist),
             'pivotPoints': calc_pivot_points(hist),
-            'recommendation': calc_recommendation(hist, None),
+            'recommendation': calc_recommendation(hist, cmd_indics),
             'fundamentals': calc_fundamentals(hist, symbol),
         }))
     except Exception as e:
@@ -413,6 +413,7 @@ def stock_kap(symbol):
 
         try:
             url2 = f"https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/HaberlerHisseTekil?hession={symbol}&startdate={datetime.now().strftime('%d-%m-%Y')}&enddate={datetime.now().strftime('%d-%m-%Y')}"
+            # verify=False: isyatirim cert chain sorunu (platform bağımlı); public haber verisi, credential akmaz
             resp2 = req_lib.get(url2, headers=IS_YATIRIM_HEADERS, timeout=10, verify=False)
             if resp2.status_code == 200:
                 data2 = resp2.json()
