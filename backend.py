@@ -3,7 +3,12 @@ BIST Pro v7.1.0 - Main Entry Point
 Modular architecture: config, database, indicators, signals, data_fetcher,
 trade_plans, auto_trader, bes_system, routes_*
 """
-import gzip, io, json, traceback
+import gzip, io, json, traceback, threading, time, logging
+
+# Socket.IO / engineio v2 heartbeat paketleri (~h~N) harmless ama log gürültüsü yaratır
+logging.getLogger('engineio').setLevel(logging.ERROR)
+logging.getLogger('socketio').setLevel(logging.ERROR)
+
 from flask import request, make_response
 
 # Foundation
@@ -33,6 +38,8 @@ except ImportError as e:
 # Auto-trading engine
 try:
     import auto_trader
+    # Routes (endpoint decoratorları) ayrı modülde — import edilince @app.route'lar kaydolur
+    import auto_trader_routes  # noqa: F401
 except ImportError as e:
     print(f"[HATA] auto_trader.py import hatasi: {e}")
 
@@ -43,13 +50,15 @@ except ImportError as e:
     print(f"[HATA] bes_system.py import hatasi: {e}")
 
 # Route blueprints
-from routes_system   import system_bp
-from routes_market   import market_bp
+from routes_system    import system_bp
+from routes_market    import market_bp
 from routes_portfolio import portfolio_bp
-from routes_auth     import auth_bp
-from routes_telegram import telegram_bp, _start_telegram_thread
-from routes_stock    import stock_bp
-from routes_analysis import analysis_bp
+from routes_auth      import auth_bp
+from routes_telegram  import telegram_bp, _start_telegram_thread
+from routes_stock     import stock_bp
+from routes_analysis         import analysis_bp
+from routes_analysis_reports import analysis_reports_bp
+from routes_news             import news_bp
 
 app.register_blueprint(system_bp)
 app.register_blueprint(market_bp)
@@ -58,6 +67,8 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(telegram_bp)
 app.register_blueprint(stock_bp)
 app.register_blueprint(analysis_bp)
+app.register_blueprint(analysis_reports_bp)
+app.register_blueprint(news_bp)
 
 # Initialize database
 init_db()
@@ -104,7 +115,69 @@ def eall(e):
     return jsonify({'error': str(e)}), 500
 
 
-print("[STARTUP] BIST Pro v7.1.0 ready - batch loader + SQLite + uyelik + advanced analytics + BES")
+# Gerçek zamanlı fiyat monitörünü başlat
+try:
+    from realtime_prices import start_realtime_monitor
+    start_realtime_monitor()
+except Exception as e:
+    print(f"[UYARI] Gerçek zamanlı fiyat monitörü başlatılamadı: {e}")
+
+# KAP duyuru monitörünü başlat
+try:
+    from kap_scraper import start_kap_monitor
+    start_kap_monitor()
+except Exception as e:
+    print(f"[UYARI] KAP monitör başlatılamadı: {e}")
+
+# Telegram sinyal + rapor thread'lerini startup'ta hemen başlat
+# (eskiden ilk HTTP request'e kadar bekliyordu — 10:25 açılış brifingi kaçabiliyordu)
+try:
+    _start_telegram_thread()
+except Exception as e:
+    print(f"[UYARI] Telegram thread başlatılamadı: {e}")
+
+# Sinyal sonuç takip thread'i (saatlik)
+def _outcome_checker_loop():
+    time.sleep(300)  # İlk çalıştırmayı 5 dakika geciktir (DB hazır olsun)
+    while True:
+        try:
+            from signal_tracker import check_pending_outcomes
+            check_pending_outcomes()
+        except Exception as e:
+            print(f"[OUTCOME-CHECKER] Hata: {e}")
+        time.sleep(3600)  # Saatte bir kontrol
+
+_oc_thread = threading.Thread(target=_outcome_checker_loop, daemon=True)
+_oc_thread.start()
+
+# ── STARTUP SELF-CHECK ──
+# Kritik fonksiyonların import zinciri sağlam mı? NameError gibi sessiz hataları yakala.
+def _startup_selfcheck():
+    checks = [
+        ('signals.calc_market_regime',    lambda: __import__('signals', fromlist=['calc_market_regime']).calc_market_regime),
+        ('signals.check_signal_alerts',   lambda: __import__('signals', fromlist=['check_signal_alerts']).check_signal_alerts),
+        ('signals.calc_recommendation',   lambda: __import__('signals', fromlist=['calc_recommendation']).calc_recommendation),
+        ('indicators.calc_all_indicators',lambda: __import__('indicators', fromlist=['calc_all_indicators']).calc_all_indicators),
+    ]
+    ok, fail = 0, []
+    for name, getter in checks:
+        try:
+            fn = getter()
+            if not callable(fn):
+                raise TypeError(f"{name} callable degil")
+            ok += 1
+        except Exception as e:
+            fail.append(f"{name}: {e}")
+    if fail:
+        for msg in fail:
+            print(f"[SELFCHECK] HATA — {msg}")
+        print(f"[SELFCHECK] {ok}/{ok+len(fail)} gecti — yukardaki hataları düzelt")
+    else:
+        print(f"[SELFCHECK] Tüm {ok} kritik fonksiyon OK")
+
+_startup_selfcheck()
+
+print("[STARTUP] BIST Pro v7.1.0 ready - batch loader + SQLite + uyelik + advanced analytics + BES + KAP/Haber/Temel")
 
 if __name__ == '__main__':
     import os
