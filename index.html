@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BIST Pro v3.0 — Borsa Analiz Platformu</title>
+<title>BIST Pro — Borsa Analiz Platformu</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -725,7 +725,7 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
 <!-- NAVBAR -->
 <nav class="navbar">
   <a class="navbar-brand" onclick="navigate('dashboard')">
-    <span class="brand-diamond"></span> BIST Pro <span>v3.0</span>
+    <span class="brand-diamond"></span> BIST Pro <span id="appVersion" style="font-size:11px;color:var(--text-muted);font-weight:400;">v7.1</span>
   </a>
   <button class="nav-toggle" onclick="toggleMobileMenu()" style="display:none;">☰</button>
   <span id="arBadge" style="font-size:11px;font-family:monospace;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,0.05);cursor:default;display:none;"></span>
@@ -2215,7 +2215,7 @@ async function loadSectorRS(forceRefresh) {
     top3.forEach((s, i) => {
       const rs = parseFloat(s.relativeStrength || 0);
       const w = Math.min(100, Math.abs(rs) / maxRS * 100);
-      html += `<div onclick="navigate('sectors')" style="cursor:pointer;padding:6px 8px;margin-bottom:4px;border-radius:6px;background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.15);">
+      html += `<div onclick="navigate('heatmap')" style="cursor:pointer;padding:6px 8px;margin-bottom:4px;border-radius:6px;background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.15);">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:600;font-size:12px;">${i+1}. ${escHtml(s.displayName || s.name)}</span>
           <span style="color:var(--green);font-weight:700;font-size:12px;">+${rs.toFixed(2)}</span>
@@ -2234,7 +2234,7 @@ async function loadSectorRS(forceRefresh) {
     bot2.forEach(s => {
       const rs = parseFloat(s.relativeStrength || 0);
       const w = Math.min(100, Math.abs(rs) / maxRS * 100);
-      html += `<div onclick="navigate('sectors')" style="cursor:pointer;padding:6px 8px;margin-bottom:4px;border-radius:6px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);">
+      html += `<div onclick="navigate('heatmap')" style="cursor:pointer;padding:6px 8px;margin-bottom:4px;border-radius:6px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:600;font-size:12px;">${escHtml(s.displayName || s.name)}</span>
           <span style="color:var(--red);font-weight:700;font-size:12px;">${rs.toFixed(2)}</span>
@@ -2353,6 +2353,17 @@ async function api(path, options = {}) {
       ...options,
     });
     clearTimeout(timer);
+    // 401: backend auth_middleware 'Oturum gecersiz/eksik' → localStorage temizle, uyari goster
+    if (res.status === 401) {
+      try { localStorage.removeItem('bistUser'); } catch(_) {}
+      if (typeof currentUser !== 'undefined') currentUser = null;
+      if (!window.__auth401Shown) {
+        window.__auth401Shown = true;
+        setTimeout(() => { window.__auth401Shown = false; }, 10000);
+        if (typeof toast === 'function') toast('Oturum süresi doldu, tekrar giris yapin', 'error');
+      }
+      return { error: 'Oturum gecersiz — tekrar giris yapin', status: 401, needsLogin: true };
+    }
     const text = await res.text();
     try {
       return JSON.parse(text);
