@@ -6815,6 +6815,45 @@ async function loadAutoTrade() {
       } catch { return str; }
     };
 
+    // Pozisyon saglik skoru (0-100)
+    const _calcPosHealth = (p) => {
+      let score = 50;
+      const reasons = [];
+      const pct = p.pnlPct || 0;
+      const cp = p.currentPrice || 0;
+      const ep = p.entryPrice || 0;
+      // 1) PnL yuzdesine gore (-30..+30)
+      if (pct >= 5)       { score += 30; reasons.push('Kar: ' + pct.toFixed(1) + '%'); }
+      else if (pct >= 2)  { score += 20; reasons.push('Kar: ' + pct.toFixed(1) + '%'); }
+      else if (pct >= 0)  { score += 10; reasons.push('Bes basa'); }
+      else if (pct >= -2) { score -= 10; reasons.push('Hafif zarar'); }
+      else if (pct >= -4) { score -= 20; reasons.push('Zarar: ' + pct.toFixed(1) + '%'); }
+      else                { score -= 30; reasons.push('Agir zarar'); }
+      // 2) SL mesafesi (cp ile stopLoss arasi % — uzak olmasi iyidir)
+      if (cp > 0 && p.stopLoss > 0) {
+        const slDist = ((cp - p.stopLoss) / cp) * 100;
+        if (slDist > 3)       { score += 15; reasons.push('SL uzak'); }
+        else if (slDist > 1)  { score += 5;  reasons.push('SL mesafe orta'); }
+        else if (slDist > 0)  { score -= 10; reasons.push('SL yakin!'); }
+        else                  { score -= 25; reasons.push('SL altinda'); }
+      }
+      // 3) TP1 gecildi mi?
+      if (p.takeProfit1 > 0 && cp >= p.takeProfit1) {
+        score += 15; reasons.push('TP1 gecildi');
+      }
+      // 4) Trailing aktif bonus
+      if (p.trailingStop > 0) {
+        score += 5; reasons.push('Trailing aktif');
+      }
+      score = Math.max(0, Math.min(100, score));
+      const grade = score >= 80 ? {label:'Saglikli', color:'var(--green)', emoji:'💚'}
+                  : score >= 60 ? {label:'Iyi',      color:'#4CAF50',      emoji:'🟢'}
+                  : score >= 40 ? {label:'Izlemeli', color:'var(--yellow)', emoji:'🟡'}
+                  : score >= 20 ? {label:'Riskli',   color:'#FF9800',      emoji:'🟠'}
+                  :               {label:'Kritik',   color:'var(--red)',    emoji:'🔴'};
+      return { score: Math.round(score), grade, reasons: reasons.slice(0, 3) };
+    };
+
     // Acik Pozisyonlar
     if (positions.length === 0) {
       document.getElementById('atPositions').innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);">Acik pozisyon yok</div>';
@@ -6822,10 +6861,12 @@ async function loadAutoTrade() {
       document.getElementById('atPositions').innerHTML = positions.map(p => {
         const pnlColor = p.pnl >= 0 ? 'var(--green)' : 'var(--red)';
         const pnlSign = p.pnl >= 0 ? '+' : '';
+        const health = _calcPosHealth(p);
         return `<div class="card" style="padding:12px;margin-bottom:8px;border-left:3px solid ${pnlColor};">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
             <div>
               <strong>${p.symbol}</strong>
+              <span title="${escHtml(health.reasons.join(' · '))}" style="margin-left:6px;font-size:11px;padding:2px 7px;border-radius:10px;background:${health.grade.color};color:white;font-weight:700;">${health.grade.emoji} ${health.score}/100 ${health.grade.label}</span>
               <span style="font-size:11px;color:var(--text-dim);margin-left:8px;">Giris: ${p.entryPrice.toFixed(2)} TL | Guncel: ${p.currentPrice > 0 ? p.currentPrice.toFixed(2) + ' TL' : '<span style="color:var(--orange)">Yükleniyor...</span>'}</span>
             </div>
             <div style="text-align:right;">
@@ -6839,7 +6880,7 @@ async function loadAutoTrade() {
             ${p.trailingStop > 0 ? ` | Trail: ${p.trailingStop.toFixed(2)}` : ''}
             | Lot: ${p.quantity}
           </div>
-          <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">🕐 Açılış: ${_fmtDt(p.openedAt)}</div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">🕐 Açılış: ${_fmtDt(p.openedAt)} · Saglik: ${escHtml(health.reasons.join(' · '))}</div>
         </div>`;
       }).join('');
     }
