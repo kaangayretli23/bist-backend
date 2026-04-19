@@ -816,6 +816,7 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
     </div>
     <div class="search-results-dropdown" id="searchDropdown"></div>
   </div>
+  <span id="pnlBadge" onclick="navigate('portfolio')" title="Günlük P&amp;L — tıkla portföye git" style="display:none;font-family:var(--font-mono,monospace);font-size:11px;font-weight:700;padding:4px 9px;border-radius:6px;cursor:pointer;margin-left:4px;border:1px solid var(--border);transition:transform .15s;" onmouseover="this.style.transform='scale(1.04)'" onmouseout="this.style.transform='scale(1)'"></span>
   <div id="userStatus" style="margin-left:8px;"></div>
 </nav>
 
@@ -859,6 +860,23 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
       <span id="lastUpdatedText" style="font-size:12px;color:var(--text-muted);">Son güncelleme: --</span>
     </div>
     <button class="btn btn-sm btn-secondary" onclick="loadDashboard(true)" style="padding:4px 12px;font-size:11px;">↻ Yenile</button>
+  </div>
+
+  <!-- ═══════ GÜNLÜK HEDEF TRACKER ═══════ -->
+  <div class="card mb-24" id="dailyGoalCard" style="display:none;padding:14px 16px;border-left:3px solid var(--accent);">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:200px;">
+        <div style="font-size:11px;color:var(--text-muted);font-weight:500;margin-bottom:3px;">🎯 Günlük Hedef</div>
+        <div id="dailyGoalText" style="font-size:14px;font-weight:700;">--</div>
+      </div>
+      <div style="flex:2;min-width:220px;">
+        <div style="height:8px;background:var(--bg);border-radius:4px;overflow:hidden;border:1px solid var(--border);">
+          <div id="dailyGoalBar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .6s ease;"></div>
+        </div>
+        <div id="dailyGoalLabel" style="font-size:10px;color:var(--text-muted);margin-top:4px;text-align:right;">-- / --</div>
+      </div>
+      <button onclick="setDailyGoal()" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:5px 11px;border-radius:6px;font-size:11px;cursor:pointer;">⚙️ Hedef</button>
+    </div>
   </div>
 
   <!-- ═══════ SABAH BRIEFING ═══════ -->
@@ -1807,6 +1825,41 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
       <div id="authSuccess" style="color:var(--green);font-size:12px;margin-bottom:10px;display:none;padding:8px 12px;background:rgba(0,229,160,0.1);border-radius:8px;"></div>
       <button class="btn btn-primary" onclick="doAuth()" id="authSubmitBtn" style="width:100%;padding:12px;font-size:14px;font-weight:600;border-radius:10px;background:var(--accent);color:#000;border:none;cursor:pointer;margin-bottom:10px;">Giriş Yap</button>
       <button class="btn btn-secondary" onclick="closeLogin()" style="width:100%;padding:10px;font-size:13px;border-radius:10px;background:transparent;color:var(--text-muted);border:1px solid var(--border);cursor:pointer;">İptal</button>
+    </div>
+  </div>
+</div>
+
+<!-- ⚡ QUICK-TRADE MODAL (Q hotkey) -->
+<div id="quickTradeModal" onclick="if(event.target===this)closeQuickTrade()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
+  <div style="width:420px;max-width:92vw;background:var(--card-bg);border:1px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:0 24px 48px rgba(0,0,0,0.4);">
+    <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <div>
+        <div style="font-weight:700;font-size:16px;">⚡ Hızlı İşlem</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Portföye hızlıca ekle/çıkar — <kbd style="background:var(--bg);padding:1px 5px;border-radius:3px;font-size:10px;border:1px solid var(--border);">Q</kbd> aç, <kbd style="background:var(--bg);padding:1px 5px;border-radius:3px;font-size:10px;border:1px solid var(--border);">Esc</kbd> kapat</div>
+      </div>
+      <button onclick="closeQuickTrade()" style="background:transparent;border:none;color:var(--text-muted);font-size:18px;cursor:pointer;padding:4px 8px;">✕</button>
+    </div>
+    <div style="padding:18px 22px;">
+      <div style="margin-bottom:12px;">
+        <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:5px;font-weight:500;">Sembol</label>
+        <input id="qtSymbol" placeholder="THYAO" autocomplete="off" oninput="this.value=this.value.toUpperCase()" style="width:100%;padding:10px 13px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text-primary);font-size:14px;text-transform:uppercase;outline:none;">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div>
+          <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:5px;font-weight:500;">Lot</label>
+          <input id="qtQty" type="number" step="1" min="1" placeholder="100" style="width:100%;padding:10px 13px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text-primary);font-size:14px;outline:none;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:5px;font-weight:500;">Fiyat (TL)</label>
+          <input id="qtPrice" type="number" step="0.01" min="0.01" placeholder="0.00" style="width:100%;padding:10px 13px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text-primary);font-size:14px;outline:none;">
+        </div>
+      </div>
+      <button onclick="quickTradeFetchPrice()" style="width:100%;padding:7px;background:transparent;border:1px dashed var(--border);color:var(--text-muted);border-radius:8px;font-size:11px;cursor:pointer;margin-bottom:12px;">📡 Güncel fiyatı getir</button>
+      <div id="qtMsg" style="display:none;font-size:12px;padding:8px 12px;border-radius:8px;margin-bottom:10px;"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <button onclick="quickTradeSubmit('buy')" style="padding:11px;background:var(--green);color:#000;border:none;border-radius:10px;font-weight:700;font-size:13px;cursor:pointer;">＋ Al / Ekle</button>
+        <button onclick="quickTradeSubmit('sell')" style="padding:11px;background:var(--red);color:white;border:none;border-radius:10px;font-weight:700;font-size:13px;cursor:pointer;">− Sat / Çıkar</button>
+      </div>
     </div>
   </div>
 </div>
@@ -3739,6 +3792,28 @@ function renderCandlestickPatterns(candle) {
   }).join('');
 }
 
+// Radyal gauge: 0-100 dairesel görsel (SVG). grade opsiyonel — renk tayini için.
+function _renderRadialGauge(score, grade, size) {
+  const s = Math.max(0, Math.min(100, parseFloat(score) || 0));
+  const sz = size || 72;
+  const r = 34, c = 2 * Math.PI * r; // çevre
+  const dash = (s / 100) * c;
+  const color = grade ? ({'A':'var(--green)','B':'#4CAF50','C':'var(--yellow)','D':'var(--red)','F':'#ff0000'}[grade] || 'var(--accent)')
+                      : (s >= 75 ? 'var(--green)' : s >= 50 ? 'var(--yellow)' : s >= 30 ? '#FF9800' : 'var(--red)');
+  const labelTop = grade || Math.round(s);
+  const labelBot = grade ? '%' + Math.round(s) : '/100';
+  return `<svg width="${sz}" height="${sz}" viewBox="0 0 80 80" style="display:block;">
+    <circle cx="40" cy="40" r="${r}" fill="none" stroke="var(--border)" stroke-width="8"/>
+    <circle cx="40" cy="40" r="${r}" fill="none" stroke="${color}" stroke-width="8"
+      stroke-dasharray="${dash.toFixed(2)} ${(c - dash).toFixed(2)}" stroke-linecap="round"
+      transform="rotate(-90 40 40)" style="transition:stroke-dasharray 0.6s ease;"/>
+    <text x="40" y="40" text-anchor="middle" dominant-baseline="central"
+      style="font-size:22px;font-weight:900;fill:${color};font-family:var(--font-mono,monospace);">${labelTop}</text>
+    <text x="40" y="58" text-anchor="middle" dominant-baseline="central"
+      style="font-size:10px;fill:var(--text-muted);font-weight:500;">${labelBot}</text>
+  </svg>`;
+}
+
 function renderMLConfidence(mlConf) {
   if (!mlConf) return '';
   let html = '';
@@ -3747,15 +3822,12 @@ function renderMLConfidence(mlConf) {
     if (!m || !m.factors?.length) return;
     const gradeColor = {'A':'var(--green)','B':'#4CAF50','C':'var(--yellow)','D':'var(--red)','F':'#ff0000'}[m.grade] || 'var(--text-muted)';
     html += `<div style="padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-        <span style="font-weight:700;font-size:13px;">${label}</span>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span style="font-size:24px;font-weight:900;color:${gradeColor};">${m.grade}</span>
-          <span style="font-size:13px;color:var(--text-muted);">%${m.confidence}</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px;">
+        <div style="flex:1;">
+          <div style="font-weight:700;font-size:13px;margin-bottom:2px;">${label}</div>
+          <div style="font-size:11px;color:var(--text-muted);">${m.factors.length} faktör degerlendirildi</div>
         </div>
-      </div>
-      <div style="height:6px;background:var(--border);border-radius:3px;margin-bottom:10px;overflow:hidden;">
-        <div style="width:${m.confidence}%;height:100%;background:${gradeColor};border-radius:3px;"></div>
+        <div>${_renderRadialGauge(m.confidence, m.grade, 72)}</div>
       </div>`;
     m.factors.forEach(f => {
       const pct = f.max > 0 ? (f.score / f.max * 100) : 0;
@@ -4490,6 +4562,97 @@ async function removePosition(symbol, posId) {
   loadPortfolio();
 }
 
+// ========== QUICK-TRADE (Q hotkey) ==========
+function openQuickTrade() {
+  if (!currentUser) { showLogin(); return; }
+  const m = document.getElementById('quickTradeModal');
+  if (!m) return;
+  m.style.display = 'flex';
+  const msg = document.getElementById('qtMsg'); if (msg) msg.style.display = 'none';
+  setTimeout(() => { const s = document.getElementById('qtSymbol'); if (s) s.focus(); }, 50);
+}
+function closeQuickTrade() {
+  const m = document.getElementById('quickTradeModal');
+  if (!m) return;
+  m.style.display = 'none';
+}
+function _qtMsg(text, kind) {
+  const m = document.getElementById('qtMsg');
+  if (!m) return;
+  const bg = kind === 'error' ? 'rgba(234,57,67,0.12)' : (kind === 'success' ? 'rgba(0,229,160,0.1)' : 'rgba(0,153,255,0.08)');
+  const c  = kind === 'error' ? 'var(--red)' : (kind === 'success' ? 'var(--green)' : 'var(--text-secondary)');
+  m.style.background = bg; m.style.color = c; m.textContent = text; m.style.display = 'block';
+}
+async function quickTradeFetchPrice() {
+  const sym = (document.getElementById('qtSymbol').value || '').toUpperCase().trim();
+  if (!sym) { _qtMsg('Önce sembol gir', 'error'); return; }
+  _qtMsg('Fiyat alınıyor...', 'info');
+  try {
+    const d = await api('/stock/' + encodeURIComponent(sym) + '?period=5d');
+    const px = parseFloat(d?.price);
+    if (px > 0) {
+      document.getElementById('qtPrice').value = px.toFixed(2);
+      _qtMsg(sym + ' son fiyat: ' + px.toFixed(2) + ' TL', 'success');
+    } else {
+      _qtMsg('Fiyat alinamadi', 'error');
+    }
+  } catch (e) { _qtMsg('Fiyat alinamadi: ' + (e?.message || e), 'error'); }
+}
+async function quickTradeSubmit(action) {
+  if (!currentUser) { showLogin(); return; }
+  const sym = (document.getElementById('qtSymbol').value || '').toUpperCase().trim();
+  const qty = parseFloat(document.getElementById('qtQty').value);
+  const pr  = parseFloat(document.getElementById('qtPrice').value);
+  if (!sym) { _qtMsg('Sembol gir', 'error'); return; }
+  if (!qty || qty <= 0) { _qtMsg('Lot > 0 olmali', 'error'); return; }
+  if (action === 'buy') {
+    if (!pr || pr <= 0) { _qtMsg('Gecersiz fiyat', 'error'); return; }
+    const r = await api('/portfolio', {
+      method: 'POST',
+      body: JSON.stringify({ userId: currentUser.userId, symbol: sym, quantity: qty, avgCost: pr }),
+    });
+    if (r && r.success) {
+      _qtMsg('✓ ' + sym + ' portfoye eklendi (' + qty + ' lot @ ' + pr.toFixed(2) + ')', 'success');
+      if (typeof loadPortfolio === 'function') loadPortfolio();
+      setTimeout(closeQuickTrade, 1100);
+    } else {
+      _qtMsg('Hata: ' + (r?.error || 'Bilinmeyen'), 'error');
+    }
+  } else {
+    if (!confirm(sym + ' portfoyden cikarilsin mi?')) return;
+    const r = await api('/portfolio', {
+      method: 'DELETE',
+      body: JSON.stringify({ userId: currentUser.userId, symbol: sym }),
+    });
+    if (r && r.success) {
+      _qtMsg('✓ ' + sym + ' portfoyden cikarildi', 'success');
+      if (typeof loadPortfolio === 'function') loadPortfolio();
+      setTimeout(closeQuickTrade, 1100);
+    } else {
+      _qtMsg('Hata: ' + (r?.error || 'Bilinmeyen'), 'error');
+    }
+  }
+}
+// Global hotkey: Q aç, Esc kapat — input/textarea'da tetiklenmez
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  const tag = (t && t.tagName || '').toLowerCase();
+  const inInput = tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable);
+  const qtm = document.getElementById('quickTradeModal');
+  const qtOpen = qtm && qtm.style.display === 'flex';
+  if (e.key === 'Escape') {
+    if (qtOpen) { closeQuickTrade(); e.preventDefault(); }
+    return;
+  }
+  if ((e.key === 'q' || e.key === 'Q') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (inInput || qtOpen) return;
+    const lm = document.getElementById('loginModal');
+    if (lm && lm.style.display === 'flex') return;
+    openQuickTrade();
+    e.preventDefault();
+  }
+});
+
 async function loadPortfolio() {
   if (!currentUser) {
     document.getElementById('portfolioSummary').innerHTML = '';
@@ -5111,7 +5274,7 @@ async function loadSignals() {
         </div>
         <div style="display:flex;align-items:center;gap:12px;">
           <div style="${actionClass};font-size:18px;">${s.action}</div>
-          <div style="text-align:center;"><span style="font-size:20px;font-weight:900;color:${mlColor};">${mlGrade}</span><div style="font-size:9px;color:var(--text-muted);">ML %${mlConf}</div></div>
+          <div title="ML Güven Skoru" style="display:flex;align-items:center;">${_renderRadialGauge(mlConf, mlGrade, 54)}</div>
           <div><span style="color:var(--green);font-size:11px;">${s.buySignals} AL</span> / <span style="color:var(--red);font-size:11px;">${s.sellSignals} SAT</span><div style="font-size:9px;color:var(--text-muted);">/ ${s.totalIndicators} indikatör</div></div>
         </div>
       </div>
@@ -5551,6 +5714,7 @@ function refreshActivePage() {
     else if (pageId === 'watchlist') loadWatchlist();
     else if (pageId === 'alerts') loadAlerts();
   }
+  if (typeof _loadPortfolioBadge === 'function') _loadPortfolioBadge();
 }
 
 // Uygulama baslarken: localStorage'da kullanici varsa, DB'de hala var mi kontrol et
@@ -5588,6 +5752,82 @@ function updateUserUI() {
   } else {
     el.innerHTML = `<button class="btn btn-sm btn-primary" onclick="showLogin()" style="font-size:11px;background:var(--accent);color:#000;font-weight:700;border-radius:8px;padding:6px 14px;">Giriş / Kayıt</button>`;
   }
+}
+
+// ========== P&L BADGE (navbar) + GÜNLÜK HEDEF TRACKER ==========
+// Hedef localStorage'da saklanir (kullanici bazinda anahtar)
+function _dailyGoalKey() {
+  return 'bistDailyGoal_' + (currentUser?.userId || 'anon');
+}
+function _getDailyGoal() {
+  try {
+    const v = localStorage.getItem(_dailyGoalKey());
+    const n = parseFloat(v);
+    return (n > 0 && n <= 100) ? n : 2.0; // default: %2
+  } catch(_) { return 2.0; }
+}
+function setDailyGoal() {
+  const cur = _getDailyGoal();
+  const inp = prompt('Günlük hedef (% — örn 2.5):', cur.toString());
+  if (inp === null) return;
+  const n = parseFloat(inp);
+  if (!(n > 0 && n <= 100)) { alert('0 ile 100 arasında bir yüzde gir.'); return; }
+  try { localStorage.setItem(_dailyGoalKey(), n.toFixed(2)); } catch(_) {}
+  _loadPortfolioBadge();
+}
+function _renderPnlBadge(totalPnL, totalPnLPct, dailyPnL) {
+  const badge = document.getElementById('pnlBadge');
+  if (!badge) return;
+  if (!currentUser) { badge.style.display = 'none'; return; }
+  const dly = parseFloat(dailyPnL) || 0;
+  const tot = parseFloat(totalPnL) || 0;
+  const totPct = parseFloat(totalPnLPct) || 0;
+  const isUp = dly >= 0;
+  const color = isUp ? 'var(--green)' : 'var(--red)';
+  const bg = isUp ? 'rgba(0,229,160,0.12)' : 'rgba(234,57,67,0.12)';
+  const sign = isUp ? '+' : '';
+  const arrow = isUp ? '▲' : '▼';
+  badge.style.display = 'inline-block';
+  badge.style.color = color;
+  badge.style.background = bg;
+  badge.style.borderColor = color;
+  badge.title = 'Bugün: ' + sign + dly.toFixed(2) + ' TL · Toplam: ' + (tot >= 0 ? '+' : '') + tot.toFixed(2) + ' TL (' + (totPct >= 0 ? '+' : '') + totPct.toFixed(2) + '%)';
+  badge.textContent = arrow + ' ' + sign + dly.toFixed(0) + ' TL';
+}
+function _renderDailyGoal(dailyPnL, totalCost) {
+  const card = document.getElementById('dailyGoalCard');
+  if (!card) return;
+  if (!currentUser || !(totalCost > 0)) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const goal = _getDailyGoal();
+  const dly = parseFloat(dailyPnL) || 0;
+  const pct = (dly / totalCost * 100);
+  const progress = Math.max(0, Math.min(100, (pct / goal) * 100));
+  const txt = document.getElementById('dailyGoalText');
+  const bar = document.getElementById('dailyGoalBar');
+  const lbl = document.getElementById('dailyGoalLabel');
+  const sign = pct >= 0 ? '+' : '';
+  const color = pct >= goal ? 'var(--green)' : pct >= 0 ? 'var(--accent)' : 'var(--red)';
+  if (txt) {
+    const emoji = pct >= goal ? '🎉' : pct > 0 ? '📈' : pct < 0 ? '📉' : '⏳';
+    txt.innerHTML = emoji + ' <span style="color:' + color + ';">' + sign + pct.toFixed(2) + '%</span> <span style="color:var(--text-muted);font-size:11px;font-weight:500;">/ hedef %' + goal.toFixed(1) + '</span>';
+  }
+  if (bar) { bar.style.width = progress.toFixed(1) + '%'; bar.style.background = color; }
+  if (lbl) { lbl.textContent = sign + dly.toFixed(2) + ' TL / ' + (totalCost * goal / 100).toFixed(2) + ' TL hedef'; }
+}
+async function _loadPortfolioBadge() {
+  if (!currentUser) {
+    _renderPnlBadge(0, 0, 0);
+    const card = document.getElementById('dailyGoalCard'); if (card) card.style.display = 'none';
+    return;
+  }
+  try {
+    const d = await api('/portfolio?userId=' + encodeURIComponent(currentUser.userId));
+    if (!d || !d.success) return;
+    const s = d.summary || {};
+    _renderPnlBadge(s.totalPnL, s.totalPnLPct, s.dailyPnL);
+    _renderDailyGoal(s.dailyPnL, s.totalCost);
+  } catch(_) {}
 }
 
 
@@ -7109,8 +7349,10 @@ async function closePosition(posId) {
 document.addEventListener('DOMContentLoaded', () => {
   loadDashboard().catch(() => dismissLoadingPopup());
   updateUserUI();
-  validateSession();
+  validateSession().then(() => _loadPortfolioBadge()).catch(() => {});
   _autoRefreshInit();
+  // P&L badge ve hedef tracker'i her 2 dakikada bir yenile
+  setInterval(() => { if (!document.hidden) _loadPortfolioBadge(); }, 120_000);
 });
 
 // =============================================================================
