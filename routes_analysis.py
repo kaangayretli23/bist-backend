@@ -151,6 +151,26 @@ def market_regime():
         return jsonify({'error': str(e)}), 500
 
 
+# Sector RS cache (5 dk TTL — pahali hesap)
+_SECTOR_RS_CACHE = {'data': None, 'ts': 0.0}
+_SECTOR_RS_TTL = 300
+
+
+@analysis_bp.route('/api/market/sector-rs')
+def sector_rs_endpoint():
+    """Sektor goreceli guc + rotasyon (risk-on/risk-off)"""
+    try:
+        now_ts = time.time()
+        if _SECTOR_RS_CACHE['data'] and (now_ts - _SECTOR_RS_CACHE['ts']) < _SECTOR_RS_TTL:
+            return jsonify(safe_dict({'success': True, 'cached': True, **_SECTOR_RS_CACHE['data']}))
+        rs = calc_sector_relative_strength()
+        _SECTOR_RS_CACHE['data'] = rs
+        _SECTOR_RS_CACHE['ts'] = now_ts
+        return jsonify(safe_dict({'success': True, 'cached': False, **rs}))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @analysis_bp.route('/api/opportunities')
 def opportunities():
     """Coklu zaman dilimli firsat raporu - PARALEL hesaplama"""

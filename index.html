@@ -870,6 +870,15 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
     <div id="briefingContent" style="font-size:13px;color:var(--text-muted);">Yükleniyor...</div>
   </div>
 
+  <!-- ═══════ SEKTOR ROTASYONU (Goreceli Guc) ═══════ -->
+  <div class="card mb-24" id="sectorRSCard" style="border-left:3px solid var(--yellow);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div style="font-weight:700;font-size:14px;">🔄 Sektor Rotasyonu <span id="sectorRSBadge" style="font-weight:400;font-size:11px;color:var(--text-muted);margin-left:8px;"></span></div>
+      <button class="btn btn-sm btn-secondary" onclick="loadSectorRS(true)" style="padding:3px 10px;font-size:11px;">↻ Yenile</button>
+    </div>
+    <div id="sectorRSContent" style="font-size:12px;color:var(--text-muted);">Yükleniyor...</div>
+  </div>
+
   <!-- Piyasa Rejimi + Favori Hisseler -->
   <div class="grid-2 mb-24">
     <div class="card" id="dashboardRegime" style="border-left:3px solid var(--accent);">
@@ -2168,6 +2177,84 @@ async function loadBriefing(forceRefresh) {
 }
 
 // =============================================================================
+// SEKTOR ROTASYONU (Goreceli Guc)
+// =============================================================================
+async function loadSectorRS(forceRefresh) {
+  const container = document.getElementById('sectorRSContent');
+  const badge = document.getElementById('sectorRSBadge');
+  if (!container) return;
+  if (forceRefresh) container.innerHTML = '<div style="color:var(--text-muted);">Yenileniyor...</div>';
+
+  try {
+    const data = await api('/market/sector-rs');
+    if (!data || data.error) {
+      container.innerHTML = `<div style="color:var(--red);">Sektor RS yuklenemedi: ${escHtml(String(data && data.error || 'bilinmeyen'))}</div>`;
+      return;
+    }
+    const sectors = data.sectors || [];
+    const rotation = data.rotation || 'neutral';
+    const rotDesc = data.rotationDescription || '';
+    const rotColor = rotation === 'risk_on' ? 'var(--green)' : (rotation === 'risk_off' ? 'var(--yellow)' : 'var(--text-muted)');
+    const rotEmoji = rotation === 'risk_on' ? '🚀' : (rotation === 'risk_off' ? '🛡️' : '➡️');
+
+    if (badge) badge.innerHTML = `<span style="color:${rotColor};font-weight:700;">${rotEmoji} ${escHtml(rotDesc)}</span>`;
+
+    if (!sectors.length) {
+      container.innerHTML = '<div style="color:var(--text-muted);">Sektor verisi bulunamadi</div>';
+      return;
+    }
+
+    // Top 3 + Bottom 2
+    const top3 = sectors.slice(0, 3);
+    const bot2 = sectors.slice(-2).reverse();
+    const maxRS = Math.max(...sectors.map(s => Math.abs(parseFloat(s.relativeStrength || 0)))) || 1;
+
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">';
+    // Top
+    html += '<div><div style="font-size:11px;color:var(--green);font-weight:700;margin-bottom:6px;">▲ Lider Sektorler</div>';
+    top3.forEach((s, i) => {
+      const rs = parseFloat(s.relativeStrength || 0);
+      const w = Math.min(100, Math.abs(rs) / maxRS * 100);
+      html += `<div onclick="navigate('sectors')" style="cursor:pointer;padding:6px 8px;margin-bottom:4px;border-radius:6px;background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.15);">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-weight:600;font-size:12px;">${i+1}. ${escHtml(s.displayName || s.name)}</span>
+          <span style="color:var(--green);font-weight:700;font-size:12px;">+${rs.toFixed(2)}</span>
+        </div>
+        <div style="height:3px;background:var(--border);border-radius:2px;margin-top:3px;overflow:hidden;">
+          <div style="width:${w}%;height:100%;background:var(--green);"></div>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">
+          1H: %${s.avgChange1w || 0} · 1A: %${s.avgChange1m || 0} · Top: ${escHtml(s.topPerformer || '-')}
+        </div>
+      </div>`;
+    });
+    html += '</div>';
+    // Bottom
+    html += '<div><div style="font-size:11px;color:var(--red);font-weight:700;margin-bottom:6px;">▼ Zayif Sektorler</div>';
+    bot2.forEach(s => {
+      const rs = parseFloat(s.relativeStrength || 0);
+      const w = Math.min(100, Math.abs(rs) / maxRS * 100);
+      html += `<div onclick="navigate('sectors')" style="cursor:pointer;padding:6px 8px;margin-bottom:4px;border-radius:6px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-weight:600;font-size:12px;">${escHtml(s.displayName || s.name)}</span>
+          <span style="color:var(--red);font-weight:700;font-size:12px;">${rs.toFixed(2)}</span>
+        </div>
+        <div style="height:3px;background:var(--border);border-radius:2px;margin-top:3px;overflow:hidden;">
+          <div style="width:${w}%;height:100%;background:var(--red);"></div>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">
+          1H: %${s.avgChange1w || 0} · 1A: %${s.avgChange1m || 0} · Worst: ${escHtml(s.worstPerformer || '-')}
+        </div>
+      </div>`;
+    });
+    html += '</div></div>';
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = `<div style="color:var(--red);">Sektor RS hata: ${escHtml(String(e))}</div>`;
+  }
+}
+
+// =============================================================================
 // LOADING POPUP
 // =============================================================================
 let _loadingDismissed = false;
@@ -2368,6 +2455,7 @@ async function loadDashboard(forceRefresh) {
   _loadDashboardWatchlist();
   loadDashSignals();
   loadBriefing();
+  loadSectorRS();
 
   // Önceki veri varsa hemen render et
   const cached = forceRefresh ? null : _getCached('dashboard');
@@ -3700,12 +3788,75 @@ function renderMarketRegime(regime) {
 }
 
 function renderSignalBacktest(bt) {
-  if (!bt || bt.totalSignals === 0) return '<div style="font-size:12px;color:var(--text-muted);">Yeterli gecmis sinyal bulunamadi</div>';
+  if (!bt || bt.totalSignals === 0) {
+    // Yeterli sinyal yok ama activeSetups olabilir (canli setup'lar)
+    if (bt && bt.activeSetups && bt.activeSetups.length) {
+      return renderActiveSetupsOnly(bt);
+    }
+    return '<div style="font-size:12px;color:var(--text-muted);">Yeterli gecmis sinyal bulunamadi</div>';
+  }
   const overall = bt.overall || {};
   const buy = bt.buySignals || {};
   const sell = bt.sellSignals || {};
   const winColor = (rate) => rate >= 60 ? 'var(--green)' : (rate >= 45 ? 'var(--yellow)' : 'var(--red)');
+  const feePct = (bt.feePct != null) ? bt.feePct : null;
+  const shortOk = !!bt.shortExecutable;
+  const bench = bt.benchmark || {};
+  const bestRsi = bt.bestRsiThreshold;
+  const rsiCal = bt.rsiCalibration || {};
+  const activeSetups = bt.activeSetups || [];
+
+  // Komisyon / short disclosure banner
+  let disclosure = '';
+  if (feePct != null || bt.shortExecutable !== undefined) {
+    disclosure = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;font-size:10px;">
+      ${feePct != null ? `<span style="padding:3px 8px;border-radius:10px;background:rgba(99,102,241,0.12);color:var(--accent);">Komisyon dahil: %${feePct}</span>` : ''}
+      <span style="padding:3px 8px;border-radius:10px;background:${shortOk ? 'rgba(16,185,129,0.12);color:var(--green)' : 'rgba(234,179,8,0.12);color:var(--yellow)'};">
+        ${shortOk ? 'Short: calisir' : 'Short: BIST kisitli — SAT istatistigi simulasyon'}
+      </span>
+    </div>`;
+  }
+
+  // Benchmark karsilastirma: ortalama rastgele giris vs sinyal
+  let benchmarkRow = '';
+  if (bench.avgRandom10dReturn != null) {
+    const avgRet = parseFloat(overall.avgRet10d || 0);
+    const benchRet = parseFloat(bench.avgRandom10dReturn || 0);
+    const alpha = (avgRet - benchRet).toFixed(2);
+    const alphaColor = alpha >= 0 ? 'var(--green)' : 'var(--red)';
+    benchmarkRow = `<div style="margin-top:8px;padding:8px;border-radius:6px;background:rgba(99,102,241,0.06);font-size:11px;">
+      <b>Buy&amp;Hold karsilastirma:</b> rastgele giris %${bench.avgRandom10dReturn} vs sinyal %${overall.avgRet10d || 0}
+      → <span style="color:${alphaColor};font-weight:700;">alpha: ${alpha >= 0 ? '+' : ''}${alpha}%</span>
+      ${bench.fullPeriodReturn != null ? `<br><span style="color:var(--text-muted);">Tum periyot (buy&hold): %${bench.fullPeriodReturn}</span>` : ''}
+    </div>`;
+  }
+
+  // BIST RSI kalibrasyonu
+  let rsiCalRow = '';
+  if (bestRsi && Object.keys(rsiCal).length) {
+    const bestData = rsiCal[bestRsi] || {};
+    rsiCalRow = `<div style="margin-top:8px;padding:8px;border-radius:6px;background:rgba(234,179,8,0.06);font-size:11px;">
+      <b>BIST RSI optimum:</b> ${bestRsi}
+      — PF=${bestData.profitFactor10d || 0}, win=%${bestData.winRate10d || 0} (${bestData.signalCount || 0} sinyal)
+      <span style="color:var(--text-muted);"> — varsayilan 30/70 yerine kullanilabilir</span>
+    </div>`;
+  }
+
+  // Canli setup'lar (son 20 bar, ileri getiri yok)
+  let setupsRow = '';
+  if (activeSetups.length) {
+    const buySetups = activeSetups.filter(s => s.type === 'buy').slice(0, 5);
+    const sellSetups = activeSetups.filter(s => s.type === 'sell').slice(0, 5);
+    setupsRow = `<div style="margin-top:8px;padding:8px;border-radius:6px;background:rgba(16,185,129,0.05);border:1px dashed rgba(16,185,129,0.3);font-size:11px;">
+      <b>🔴 Canli Setup'lar (son 20 bar — ileri getiri yok):</b>
+      ${buySetups.length ? '<br><span style="color:var(--green);">▲ AL:</span> ' + buySetups.map(s => `${s.reason} (${s.barsFromEnd}b once, ${s.price}₺)`).join(', ') : ''}
+      ${sellSetups.length ? '<br><span style="color:var(--red);">▼ SAT:</span> ' + sellSetups.map(s => `${s.reason}${s.executable ? '' : ' ⓘ'} (${s.barsFromEnd}b once, ${s.price}₺)`).join(', ') : ''}
+      ${!shortOk && sellSetups.length ? '<br><span style="font-size:10px;color:var(--text-muted);">ⓘ Short kisitli — SAT setuplari bilgi amacli</span>' : ''}
+    </div>`;
+  }
+
   return `<div style="margin-bottom:12px;">
+    ${disclosure}
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
       <div style="flex:1;min-width:100px;padding:10px;border-radius:8px;background:rgba(99,102,241,0.1);text-align:center;">
         <div style="font-size:20px;font-weight:800;color:var(--accent);">${bt.totalSignals}</div>
@@ -3719,15 +3870,34 @@ function renderSignalBacktest(bt) {
         <div style="font-size:20px;font-weight:800;color:${overall.avgRet10d >= 0 ? 'var(--green)' : 'var(--red)'};">%${overall.avgRet10d}</div>
         <div style="font-size:10px;color:var(--text-muted);">10G Ort. Getiri</div>
       </div>
+      ${overall.profitFactor10d != null ? `<div style="flex:1;min-width:100px;padding:10px;border-radius:8px;background:rgba(168,85,247,0.1);text-align:center;">
+        <div style="font-size:20px;font-weight:800;color:${parseFloat(overall.profitFactor10d) >= 1.5 ? 'var(--green)' : (parseFloat(overall.profitFactor10d) >= 1 ? 'var(--yellow)' : 'var(--red)')};">${overall.profitFactor10d}</div>
+        <div style="font-size:10px;color:var(--text-muted);">Profit Factor</div>
+      </div>` : ''}
     </div>
     <table style="width:100%;font-size:12px;">
       <thead><tr style="color:var(--text-muted);"><th></th><th>Sayi</th><th>5G Basari</th><th>10G Basari</th><th>20G Basari</th><th>10G Getiri</th></tr></thead>
       <tbody>
         <tr><td style="color:var(--green);font-weight:600;">Alis</td><td>${buy.count||0}</td><td style="color:${winColor(buy.winRate5d)};">%${buy.winRate5d||0}</td><td style="color:${winColor(buy.winRate10d)};">%${buy.winRate10d||0}</td><td style="color:${winColor(buy.winRate20d)};">%${buy.winRate20d||0}</td><td>${buy.avgRet10d||0}%</td></tr>
-        <tr><td style="color:var(--red);font-weight:600;">Satis</td><td>${sell.count||0}</td><td style="color:${winColor(sell.winRate5d)};">%${sell.winRate5d||0}</td><td style="color:${winColor(sell.winRate10d)};">%${sell.winRate10d||0}</td><td style="color:${winColor(sell.winRate20d)};">%${sell.winRate20d||0}</td><td>${sell.avgRet10d||0}%</td></tr>
+        <tr><td style="color:var(--red);font-weight:600;">Satis${shortOk ? '' : ' <span title="BIST short kisitli" style="color:var(--text-muted);font-weight:400;">ⓘ</span>'}</td><td>${sell.count||0}</td><td style="color:${winColor(sell.winRate5d)};">%${sell.winRate5d||0}</td><td style="color:${winColor(sell.winRate10d)};">%${sell.winRate10d||0}</td><td style="color:${winColor(sell.winRate20d)};">%${sell.winRate20d||0}</td><td>${sell.avgRet10d||0}%</td></tr>
       </tbody>
     </table>
-    ${bt.byReason ? '<div style="margin-top:10px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);padding-top:8px;"><b>Sinyal Tiplerine Gore:</b><br>' + Object.entries(bt.byReason).map(([k,v]) => `• ${k}: ${v.count} sinyal, %${v.winRate10d} basari`).join('<br>') + '</div>' : ''}
+    ${setupsRow}
+    ${benchmarkRow}
+    ${rsiCalRow}
+    ${bt.byReason ? '<div style="margin-top:10px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);padding-top:8px;"><b>Sinyal Tiplerine Gore:</b><br>' + Object.entries(bt.byReason).map(([k,v]) => `• ${escHtml(k)}: ${v.count} sinyal, %${v.winRate10d} basari`).join('<br>') + '</div>' : ''}
+  </div>`;
+}
+
+function renderActiveSetupsOnly(bt) {
+  const setups = bt.activeSetups || [];
+  if (!setups.length) return '<div style="font-size:12px;color:var(--text-muted);">Yeterli gecmis sinyal bulunamadi</div>';
+  const buy = setups.filter(s => s.type === 'buy');
+  const sell = setups.filter(s => s.type === 'sell');
+  return `<div style="padding:10px;border:1px dashed var(--border);border-radius:8px;font-size:11px;">
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Yeterli gecmis sinyal yok ama canli setup'lar mevcut:</div>
+    ${buy.length ? '<div><span style="color:var(--green);font-weight:700;">▲ AL:</span> ' + buy.slice(0,5).map(s => `${escHtml(s.reason)} (${s.barsFromEnd}b)`).join(', ') + '</div>' : ''}
+    ${sell.length ? '<div style="margin-top:4px;"><span style="color:var(--red);font-weight:700;">▼ SAT:</span> ' + sell.slice(0,5).map(s => `${escHtml(s.reason)} (${s.barsFromEnd}b)`).join(', ') + '</div>' : ''}
   </div>`;
 }
 
