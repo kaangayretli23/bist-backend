@@ -430,7 +430,11 @@ def signal_log_endpoint():
     if not _TRACKER_OK:
         return jsonify({'error': 'signal_tracker modülü yüklenemedi'}), 500
     try:
-        limit     = int(request.args.get('limit', 100))
+        # Limit bound: DoS onlemi — 1..500 araligina clamp
+        try:
+            limit = min(max(int(request.args.get('limit', 100)), 1), 500)
+        except (TypeError, ValueError):
+            limit = 100
         timeframe = request.args.get('timeframe') or None
         action    = request.args.get('action') or None
         symbol    = request.args.get('symbol') or None
@@ -498,8 +502,17 @@ def briefing_endpoint():
         except Exception:
             sentiment = None
 
-        # 5) Auto-trader ozet (userId verildiyse)
+        # 5) Auto-trader ozet (userId verildiyse — users tablosunda dogrulanir)
         auto_trader = None
+        if uid:
+            try:
+                from config import db_conn
+                with db_conn() as _db:
+                    _u = _db.execute("SELECT id FROM users WHERE id=?", (uid,)).fetchone()
+                if not _u:
+                    uid = ''  # gecersiz uid: auto_trader bolumunu atla
+            except Exception:
+                uid = ''
         if uid:
             try:
                 from auto_trader import _auto_get_config, _auto_get_open_positions, _auto_get_daily_trade_count

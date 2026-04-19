@@ -10,6 +10,7 @@ import requests as req_lib
 from config import (
     _stock_cache, _cget, get_db, db_conn, safe_dict, sf,
 )
+from auth_middleware import require_user
 
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 
@@ -39,6 +40,7 @@ def _send_telegram_alerts(user_id, triggered_alerts):
 
 
 @portfolio_bp.route('/api/portfolio', methods=['GET'])
+@require_user
 def get_portfolio():
     try:
         uid = request.args.get('userId', request.args.get('user', ''))
@@ -81,6 +83,7 @@ def get_portfolio():
 
 
 @portfolio_bp.route('/api/portfolio', methods=['POST'])
+@require_user
 def add_portfolio():
     try:
         d = request.json or {}
@@ -105,6 +108,7 @@ def add_portfolio():
 
 
 @portfolio_bp.route('/api/portfolio', methods=['DELETE'])
+@require_user
 def del_portfolio():
     try:
         d = request.json or {}
@@ -128,6 +132,7 @@ def portfolio_risk():
 
 
 @portfolio_bp.route('/api/watchlist', methods=['GET'])
+@require_user
 def get_watchlist():
     try:
         uid = request.args.get('userId', '')
@@ -144,6 +149,7 @@ def get_watchlist():
 
 
 @portfolio_bp.route('/api/watchlist', methods=['POST'])
+@require_user
 def update_watchlist():
     try:
         d = request.json or {}
@@ -175,6 +181,7 @@ def update_watchlist():
 
 
 @portfolio_bp.route('/api/alerts', methods=['GET'])
+@require_user
 def get_alerts():
     try:
         uid = request.args.get('userId', '')
@@ -194,6 +201,7 @@ def get_alerts():
 
 
 @portfolio_bp.route('/api/alerts', methods=['POST'])
+@require_user
 def add_alert():
     try:
         d = request.json or {}
@@ -213,6 +221,7 @@ def add_alert():
 
 
 @portfolio_bp.route('/api/alerts/<int:aid>', methods=['DELETE'])
+@require_user
 def del_alert(aid):
     try:
         uid = (request.json or {}).get('userId', request.args.get('userId', ''))

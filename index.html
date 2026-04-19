@@ -2389,7 +2389,7 @@ async function loadDashboard(forceRefresh) {
     _dashboardStatusMsg(`
       <div class="card" style="text-align:center;padding:20px;">
         <div style="color:var(--yellow);margin-bottom:8px;font-weight:600;">⚠️ Veri yüklenirken sorun oluştu</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${data.error}</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">${escHtml(String(data.error||''))}</div>
         <button class="btn btn-primary btn-sm" onclick="loadDashboard(true)">Tekrar Dene</button>
       </div>`);
     return;
@@ -2463,13 +2463,13 @@ async function _loadDashboardRegime() {
     el.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
         <span style="font-size:20px;">${regimeEmoji}</span>
-        <span style="font-weight:700;color:${regimeColor};font-size:15px;">${data.description || data.regime}</span>
+        <span style="font-weight:700;color:${regimeColor};font-size:15px;">${escHtml(String(data.description || data.regime || ''))}</span>
       </div>
       <div style="background:var(--bg-input);border-radius:4px;height:6px;overflow:hidden;margin-bottom:6px;">
-        <div style="height:100%;width:${data.strength || 0}%;background:${regimeColor};border-radius:4px;"></div>
+        <div style="height:100%;width:${Number(data.strength) || 0}%;background:${regimeColor};border-radius:4px;"></div>
       </div>
-      <div style="font-size:11px;color:var(--text-muted);">Güç: %${data.strength || 0} | Skor: ${data.score || 0}</div>
-      ${(data.reasons||[]).slice(0,2).map(r => `<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">• ${r}</div>`).join('')}
+      <div style="font-size:11px;color:var(--text-muted);">Güç: %${Number(data.strength) || 0} | Skor: ${Number(data.score) || 0}</div>
+      ${(data.reasons||[]).slice(0,2).map(r => `<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">• ${escHtml(String(r||''))}</div>`).join('')}
     `;
   } catch(e) {}
 }
@@ -5236,7 +5236,25 @@ async function loadDividends() {
 // =============================================================================
 // AUTH (LOGIN/REGISTER)
 // =============================================================================
-let currentUser = JSON.parse(localStorage.getItem('bistUser') || 'null');
+// localStorage XSS sertleştirme: bozuk/manipule veri ile calisma, minimum alanlari dogrula
+function _safeParseUser() {
+  try {
+    const raw = localStorage.getItem('bistUser');
+    if (!raw) return null;
+    const u = JSON.parse(raw);
+    if (!u || typeof u !== 'object') return null;
+    // Sadece bekledigimiz alanlari al, prototype pollution'i engelle
+    const uid = String(u.userId || u.id || '').slice(0, 64);
+    const username = String(u.username || '').slice(0, 64);
+    const email = String(u.email || '').slice(0, 128);
+    if (!uid) return null;
+    return { userId: uid, username, email };
+  } catch(e) {
+    try { localStorage.removeItem('bistUser'); } catch {}
+    return null;
+  }
+}
+let currentUser = _safeParseUser();
 let authMode = 'login';
 
 function showLogin() {
@@ -6444,8 +6462,8 @@ function updatePosition(card) {
 let _atEnabled = false;
 
 function _getUid() {
-  try { const u = JSON.parse(localStorage.getItem('bistUser') || '{}'); return u.id || u.userId || ''; }
-  catch { return ''; }
+  const u = _safeParseUser();
+  return u ? u.userId : '';
 }
 
 async function loadAutoTrade() {
