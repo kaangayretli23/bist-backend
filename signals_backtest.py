@@ -20,6 +20,15 @@ def calc_signal_backtest(hist, lookback_days=252):
         h = hist['High'].values.astype(float)
         l = hist['Low'].values.astype(float)
         v = hist['Volume'].values.astype(float)
+        # Close NaN'lari ffill/bfill ile doldur — indikatör dizileri NaN'dan bozulmasin
+        if np.isnan(c).any():
+            c_series = pd.Series(c).ffill().bfill()
+            c = c_series.values.astype(float)
+            if np.isnan(c).any():
+                return {'totalSignals': 0, 'message': 'Yeterli veri yok (Close tamami NaN)'}
+        # Non-pozitif fiyat — bolunme/corporate action veya bozuk veri
+        if (c <= 0).any():
+            return {'totalSignals': 0, 'message': 'Gecersiz fiyat verisi (negatif/sifir Close)'}
         h = np.where(np.isnan(h), c, h)
         l = np.where(np.isnan(l), c, l)
         v = np.where(np.isnan(v), 0, v)
@@ -97,8 +106,13 @@ def calc_signal_backtest(hist, lookback_days=252):
             for i in range(period, len(delta)):
                 ag = (ag*(period-1) + g[i]) / period
                 al = (al*(period-1) + lo[i]) / period
-                rs = ag/al if al > 0 else 100.0
-                arr[i+1] = 100.0 - (100.0/(1.0+rs))
+                if al > 0:
+                    rs = ag/al
+                    arr[i+1] = 100.0 - (100.0/(1.0+rs))
+                elif ag > 0:
+                    arr[i+1] = 100.0
+                else:
+                    arr[i+1] = 50.0  # duz fiyat — notr RSI
             return arr
 
         # 2. MACD
@@ -190,6 +204,8 @@ def calc_signal_backtest(hist, lookback_days=252):
 
         for i in range(start_i, end_i):
             ep  = float(c[i])
+            if ep <= 0:
+                continue
             r5  = ((float(c[min(i+5,  n-1)]) - ep) / ep) * 100.0
             r10 = ((float(c[min(i+10, n-1)]) - ep) / ep) * 100.0
             r20 = ((float(c[min(i+20, n-1)]) - ep) / ep) * 100.0
@@ -337,10 +353,11 @@ def calc_signal_backtest(hist, lookback_days=252):
         # Rastgele giris yapilsaydi ortalama 10-gunluk net getiri ne olurdu? (round-trip komisyon dahil)
         baseline_rets = [
             ((float(c[min(i+10, n-1)]) - float(c[i])) / float(c[i])) * 100.0 - FEE_PCT
-            for i in range(start_i, end_i)
+            for i in range(start_i, end_i) if float(c[i]) > 0
         ]
         baseline_avg  = sf(float(np.mean(baseline_rets))) if baseline_rets else 0
-        full_period_r = sf(((float(c[-1]) - float(c[start_i])) / float(c[start_i])) * 100.0 - FEE_PCT)
+        _cs = float(c[start_i])
+        full_period_r = sf(((float(c[-1]) - _cs) / _cs) * 100.0 - FEE_PCT) if _cs > 0 else 0
 
         # ---- BIST RSI Kalibrasyonu ----
         # Hangi RSI esigi BIST'te daha iyi calisıyor?
@@ -353,6 +370,8 @@ def calc_signal_backtest(hist, lookback_days=252):
                 elif rv > hi_th: st = 'sell'
                 else: continue
                 ep_c = float(c[i])
+                if ep_c <= 0:
+                    continue
                 r = ((float(c[min(i+10, n-1)]) - ep_c) / ep_c) * 100.0
                 if st == 'sell':
                     r = -r

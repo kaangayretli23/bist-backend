@@ -59,6 +59,15 @@ def calc_recommendation(hist, indicators, symbol=None):
         l=hist['Low'].values.astype(float)
         v=hist['Volume'].values.astype(float)
         o=hist['Open'].values.astype(float) if 'Open' in hist.columns else c.copy()
+        # Close NaN'lari ffill/bfill ile doldur — sonraki indikatörler bozulmasin
+        if np.isnan(c).any():
+            import pandas as _pd
+            c = _pd.Series(c).ffill().bfill().values.astype(float)
+            if np.isnan(c).any():
+                return {'weekly':{'action':'neutral','confidence':0,'reasons':[],'strategy':'','reason':'Close tamami NaN','indicatorBreakdown':{}}}
+        # Non-pozitif fiyat — bolunme/corporate action veya bozuk veri
+        if (c <= 0).any():
+            return {'weekly':{'action':'neutral','confidence':0,'reasons':[],'strategy':'','reason':'Gecersiz fiyat verisi','indicatorBreakdown':{}}}
         # NaN temizligi: Close ile doldur
         h=np.where(np.isnan(h), c, h)
         l=np.where(np.isnan(l), c, l)
@@ -66,6 +75,8 @@ def calc_recommendation(hist, indicators, symbol=None):
         o=np.where(np.isnan(o), c, o)
         n=len(c)
         cur=float(c[-1])
+        if cur <= 0:
+            return {'weekly':{'action':'neutral','confidence':0,'reasons':[],'strategy':'','reason':'Son fiyat 0','indicatorBreakdown':{}}}
         recommendations={}
 
         # Destek/direnc hesapla (tum periyotlar icin ortak)
@@ -248,7 +259,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                     reasons.append(f'Hacim ortalamanin altinda ({sf(vol_ratio)}x) → Dusuk ilgi, sinyal gucsuslesiyor')
 
             # 6. Momentum (periyoda gore)
-            if len(sc)>=days:
+            if len(sc)>=days and sc[0] > 0:
                 period_return=sf(((c[-1]-sc[0])/sc[0])*100)
                 total_indicators += 1
                 if period_return>10: score+=1.5; buy_indicators+=1; reasons.append(f'{label} getiri: %{period_return} (guclu yukselis)')

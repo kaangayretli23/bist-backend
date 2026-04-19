@@ -179,12 +179,13 @@ def calc_ml_confidence(hist, indicators, recommendation_score, signal_type='buy'
         sr_score = 0
         cp = float(c[-1])
         sr = calc_support_resistance(hist)
-        if signal_type == 'buy' and sr.get('supports'):
-            dist = abs(cp - sr['supports'][0]) / cp * 100
-            sr_score = 10 if dist < 2 else (7 if dist < 5 else 3)
-        elif signal_type == 'sell' and sr.get('resistances'):
-            dist = abs(sr['resistances'][0] - cp) / cp * 100
-            sr_score = 10 if dist < 2 else (7 if dist < 5 else 3)
+        if cp > 0:
+            if signal_type == 'buy' and sr.get('supports'):
+                dist = abs(cp - sr['supports'][0]) / cp * 100
+                sr_score = 10 if dist < 2 else (7 if dist < 5 else 3)
+            elif signal_type == 'sell' and sr.get('resistances'):
+                dist = abs(sr['resistances'][0] - cp) / cp * 100
+                sr_score = 10 if dist < 2 else (7 if dist < 5 else 3)
         score += sr_score; max_score += 10
         factors.append({'name': 'Destek/Direnc', 'value': 'Yakin' if sr_score >= 7 else 'Uzak', 'score': sf(sr_score), 'max': 10})
 

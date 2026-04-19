@@ -3,6 +3,23 @@ BIST Pro - Auto Trading Engine Module
 """
 import threading, traceback, time
 from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+    _TZ_IST = ZoneInfo('Europe/Istanbul')
+except Exception:
+    _TZ_IST = None
+
+
+def _now_ist():
+    """Europe/Istanbul saatinde timezone-aware datetime. Sunucu UTC'de olsa bile BIST takvimine gore."""
+    if _TZ_IST:
+        return datetime.now(_TZ_IST)
+    return datetime.now()
+
+
+def _today_ist():
+    return _now_ist().strftime('%Y-%m-%d')
+
 from flask import jsonify, request
 from config import (
     get_db, USE_POSTGRES, PG_OK, sf, safe_dict,
@@ -84,9 +101,9 @@ def _auto_get_daily_trade_count(user_id):
     maxDailyTrades = gün içinde kullanıcıya uyarı/oto-open limiti (yeni giriş)."""
     try:
         db = get_db()
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = _today_ist()
         if USE_POSTGRES and PG_OK:
-            row = db.execute("SELECT COUNT(*) as cnt FROM auto_trades WHERE user_id=%s AND action='BUY' AND created_at::date=%s::date", (user_id, today)).fetchone()
+            row = db.execute("SELECT COUNT(*) as cnt FROM auto_trades WHERE user_id=%s AND action='BUY' AND (created_at AT TIME ZONE 'Europe/Istanbul')::date=%s::date", (user_id, today)).fetchone()
         else:
             row = db.execute("SELECT COUNT(*) as cnt FROM auto_trades WHERE user_id=? AND action='BUY' AND date(created_at)=?", (user_id, today)).fetchone()
         db.close()
@@ -171,7 +188,7 @@ def _auto_close_position(position_id, close_price, reason):
         qty = float(row['quantity'])
         pnl = (close_price - entry) * qty
         pnl_pct = ((close_price - entry) / entry * 100) if entry > 0 else 0
-        now_str = datetime.now().isoformat()
+        now_str = _now_ist().isoformat()
         db.execute(
             "UPDATE auto_positions SET status='closed', closed_at=?, close_price=?, close_reason=?, pnl=?, pnl_pct=? WHERE id=?",
             (now_str, close_price, reason, round(pnl, 2), round(pnl_pct, 2), position_id)
@@ -408,9 +425,10 @@ def auto_trade_status():
                 except Exception:
                     pass
             pos['currentPrice'] = cur_price
-            if cur_price > 0:
-                pos['pnl'] = round((cur_price - pos['entryPrice']) * pos['quantity'], 2)
-                pos['pnlPct'] = round((cur_price - pos['entryPrice']) / pos['entryPrice'] * 100, 2)
+            entry = pos.get('entryPrice', 0) or 0
+            if cur_price > 0 and entry > 0:
+                pos['pnl'] = round((cur_price - entry) * pos['quantity'], 2)
+                pos['pnlPct'] = round((cur_price - entry) / entry * 100, 2)
                 total_pnl += pos['pnl']
             else:
                 pos['pnl'] = 0
