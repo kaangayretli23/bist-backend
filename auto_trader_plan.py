@@ -6,7 +6,7 @@ auto_trader_engine.py'dan ayrıştırıldı (600 satır kuralı).
 import time
 # Not: config, auto_trader, signals, indicators, signals_core, routes_telegram
 # fonksiyon içinde lazy import edilir (circular/partial load önlemi).
-from auto_trader_risk import _sl_cooldown_check
+from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check
 from signals_market import REGIMES_BEARISH
 
 
@@ -45,6 +45,8 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
             if sym in blocked:
                 continue
             if _sl_cooldown_check(uid, sym, cfg.get('tradeStyle', 'swing')):
+                continue
+            if _reject_cooldown_check(uid, sym):
                 continue
 
             # Plan suresini kontrol et
@@ -167,10 +169,18 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                 continue
             position_cost = quantity * cur_price
 
-            # Sermaye kontrolu
+            # Serbest sermayeye gore quantity'i kirp
             used_capital = sum(p['entryPrice'] * p['quantity'] for p in open_positions)
-            if used_capital + position_cost > cfg['capital']:
-                continue
+            free_capital = max(0, cfg['capital'] - used_capital)
+            if position_cost > free_capital:
+                affordable_qty = int(free_capital / cur_price) if cur_price > 0 else 0
+                if affordable_qty < 1:
+                    print(f"[AUTO-TRADE-PLAN] {sym} atlandi — serbest sermaye {free_capital:.0f} TL (1 lot {cur_price:.2f} TL)")
+                    continue
+                print(f"[AUTO-TRADE-PLAN] {sym} adet kirpildi: {quantity} -> {affordable_qty} "
+                      f"(serbest={free_capital:.0f} TL)")
+                quantity = affordable_qty
+                position_cost = quantity * cur_price
 
             # Gerçek skor/güven hesabı — hardcoded 10/100 yerine calc_recommendation
             plan_score = 0.0

@@ -43,24 +43,32 @@ def _resample_to_tf(hist_daily, tf):
 # =====================================================================
 EMA_PERIODS = [5, 10, 20, 50, 100, 200]
 
+def _wilder_rsi(closes, period):
+    """Wilder yumuşatma ile RSI hesapla (endüstri standardı)."""
+    c = np.array(closes, dtype=float)
+    delta = np.diff(c)
+    gains  = np.where(delta > 0,  delta, 0.0)
+    losses = np.where(delta < 0, -delta, 0.0)
+    # Wilder seed: SMA of first period values
+    avg_g = float(np.mean(gains[:period]))
+    avg_l = float(np.mean(losses[:period]))
+    for i in range(period, len(delta)):
+        avg_g = (avg_g * (period - 1) + gains[i])  / period
+        avg_l = (avg_l * (period - 1) + losses[i]) / period
+    return 100.0 if avg_l == 0 else float(100 - 100 / (1 + avg_g / avg_l))
+
 def calc_rsi(closes, period=14):
-    if len(closes)<period+1: return {'name':'RSI','value':50.0,'signal':'neutral'}
-    d=np.diff(closes)
-    ag=float(np.mean(np.where(d>0,d,0)[-period:]))
-    al=float(np.mean(np.where(d<0,-d,0)[-period:]))
-    rsi=100.0 if al==0 else sf(100-100/(1+ag/al))
-    return {'name':'RSI','value':rsi,'signal':'buy' if rsi<30 else ('sell' if rsi>70 else 'neutral')}
+    if len(closes) < period + 1: return {'name': 'RSI', 'value': 50.0, 'signal': 'neutral'}
+    rsi = sf(_wilder_rsi(closes, period))
+    return {'name': 'RSI', 'value': rsi, 'signal': 'buy' if rsi < 30 else ('sell' if rsi > 70 else 'neutral')}
 
 def calc_rsi_single(closes, period=14):
-    if len(closes)<period+1: return None
-    d=np.diff(closes)
-    ag=float(np.mean(np.where(d>0,d,0)[-period:]))
-    al=float(np.mean(np.where(d<0,-d,0)[-period:]))
-    return 100.0 if al==0 else sf(100-100/(1+ag/al))
+    if len(closes) < period + 1: return None
+    return sf(_wilder_rsi(closes, period))
 
-def calc_macd(closes):
-    if len(closes)<26: return {'name':'MACD','macd':0,'signal':0,'histogram':0,'signalType':'neutral'}
-    s=pd.Series(list(closes),dtype=float); ml=s.ewm(span=12).mean()-s.ewm(span=26).mean(); sl=ml.ewm(span=9).mean()
+def calc_macd(closes, fast=12, slow=26, signal=9):
+    if len(closes)<slow: return {'name':'MACD','macd':0,'signal':0,'histogram':0,'signalType':'neutral'}
+    s=pd.Series(list(closes),dtype=float); ml=s.ewm(span=fast).mean()-s.ewm(span=slow).mean(); sl=ml.ewm(span=signal).mean()
     mv,sv=sf(ml.iloc[-1]),sf(sl.iloc[-1])
     return {'name':'MACD','macd':mv,'signal':sv,'histogram':sf(mv-sv),'signalType':'buy' if mv>sv else ('sell' if mv<sv else 'neutral')}
 
@@ -71,14 +79,14 @@ def calc_macd_history(closes):
 
 def calc_bollinger(closes, cp, period=20):
     if len(closes)<period: return {'name':'Bollinger','upper':0,'middle':0,'lower':0,'signal':'neutral','bandwidth':0}
-    r=closes[-period:]; sma,std=float(np.mean(r)),float(np.std(r))
+    r=closes[-period:]; sma,std=float(np.mean(r)),float(np.std(r, ddof=1))
     u,m,lo=sf(sma+2*std),sf(sma),sf(sma-2*std)
     return {'name':'Bollinger','upper':u,'middle':m,'lower':lo,'bandwidth':sf((u-lo)/m*100 if m else 0),'signal':'buy' if float(cp)<lo else ('sell' if float(cp)>u else 'neutral')}
 
 def calc_bollinger_history(closes, period=20):
     r=[]
     for i in range(period,len(closes)):
-        w=closes[i-period:i]; sma,std=float(np.mean(w)),float(np.std(w))
+        w=closes[i-period:i]; sma,std=float(np.mean(w)),float(np.std(w, ddof=1))
         r.append({'upper':sf(sma+2*std),'middle':sf(sma),'lower':sf(sma-2*std)})
     return r
 
@@ -108,10 +116,20 @@ def calc_ema_history(closes):
     return r
 
 def calc_stochastic(closes, highs, lows, period=14):
-    if len(closes)<period: return {'name':'Stochastic','k':50,'d':50,'signal':'neutral'}
-    hi,lo,cur=float(np.max(highs[-period:])),float(np.min(lows[-period:])),float(closes[-1])
-    k=sf(((cur-lo)/(hi-lo))*100 if hi!=lo else 50)
-    return {'name':'Stochastic','k':k,'d':k,'signal':'buy' if k<20 else ('sell' if k>80 else 'neutral')}
+    n = len(closes)
+    if n < period: return {'name': 'Stochastic', 'k': 50, 'd': 50, 'signal': 'neutral'}
+    # Compute %K for last min(3, available) bars → %D = 3-bar SMA of %K
+    num_d = min(3, n - period + 1)
+    k_vals = []
+    for lb in range(num_d - 1, -1, -1):  # oldest first
+        end = n - lb
+        hi  = float(np.max(highs[end - period:end]))
+        lo  = float(np.min(lows[end - period:end]))
+        cur = float(closes[end - 1])
+        k_vals.append(((cur - lo) / (hi - lo)) * 100 if hi != lo else 50.0)
+    k = sf(k_vals[-1])
+    d = sf(float(np.mean(k_vals)))
+    return {'name': 'Stochastic', 'k': k, 'd': d, 'signal': 'buy' if k < 20 else ('sell' if k > 80 else 'neutral')}
 
 def calc_stochastic_history(closes, highs, lows, period=14):
     r=[]
@@ -135,21 +153,40 @@ def calc_atr(highs, lows, closes, period=14):
     return {'name':'ATR','value':atr,'pct':sf(atr/float(closes[-1])*100 if closes[-1] else 0),'signal':'neutral'}
 
 def calc_adx(highs, lows, closes, period=14):
-    n=len(closes)
-    if n<period+1: return {'name':'ADX','value':25,'plusDI':0,'minusDI':0,'signal':'neutral'}
-    tr,pdm,mdm=[],[],[]
-    for i in range(1,n):
-        hv,lv,phv,plv,pcv=float(highs[i]),float(lows[i]),float(highs[i-1]),float(lows[i-1]),float(closes[i-1])
-        tr.append(max(hv-lv,abs(hv-pcv),abs(lv-pcv)))
-        um,dm=hv-phv,plv-lv
-        pdm.append(um if um>dm and um>0 else 0); mdm.append(dm if dm>um and dm>0 else 0)
-    if len(tr)<period: return {'name':'ADX','value':25,'plusDI':0,'minusDI':0,'signal':'neutral'}
-    atr_s,pdm_s,mdm_s=float(np.mean(tr[:period])),float(np.mean(pdm[:period])),float(np.mean(mdm[:period]))
-    for i in range(period,len(tr)):
-        atr_s=(atr_s*(period-1)+tr[i])/period; pdm_s=(pdm_s*(period-1)+pdm[i])/period; mdm_s=(mdm_s*(period-1)+mdm[i])/period
-    pdi=sf((pdm_s/atr_s)*100 if atr_s else 0); mdi=sf((mdm_s/atr_s)*100 if atr_s else 0)
-    ds=pdi+mdi; adx=sf(abs(pdi-mdi)/ds*100 if ds else 0)
-    return {'name':'ADX','value':adx,'plusDI':pdi,'minusDI':mdi,'signal':'buy' if pdi>mdi and adx>25 else ('sell' if mdi>pdi and adx>25 else 'neutral')}
+    n = len(closes)
+    if n < period + 1: return {'name': 'ADX', 'value': 25, 'plusDI': 0, 'minusDI': 0, 'signal': 'neutral'}
+    tr, pdm, mdm = [], [], []
+    for i in range(1, n):
+        hv, lv, pcv = float(highs[i]), float(lows[i]), float(closes[i-1])
+        phv, plv = float(highs[i-1]), float(lows[i-1])
+        tr.append(max(hv - lv, abs(hv - pcv), abs(lv - pcv)))
+        um, dm = hv - phv, plv - lv
+        pdm.append(um if um > dm and um > 0 else 0)
+        mdm.append(dm if dm > um and dm > 0 else 0)
+    if len(tr) < period: return {'name': 'ADX', 'value': 25, 'plusDI': 0, 'minusDI': 0, 'signal': 'neutral'}
+    # Wilder's smoothed TR, +DM, -DM (Wilder's sum method)
+    atr_s = float(sum(tr[:period]))
+    pdm_s = float(sum(pdm[:period]))
+    mdm_s = float(sum(mdm[:period]))
+    pdi = (pdm_s / atr_s * 100) if atr_s else 0
+    mdi = (mdm_s / atr_s * 100) if atr_s else 0
+    ds = pdi + mdi
+    dx_vals = [abs(pdi - mdi) / ds * 100 if ds else 0]
+    for i in range(period, len(tr)):
+        atr_s = atr_s - atr_s / period + tr[i]
+        pdm_s = pdm_s - pdm_s / period + pdm[i]
+        mdm_s = mdm_s - mdm_s / period + mdm[i]
+        pdi = (pdm_s / atr_s * 100) if atr_s else 0
+        mdi = (mdm_s / atr_s * 100) if atr_s else 0
+        ds = pdi + mdi
+        dx_vals.append(abs(pdi - mdi) / ds * 100 if ds else 0)
+    # ADX = Wilder's smooth of DX series
+    adx = float(np.mean(dx_vals[:period])) if len(dx_vals) >= period else float(np.mean(dx_vals))
+    for i in range(period, len(dx_vals)):
+        adx = (adx * (period - 1) + dx_vals[i]) / period
+    pdi = sf(pdi); mdi = sf(mdi); adx = sf(adx)
+    return {'name': 'ADX', 'value': adx, 'plusDI': pdi, 'minusDI': mdi,
+            'signal': 'buy' if pdi > mdi and adx > 25 else ('sell' if mdi > pdi and adx > 25 else 'neutral')}
 
 def calc_obv(closes, volumes):
     if len(closes)<10: return {'name':'OBV','value':0,'trend':'neutral','signal':'neutral'}
@@ -185,7 +222,7 @@ def calc_mfi(closes, highs, lows, volumes, period=14):
         mf=tp[i]*float(volumes[i])
         if tp[i]>tp[i-1]: pmf+=mf
         else: nmf+=mf
-    mfi=sf(100-(100/(1+pmf/nmf)) if nmf>0 else 100)
+    mfi=sf(100-(100/(1+pmf/nmf)) if nmf>0 else (50 if pmf==0 else 100))
     sig='buy' if mfi<20 else ('sell' if mfi>80 else 'neutral')
     return {'name':'MFI','value':mfi,'signal':sig}
 
@@ -213,22 +250,31 @@ def calc_ichimoku(closes, highs, lows):
     return {'name':'Ichimoku','tenkan':tenkan,'kijun':kijun,'senkouA':ssa,'senkouB':ssb,'signal':sig}
 
 def calc_psar(closes, highs, lows, af_start=0.02, af_step=0.02, af_max=0.2):
-    n=len(closes)
-    if n<5: return {'name':'Parabolic SAR','value':0,'trend':'neutral','signal':'neutral'}
-    bull=True; af=af_start; ep=float(highs[0]); sar=float(lows[0])
-    for i in range(1,n):
-        hi,lo,cl=float(highs[i]),float(lows[i]),float(closes[i])
-        prev_sar=sar; sar=prev_sar+af*(ep-prev_sar)
+    n = len(closes)
+    if n < 5: return {'name': 'Parabolic SAR', 'value': 0, 'trend': 'neutral', 'signal': 'neutral'}
+    bull = True; af = af_start; ep = float(highs[0]); sar = float(lows[0])
+    for i in range(1, n):
+        hi, lo = float(highs[i]), float(lows[i])
+        prev_sar = sar
+        sar = prev_sar + af * (ep - prev_sar)
         if bull:
-            if lo<sar: bull=False; sar=ep; ep=lo; af=af_start
+            # SAR must not be above the two prior lows
+            sar = min(sar, float(lows[i-1]))
+            if i >= 2: sar = min(sar, float(lows[i-2]))
+            if lo < sar:
+                bull = False; sar = ep; ep = lo; af = af_start
             else:
-                if hi>ep: ep=hi; af=min(af+af_step,af_max)
+                if hi > ep: ep = hi; af = min(af + af_step, af_max)
         else:
-            if hi>sar: bull=True; sar=ep; ep=hi; af=af_start
+            # SAR must not be below the two prior highs
+            sar = max(sar, float(highs[i-1]))
+            if i >= 2: sar = max(sar, float(highs[i-2]))
+            if hi > sar:
+                bull = True; sar = ep; ep = hi; af = af_start
             else:
-                if lo<ep: ep=lo; af=min(af+af_step,af_max)
-    trend='up' if bull else 'down'
-    return {'name':'Parabolic SAR','value':sf(sar),'trend':trend,'signal':'buy' if bull else 'sell'}
+                if lo < ep: ep = lo; af = min(af + af_step, af_max)
+    trend = 'up' if bull else 'down'
+    return {'name': 'Parabolic SAR', 'value': sf(sar), 'trend': trend, 'signal': 'buy' if bull else 'sell'}
 
 def calc_roc(closes, period=12):
     if len(closes)<period+1: return {'name':'ROC','value':0,'signal':'neutral'}
@@ -240,8 +286,12 @@ def calc_roc(closes, period=12):
 def calc_aroon(highs, lows, period=25):
     if len(highs)<period+1: return {'name':'Aroon','up':50,'down':50,'signal':'neutral'}
     h_slice=list(highs[-period-1:]); l_slice=list(lows[-period-1:])
-    up=sf((h_slice.index(max(h_slice))/period)*100)
-    down=sf((l_slice.index(min(l_slice))/period)*100)
+    # En son (en yeni) tepe/dip konumunu kullan — aynı değer tekrar ederse en sonki sayılır
+    hi_val=max(h_slice); lo_val=min(l_slice)
+    hi_idx=len(h_slice)-1 - h_slice[::-1].index(hi_val)
+    lo_idx=len(l_slice)-1 - l_slice[::-1].index(lo_val)
+    up=sf((hi_idx/period)*100)
+    down=sf((lo_idx/period)*100)
     if up>70 and down<30: sig='buy'
     elif down>70 and up<30: sig='sell'
     else: sig='neutral'
@@ -250,9 +300,12 @@ def calc_aroon(highs, lows, period=25):
 def calc_trix(closes, period=15):
     if len(closes)<period*3: return {'name':'TRIX','value':0,'signal':'neutral'}
     def ema_arr(data, p):
-        result=[float(data[0])]; k=2/(p+1)
-        for i in range(1,len(data)):
-            result.append(float(data[i])*k + result[-1]*(1-k))
+        # Seed with SMA of first p values (industry standard)
+        if len(data) < p: return [float(data[0])] * len(data)
+        k = 2 / (p + 1)
+        result = [float(np.mean(data[:p]))]
+        for i in range(1, len(data)):
+            result.append(float(data[i]) * k + result[-1] * (1 - k))
         return result
     e1=ema_arr(closes,period); e2=ema_arr(e1,period); e3=ema_arr(e2,period)
     if len(e3)<2 or abs(e3[-2])<1e-9: return {'name':'TRIX','value':0,'signal':'neutral'}
@@ -272,7 +325,14 @@ def calc_dmi(highs, lows, closes, period=14):
         nDM.append(down_move if down_move>up_move and down_move>0 else 0)
         tr_list.append(max(hi-lo,abs(hi-pcl),abs(lo-pcl)))
     if len(pDM)<period: return {'name':'DMI','diPlus':0,'diMinus':0,'adx':0,'signal':'neutral'}
-    atr=np.mean(tr_list[-period:]); s_pDM=np.mean(pDM[-period:]); s_nDM=np.mean(nDM[-period:])
+    # Wilder's smoothed sum (same method as calc_adx)
+    atr   = float(sum(tr_list[:period]))
+    s_pDM = float(sum(pDM[:period]))
+    s_nDM = float(sum(nDM[:period]))
+    for i in range(period, len(tr_list)):
+        atr   = atr   - atr   / period + tr_list[i]
+        s_pDM = s_pDM - s_pDM / period + pDM[i]
+        s_nDM = s_nDM - s_nDM / period + nDM[i]
     diP=sf((s_pDM/atr)*100 if atr>0 else 0); diM=sf((s_nDM/atr)*100 if atr>0 else 0)
     dx=abs(diP-diM)/(diP+diM)*100 if (diP+diM)>0 else 0
     sig='buy' if diP>diM and dx>20 else ('sell' if diM>diP and dx>20 else 'neutral')

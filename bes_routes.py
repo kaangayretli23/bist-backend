@@ -8,10 +8,10 @@ from bes_data import (
     _classify_fund, _fetch_tefas_funds, _fetch_tefas_compare,
     _fetch_tefas_allocation, _fetch_tefas_history_chunked,
     _get_tefas_field, _parse_fund_row, _parse_compare_row, _parse_tefas_date,
-    _analyze_fund_performance, _bes_optimize, _fund_reasoning, _simulate_bes,
     _bes_bg_analyze_top, _bes_cache, _bes_cache_lock, BES_CACHE_TTL,
     BES_FUND_GROUPS, _tefas_semaphore,
 )
+from bes_analysis import _analyze_fund_performance, _bes_optimize, _fund_reasoning, _simulate_bes
 import bes_data
 import time, threading, traceback, json
 from datetime import datetime, timedelta

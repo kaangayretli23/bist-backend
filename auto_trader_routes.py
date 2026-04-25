@@ -14,7 +14,7 @@ from config import (
 from auth_middleware import require_user
 from auto_trader import (
     _auto_get_config, _auto_get_open_positions, _auto_get_daily_trade_count,
-    _auto_log_trade, _auto_close_position, _row_get,
+    _auto_log_trade, _auto_close_position, _auto_partial_close, _row_get,
 )
 
 
@@ -44,7 +44,8 @@ def auto_trade_config():
                 min_score=?, min_confidence=?, trade_style=?,
                 stop_loss_pct=?, take_profit_pct=?, trailing_stop=?, trailing_pct=?,
                 allowed_symbols=?, blocked_symbols=?, max_daily_trades=?,
-                panic_sell_enabled=?, panic_drop_pct=?, panic_window_min=?
+                panic_sell_enabled=?, panic_drop_pct=?, panic_window_min=?,
+                commission_pct=?, bsmv_pct=?
                 WHERE user_id=?""",
                 (int(data.get('enabled', existing['enabled'])),
                  float(data.get('capital', existing['capital'])),
@@ -63,6 +64,8 @@ def auto_trade_config():
                  int(data.get('panicSellEnabled', _row_get(existing, 'panic_sell_enabled', 0))),
                  float(data.get('panicDropPct', _row_get(existing, 'panic_drop_pct', 2.0) or 2.0)),
                  int(data.get('panicWindowMin', _row_get(existing, 'panic_window_min', 5) or 5)),
+                 float(data.get('commissionPct', _row_get(existing, 'commission_pct', 0) or 0)),
+                 float(data.get('bsmvPct', _row_get(existing, 'bsmv_pct', 5) or 5)),
                  uid))
         else:
             db.execute("""INSERT INTO auto_config
@@ -70,8 +73,9 @@ def auto_trade_config():
                  min_score, min_confidence, trade_style,
                  stop_loss_pct, take_profit_pct, trailing_stop, trailing_pct,
                  allowed_symbols, blocked_symbols, max_daily_trades,
-                 panic_sell_enabled, panic_drop_pct, panic_window_min)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 panic_sell_enabled, panic_drop_pct, panic_window_min,
+                 commission_pct, bsmv_pct)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (uid,
                  int(data.get('enabled', 0)),
                  float(data.get('capital', 100000)),
@@ -89,10 +93,53 @@ def auto_trade_config():
                  int(data.get('maxDailyTrades', 3)),
                  int(data.get('panicSellEnabled', 0)),
                  float(data.get('panicDropPct', 2.0)),
-                 int(data.get('panicWindowMin', 5))))
+                 int(data.get('panicWindowMin', 5)),
+                 float(data.get('commissionPct', 0)),
+                 float(data.get('bsmvPct', 5))))
         db.commit()
         db.close()
         return jsonify({'success': True, 'message': 'Konfigürasyon kaydedildi'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/auto-trade/capital/adjust', methods=['POST'])
+@require_user
+def auto_trade_capital_adjust():
+    """Oto-trade sermayesini delta kadar artir/azalt. Diger ayarlar korunur.
+    Body: { userId, delta (TL; pozitif=ekle, negatif=cikar), mode? ('add'|'set') }
+    mode='set' verilirse delta yeni capital olur.
+    """
+    try:
+        data = request.json or {}
+        uid = data.get('userId', '')
+        if not uid:
+            return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+        try:
+            delta = float(data.get('delta', 0))
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Gecersiz delta'}), 400
+        mode = (data.get('mode') or 'add').lower()
+
+        db = get_db()
+        existing = db.execute("SELECT capital FROM auto_config WHERE user_id=?", (uid,)).fetchone()
+        if not existing:
+            db.close()
+            return jsonify({'success': False, 'error': 'Oto-trade config bulunamadi'}), 404
+        old = float(existing['capital'])
+        new = delta if mode == 'set' else old + delta
+        if new < 0:
+            db.close()
+            return jsonify({'success': False, 'error': f'Sermaye negatif olamaz (sonuc: {new:.0f})'}), 400
+        db.execute("UPDATE auto_config SET capital=? WHERE user_id=?", (new, uid))
+        db.commit()
+        db.close()
+        print(f"[AUTO-TRADE] {uid} sermaye: {old:.0f} -> {new:.0f} TL ({mode})")
+        return jsonify({
+            'success': True,
+            'oldCapital': old, 'newCapital': new,
+            'message': f'Sermaye güncellendi: {old:.0f} → {new:.0f} TL',
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -202,7 +249,9 @@ def auto_trade_status():
                 'totalTrades': total_trades,
             },
             'recentClosed': [{
+                'id': int(r['id']),
                 'symbol': r['symbol'], 'entryPrice': float(r['entry_price']),
+                'quantity': float(r['quantity']),
                 'closePrice': float(r['close_price'] or 0), 'pnl': float(r['pnl'] or 0),
                 'pnlPct': float(r['pnl_pct'] or 0), 'reason': r['close_reason'],
                 'closedAt': r['closed_at'],
@@ -365,109 +414,3 @@ def auto_trade_reset():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-
-@app.route('/api/auto-trade/close', methods=['POST'])
-@require_user
-def auto_trade_manual_close():
-    """Manuel pozisyon kapatma"""
-    try:
-        data = request.json or {}
-        uid = data.get('userId', '')
-        pos_id = int(data.get('positionId', 0))
-        if not uid or not pos_id:
-            return jsonify({'success': False, 'error': 'userId ve positionId gerekli'}), 400
-
-        db = get_db()
-        row = db.execute("SELECT * FROM auto_positions WHERE id=? AND user_id=? AND status='open'", (pos_id, uid)).fetchone()
-        db.close()
-        if not row:
-            return jsonify({'success': False, 'error': 'Pozisyon bulunamadi'}), 404
-
-        sym = row['symbol']
-        stock = _cget(_stock_cache, sym)
-        cur_price = float(stock.get('price', 0)) if stock else float(row['entry_price'])
-        _auto_close_position(pos_id, cur_price, "Manuel kapanis")
-        _auto_log_trade(uid, sym, 'SELL_MANUAL', cur_price, float(row['quantity']),
-                       "Kullanici tarafindan manuel kapatildi", 0, 0, pos_id)
-        return jsonify({'success': True, 'message': f'{sym} pozisyonu kapatildi @ {cur_price:.2f}'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/auto-trade/position/edit', methods=['POST'])
-@require_user
-def auto_trade_edit_position():
-    """Açık pozisyonun giriş fiyatı/adedini manuel düzelt (Midas'ta gerçekleşen doluma göre).
-    Body: { userId, positionId, entryPrice?, quantity?, adjustSlTp? (bool) }
-    adjustSlTp True ise SL/TP/trailing/highest orantılı kaydırılır.
-    """
-    try:
-        data = request.json or {}
-        uid = data.get('userId', '')
-        pos_id = int(data.get('positionId', 0))
-        if not uid or not pos_id:
-            return jsonify({'success': False, 'error': 'userId ve positionId gerekli'}), 400
-
-        db = get_db()
-        row = db.execute(
-            "SELECT * FROM auto_positions WHERE id=? AND user_id=? AND status='open'",
-            (pos_id, uid)
-        ).fetchone()
-        if not row:
-            db.close()
-            return jsonify({'success': False, 'error': 'Açık pozisyon bulunamadı'}), 404
-
-        old_entry = float(row['entry_price'])
-        old_qty   = float(row['quantity'])
-        new_entry = float(data.get('entryPrice', old_entry))
-        new_qty   = float(data.get('quantity', old_qty))
-        adjust    = bool(data.get('adjustSlTp', True))
-
-        if new_entry <= 0 or new_qty <= 0:
-            db.close()
-            return jsonify({'success': False, 'error': 'Geçersiz fiyat veya adet'}), 400
-
-        new_sl = float(row['stop_loss'] or 0)
-        new_tp1 = float(row['take_profit1'] or 0)
-        new_tp2 = float(row['take_profit2'] or 0)
-        new_tp3 = float(row['take_profit3'] or 0)
-        new_trail = float(row['trailing_stop'] or 0)
-        new_high = float(row['highest_price'] or new_entry)
-
-        if adjust and old_entry > 0 and abs(new_entry - old_entry) > 1e-6:
-            ratio = new_entry / old_entry
-            new_sl    = round(new_sl * ratio, 2)    if new_sl > 0    else new_sl
-            new_tp1   = round(new_tp1 * ratio, 2)   if new_tp1 > 0   else new_tp1
-            new_tp2   = round(new_tp2 * ratio, 2)   if new_tp2 > 0   else new_tp2
-            new_tp3   = round(new_tp3 * ratio, 2)   if new_tp3 > 0   else new_tp3
-            new_trail = round(new_trail * ratio, 2) if new_trail > 0 else new_trail
-            # highest_price: yeni giriş fiyatına sıfırla (gelecek trailing güncellemelerine referans)
-            new_high = new_entry
-
-        db.execute(
-            """UPDATE auto_positions SET
-               entry_price=?, quantity=?, stop_loss=?,
-               take_profit1=?, take_profit2=?, take_profit3=?,
-               trailing_stop=?, highest_price=?
-               WHERE id=?""",
-            (new_entry, new_qty, new_sl, new_tp1, new_tp2, new_tp3, new_trail, new_high, pos_id)
-        )
-        db.commit()
-        sym = row['symbol']
-        db.close()
-
-        _auto_log_trade(
-            uid, sym, 'EDIT', new_entry, new_qty,
-            f"Manuel düzelt: entry {old_entry:.2f}→{new_entry:.2f}, qty {old_qty}→{new_qty}"
-            + (f", SL/TP orantılı kaydırıldı ({ratio:.4f})" if adjust and old_entry > 0 and abs(new_entry - old_entry) > 1e-6 else ""),
-            0, 0, pos_id
-        )
-        return jsonify({'success': True, 'message': f'{sym} güncellendi',
-                        'position': {
-                            'entryPrice': new_entry, 'quantity': new_qty,
-                            'stopLoss': new_sl, 'takeProfit1': new_tp1,
-                            'takeProfit2': new_tp2, 'takeProfit3': new_tp3,
-                            'trailingStop': new_trail, 'highestPrice': new_high,
-                        }})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500

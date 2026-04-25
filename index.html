@@ -1548,7 +1548,14 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
 
   <!-- Acik Pozisyonlar -->
   <div class="card mb-16">
-    <div class="section-title mb-12"><span class="icon">📊</span> Acik Pozisyonlar</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="section-title" style="margin:0;"><span class="icon">📊</span> Acik Pozisyonlar</div>
+      <div style="display:flex;gap:6px;">
+        <button onclick="openCapitalAdjustModal()" title="Sermayeyi hizlica artir/azalt (diger ayarlar korunur)" style="background:#9b59b6;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">💰 Bakiye</button>
+        <button onclick="openReconcileModal()" title="Oto-trade pozisyonlarini manuel portfoy ile karsilastir" style="background:var(--blue);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">🔍 Senkron Kontrol</button>
+        <button onclick="openAddPositionModal()" title="Midas'tan aldiginiz bir hisseyi sisteme ekleyin" style="background:var(--green);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">➕ Pozisyon Ekle</button>
+      </div>
+    </div>
     <div id="atPositions" style="font-size:13px;color:var(--text-dim);">Veri bekleniyor...</div>
   </div>
 
@@ -2407,15 +2414,20 @@ async function api(path, options = {}) {
     });
     clearTimeout(timer);
     // 401: backend auth_middleware 'Oturum gecersiz/eksik' → localStorage temizle, uyari goster
+    // Solo mode'da auth bypass aktif — 401 gelirse de oturumu silme
     if (res.status === 401) {
-      try { localStorage.removeItem('bistUser'); } catch(_) {}
-      if (typeof currentUser !== 'undefined') currentUser = null;
-      if (!window.__auth401Shown) {
-        window.__auth401Shown = true;
-        setTimeout(() => { window.__auth401Shown = false; }, 10000);
-        if (typeof toast === 'function') toast('Oturum süresi doldu, tekrar giris yapin', 'error');
+      if (!window.__soloMode) {
+        try { localStorage.removeItem('bistUser'); } catch(_) {}
+        if (typeof currentUser !== 'undefined') currentUser = null;
+        if (!window.__auth401Shown) {
+          window.__auth401Shown = true;
+          setTimeout(() => { window.__auth401Shown = false; }, 10000);
+          if (typeof toast === 'function') toast('Oturum süresi doldu, tekrar giris yapin', 'error');
+        }
+        return { error: 'Oturum gecersiz — tekrar giris yapin', status: 401, needsLogin: true };
       }
-      return { error: 'Oturum gecersiz — tekrar giris yapin', status: 401, needsLogin: true };
+      // Solo mode: 401 yine de hata sayilir ama login modal acmayalim
+      return { error: 'Yetkisiz istek', status: 401 };
     }
     const text = await res.text();
     try {
@@ -5601,6 +5613,28 @@ function _safeParseUser() {
 let currentUser = _safeParseUser();
 let authMode = 'login';
 
+// =============================================================================
+// SOLO MODE — tek-kullanicili ev kullanimi: backend SOLO_MODE=1 ise otomatik giris
+// =============================================================================
+window.__soloMode = false;
+async function initSoloMode() {
+  try {
+    const res = await fetch(API_BASE + '/auth/solo-info', { headers: { 'Content-Type': 'application/json' } });
+    if (!res.ok) return;
+    const info = await res.json();
+    if (!info || !info.solo) return;
+    window.__soloMode = true;
+    currentUser = {
+      userId: info.userId || 'kaan',
+      username: info.username || 'Kaan',
+      email: ''
+    };
+    try { localStorage.setItem('bistUser', JSON.stringify(currentUser)); } catch(_) {}
+    // Solo modda login butonu yerine kullanici adi gosterilsin
+    updateUserUI();
+  } catch(_) { /* offline veya solo kapali — sessiz gec */ }
+}
+
 function showLogin() {
   document.getElementById('loginModal').style.display = 'flex';
   switchAuthTab('login');
@@ -5719,6 +5753,7 @@ function refreshActivePage() {
 
 // Uygulama baslarken: localStorage'da kullanici varsa, DB'de hala var mi kontrol et
 async function validateSession() {
+  if (window.__soloMode) return;  // solo'da auth check anlamsiz
   if (!currentUser) return;
   try {
     const data = await api('/auth/check?userId=' + currentUser.userId);
@@ -5732,6 +5767,10 @@ async function validateSession() {
 }
 
 function logout() {
+  if (window.__soloMode) {
+    if (typeof toast === 'function') toast('Solo mode aktif — cikis kapali', 'info');
+    return;
+  }
   currentUser = null;
   localStorage.removeItem('bistUser');
   updateUserUI();
@@ -7112,7 +7151,8 @@ async function loadAutoTrade() {
             <div style="text-align:right;">
               <span style="font-weight:600;color:${pnlColor};">${pnlSign}${p.pnl.toFixed(2)} TL (${pnlSign}${p.pnlPct.toFixed(1)}%)</span>
               <button onclick="openEditPositionModal(${p.id}, ${p.entryPrice}, ${p.quantity})" title="Giriş fiyatı/adet düzelt" style="margin-left:6px;background:var(--orange);color:white;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:11px;">✏️</button>
-              <button onclick="closePosition(${p.id})" style="margin-left:4px;background:var(--red);color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:11px;">Kapat</button>
+              <button onclick="closePosition(${p.id})" title="Piyasa fiyatından tam kapat" style="margin-left:4px;background:var(--red);color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:11px;">Kapat</button>
+              <button onclick="openCustomCloseModal(${p.id}, '${p.symbol}', ${p.quantity}, ${p.currentPrice > 0 ? p.currentPrice : p.entryPrice})" title="Adet ve fiyat belirterek kapat" style="margin-left:4px;background:var(--purple, #9333ea);color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:11px;">✍️ Düzenle</button>
             </div>
           </div>
           <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
@@ -7153,9 +7193,10 @@ async function loadAutoTrade() {
       document.getElementById('atClosed').innerHTML = closed.map(c => {
         const pnlColor = c.pnl >= 0 ? 'var(--green)' : 'var(--red)';
         const pnlSign = c.pnl >= 0 ? '+' : '';
+        const reopenBtn = c.id ? `<button onclick="reopenPosition(${c.id}, '${c.symbol}')" title="Yanlislikla kapandıysa geri al" style="background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:2px 6px;cursor:pointer;font-size:10px;margin-left:6px;">↩️ Geri Al</button>` : '';
         return `<div style="padding:7px 0;border-bottom:1px solid var(--border);font-size:12px;">
           <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div><strong>${c.symbol}</strong> ${c.entryPrice.toFixed(2)} → ${c.closePrice.toFixed(2)}</div>
+            <div><strong>${c.symbol}</strong> ${c.entryPrice.toFixed(2)} → ${c.closePrice.toFixed(2)}${reopenBtn}</div>
             <div style="font-size:10px;color:var(--text-dim);">🕐 ${_fmtDt(c.closedAt)}</div>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px;">
@@ -7343,14 +7384,347 @@ async function closePosition(posId) {
   } catch(e) { console.error('Pozisyon kapatma hatasi:', e); }
 }
 
+async function reopenPosition(posId, symbol) {
+  const uid = _getUid();
+  if (!uid) return;
+  if (!confirm(`${symbol} pozisyonunu geri acmak istediginize emin misiniz?\n\nGercekten Midas'ta satmadıysaniz bu islemi yapin. Pozisyon aynı giriş fiyatı/adet/SL/TP ile yeniden aktif olacak.`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/auto-trade/reopen`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ userId: uid, positionId: posId })
+    });
+    const data = await res.json();
+    if (data.success) loadAutoTrade();
+    else alert(data.error || 'Hata');
+  } catch(e) { console.error('Pozisyon geri alma hatasi:', e); alert('İstek başarısız'); }
+}
+
+// Sermaye hizli ayar — diger ayarlara dokunmadan capital'i artir/azalt
+async function openCapitalAdjustModal() {
+  const uid = (window.currentUser && currentUser.userId) || '';
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
+  let curCapital = 0;
+  try {
+    const r = await fetch(`/api/auto-trade/config?userId=${encodeURIComponent(uid)}`);
+    const js = await r.json();
+    if (js.success && js.config) curCapital = Number(js.config.capital) || 0;
+  } catch(_){}
+  let modal = document.getElementById('capitalAdjustModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'capitalAdjustModal';
+    modal.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;align-items:center;justify-content:center;';
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `
+    <div style="background:var(--bg-card);color:var(--text);border-radius:8px;padding:20px;max-width:400px;width:94%;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <div style="font-weight:700;font-size:16px;">💰 Bakiye Ayarla</div>
+        <button onclick="document.getElementById('capitalAdjustModal').style.display='none';" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
+      </div>
+      <div style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">
+        Mevcut sermaye: <b style="color:var(--text);">${curCapital.toLocaleString('tr-TR')} TL</b>
+      </div>
+      <label style="font-size:12px;color:var(--text-dim);">Tutar (TL)</label>
+      <input id="capAdjAmount" type="number" step="1" placeholder="Ornek: 500" style="width:100%;padding:8px;margin:4px 0 12px;background:var(--bg-input,#2a2a2a);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+      <label style="font-size:12px;color:var(--text-dim);">İşlem</label>
+      <select id="capAdjMode" style="width:100%;padding:8px;margin:4px 0 12px;background:var(--bg-input,#2a2a2a);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+        <option value="add">➕ Bakiyeye ekle (para yatirdim)</option>
+        <option value="sub">➖ Bakiyeden cikar (para cektim)</option>
+        <option value="set">🔄 Toplam bakiyeyi belirle</option>
+      </select>
+      <div id="capAdjPreview" style="font-size:12px;color:var(--text-dim);margin-bottom:12px;"></div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="document.getElementById('capitalAdjustModal').style.display='none';" style="flex:1;padding:8px;background:var(--border);color:var(--text);border:none;border-radius:6px;cursor:pointer;">İptal</button>
+        <button onclick="submitCapitalAdjust(${curCapital})" style="flex:1;padding:8px;background:#9b59b6;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Uygula</button>
+      </div>
+    </div>`;
+  modal.style.display = 'flex';
+  // Canli onizleme
+  const amt = document.getElementById('capAdjAmount');
+  const mode = document.getElementById('capAdjMode');
+  const prev = document.getElementById('capAdjPreview');
+  const update = () => {
+    const v = parseFloat(amt.value) || 0;
+    let next = curCapital;
+    if (mode.value === 'add') next = curCapital + v;
+    else if (mode.value === 'sub') next = curCapital - v;
+    else next = v;
+    prev.innerHTML = v ? `Yeni sermaye: <b style="color:var(--text);">${next.toLocaleString('tr-TR')} TL</b>` : '';
+  };
+  amt.oninput = update; mode.onchange = update;
+}
+
+async function submitCapitalAdjust(curCapital) {
+  const uid = (window.currentUser && currentUser.userId) || '';
+  const amt = parseFloat(document.getElementById('capAdjAmount').value);
+  const mode = document.getElementById('capAdjMode').value;
+  if (!amt || amt <= 0) { alert('Gecerli bir tutar girin'); return; }
+  const payload = { userId: uid };
+  if (mode === 'set')       { payload.mode = 'set'; payload.delta = amt; }
+  else if (mode === 'sub')  { payload.mode = 'add'; payload.delta = -amt; }
+  else                      { payload.mode = 'add'; payload.delta = amt; }
+  try {
+    const r = await fetch('/api/auto-trade/capital/adjust', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const js = await r.json();
+    if (js.success) {
+      alert(js.message);
+      document.getElementById('capitalAdjustModal').style.display = 'none';
+      if (typeof loadAutoTradeData === 'function') loadAutoTradeData();
+    } else {
+      alert('Hata: ' + (js.error||''));
+    }
+  } catch(e) { alert('İstek başarısız: ' + e.message); }
+}
+
+// Portfolio ↔ auto_positions reconciliation: iki tablo arasi tutarliligi kontrol et
+async function openReconcileModal() {
+  const uid = (window.currentUser && currentUser.userId) || '';
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
+  let modal = document.getElementById('reconcileModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'reconcileModal';
+    modal.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;align-items:center;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:var(--bg-card);color:var(--text);border-radius:8px;padding:20px;max-width:720px;width:96%;max-height:85vh;overflow:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-weight:700;font-size:16px;">🔍 Senkron Kontrol (Oto ↔ Portföy)</div>
+          <button onclick="document.getElementById('reconcileModal').style.display='none';" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
+        </div>
+        <div id="reconcileBody" style="font-size:13px;color:var(--text-dim);">Yükleniyor…</div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'flex';
+  const body = document.getElementById('reconcileBody');
+  body.innerHTML = 'Yükleniyor…';
+  try {
+    const r = await fetch(`/api/auto-trade/reconcile?userId=${encodeURIComponent(uid)}`);
+    const js = await r.json();
+    if (!js.success) { body.innerHTML = `<div style="color:var(--red);">Hata: ${js.error||''}</div>`; return; }
+    if (!js.rows.length) { body.innerHTML = '<div>Pozisyon yok.</div>'; return; }
+    const statusLabel = {
+      match: '✅ Eşleşiyor', qty_mismatch: '⚠️ Adet farkı',
+      price_mismatch: '⚠️ Fiyat farkı', missing_in_portfolio: '❌ Portföyde yok',
+      missing_in_auto: '❌ Oto-trade\'de yok',
+    };
+    const statusColor = {
+      match: 'var(--green)', qty_mismatch: '#f1c40f',
+      price_mismatch: '#f1c40f', missing_in_portfolio: 'var(--red)',
+      missing_in_auto: 'var(--red)',
+    };
+    let html = `<div style="margin-bottom:8px;">Toplam: ${js.totalSymbols} sembol · Uyuşmayan: <b style="color:${js.mismatchCount>0?'var(--red)':'var(--green)'};">${js.mismatchCount}</b></div>`;
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    html += '<thead><tr style="border-bottom:1px solid var(--border);"><th style="text-align:left;padding:6px 4px;">Sembol</th><th style="text-align:right;padding:6px 4px;">Oto (lot · avg)</th><th style="text-align:right;padding:6px 4px;">Portföy (lot · avg)</th><th style="text-align:center;padding:6px 4px;">Durum</th><th></th></tr></thead><tbody>';
+    for (const row of js.rows) {
+      const a = row.autoQty ? `${row.autoQty} · ${row.autoAvg.toFixed(2)}` : '—';
+      const p = row.portfolioQty ? `${row.portfolioQty} · ${row.portfolioAvg.toFixed(2)}` : '—';
+      const fixBtn = row.status !== 'match'
+        ? `<button onclick="reconcileFix('${row.symbol}')" style="background:var(--blue);color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:11px;">Düzelt</button>`
+        : '';
+      html += `<tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 4px;font-weight:600;">${row.symbol}</td><td style="text-align:right;padding:6px 4px;">${a}</td><td style="text-align:right;padding:6px 4px;">${p}</td><td style="text-align:center;padding:6px 4px;color:${statusColor[row.status]};">${statusLabel[row.status]||row.status}</td><td style="text-align:right;padding:6px 4px;">${fixBtn}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    html += '<div style="margin-top:10px;font-size:11px;color:var(--text-dim);">Düzelt: oto-trade tarafını kaynak kabul eder, portföy satırını onunla eşitler.</div>';
+    body.innerHTML = html;
+  } catch(e) {
+    body.innerHTML = `<div style="color:var(--red);">İstek hatası: ${e.message}</div>`;
+  }
+}
+
+async function reconcileFix(symbol) {
+  const uid = (window.currentUser && currentUser.userId) || '';
+  if (!uid || !symbol) return;
+  if (!confirm(`${symbol}: portfoy satırı oto-trade değerlerine göre güncellenecek. Devam?`)) return;
+  try {
+    const r = await fetch('/api/auto-trade/reconcile/fix', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({userId: uid, symbol}),
+    });
+    const js = await r.json();
+    if (js.success) { alert(js.message); openReconcileModal(); }
+    else alert('Hata: ' + (js.error||''));
+  } catch(e) { alert('İstek başarısız: ' + e.message); }
+}
+
+// Manuel Pozisyon Ekleme — Midas'ta alinmis ama oto-trader'a kayitli olmayan hisse icin
+function openAddPositionModal() {
+  let modal = document.getElementById('addPositionModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'addPositionModal';
+    modal.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;align-items:center;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:480px;width:90%;max-height:90vh;overflow-y:auto;">
+        <div style="font-weight:700;font-size:16px;margin-bottom:12px;">➕ Pozisyon Ekle</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">
+          Midas'tan aldığınız bir hisseyi oto-trader takibine ekleyin. SL/TP boş bırakırsanız config oranlarınız kullanılır. Sermaye kontrolü atlanır.
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <label style="font-size:12px;color:var(--text-dim);">
+            Sembol
+            <input id="apSymbol" type="text" placeholder="örn. GARAN" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;text-transform:uppercase;">
+          </label>
+          <label style="font-size:12px;color:var(--text-dim);">
+            Giriş Fiyatı (TL) *
+            <input id="apEntry" type="number" step="0.01" min="0" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+          </label>
+          <label style="font-size:12px;color:var(--text-dim);">
+            Adet (Lot) *
+            <input id="apQty" type="number" step="0.01" min="0" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+          </label>
+          <label style="font-size:12px;color:var(--text-dim);">
+            Stop-Loss (boş: otomatik)
+            <input id="apSL" type="number" step="0.01" min="0" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+          </label>
+          <label style="font-size:12px;color:var(--text-dim);">
+            TP1 (boş: otomatik)
+            <input id="apTP1" type="number" step="0.01" min="0" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+          </label>
+          <label style="font-size:12px;color:var(--text-dim);">
+            TP2 (boş: otomatik)
+            <input id="apTP2" type="number" step="0.01" min="0" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+          </label>
+          <label style="font-size:12px;color:var(--text-dim);">
+            TP3 (boş: otomatik)
+            <input id="apTP3" type="number" step="0.01" min="0" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+          </label>
+          <label style="font-size:12px;color:var(--text-dim);">
+            Trailing SL (boş: config)
+            <input id="apTrail" type="number" step="0.01" min="0" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+          </label>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+          <button onclick="document.getElementById('addPositionModal').style.display='none';" style="background:var(--border);color:var(--text);border:none;border-radius:6px;padding:8px 16px;cursor:pointer;">İptal</button>
+          <button onclick="submitAddPosition()" style="background:var(--green);color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-weight:600;">Ekle</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  ['apSymbol','apEntry','apQty','apSL','apTP1','apTP2','apTP3','apTrail'].forEach(id => { document.getElementById(id).value = ''; });
+  modal.style.display = 'flex';
+}
+
+async function submitAddPosition() {
+  const uid = _getUid();
+  if (!uid) { alert('Giriş gerekli'); return; }
+  const symbol = (document.getElementById('apSymbol').value || '').trim().toUpperCase();
+  const entry = parseFloat(document.getElementById('apEntry').value);
+  const qty = parseFloat(document.getElementById('apQty').value);
+  if (!symbol) { alert('Sembol girin'); return; }
+  if (!entry || entry <= 0) { alert('Geçerli giriş fiyatı girin'); return; }
+  if (!qty || qty <= 0) { alert('Geçerli adet girin'); return; }
+  const body = { userId: uid, symbol, entryPrice: entry, quantity: qty };
+  const sl = parseFloat(document.getElementById('apSL').value);
+  const tp1 = parseFloat(document.getElementById('apTP1').value);
+  const tp2 = parseFloat(document.getElementById('apTP2').value);
+  const tp3 = parseFloat(document.getElementById('apTP3').value);
+  const trail = parseFloat(document.getElementById('apTrail').value);
+  if (sl > 0) body.stopLoss = sl;
+  if (tp1 > 0) body.takeProfit1 = tp1;
+  if (tp2 > 0) body.takeProfit2 = tp2;
+  if (tp3 > 0) body.takeProfit3 = tp3;
+  if (trail > 0) body.trailingStop = trail;
+  try {
+    const res = await fetch(`${API_BASE}/auto-trade/position/add`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('addPositionModal').style.display = 'none';
+      loadAutoTrade();
+    } else {
+      alert(data.error || 'Hata');
+    }
+  } catch(e) { console.error('Pozisyon ekleme hatasi:', e); alert('İstek başarısız'); }
+}
+
+// Custom Close Modal — adet ve fiyat belirterek kapat (Midas'ta gerçekleşen kısmi/fiyat-farkli satış)
+function openCustomCloseModal(posId, symbol, maxQty, suggestedPrice) {
+  let modal = document.getElementById('customCloseModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'customCloseModal';
+    modal.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;align-items:center;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:420px;width:90%;">
+        <div style="font-weight:700;font-size:16px;margin-bottom:12px;">✍️ Düzenleyerek Kapat</div>
+        <div id="ccSymbolLabel" style="font-size:13px;color:var(--text-dim);margin-bottom:12px;"></div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+          Midas'ta gerçekleşen satış adedini ve fiyatını gir. Adet pozisyondan azsa kısmi satış olarak işlenir.
+        </div>
+        <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:8px;">
+          Satış Adedi <span id="ccMaxLabel" style="color:var(--text-muted);"></span>
+          <input id="ccQty" type="number" step="0.01" min="0" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+        </label>
+        <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:8px;">
+          Satış Fiyatı (TL)
+          <input id="ccPrice" type="number" step="0.01" min="0" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+        </label>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+          <button onclick="document.getElementById('customCloseModal').style.display='none';" style="background:var(--border);color:var(--text);border:none;border-radius:6px;padding:8px 16px;cursor:pointer;">İptal</button>
+          <button onclick="submitCustomClose()" style="background:var(--red);color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-weight:600;">Kapat</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  document.getElementById('ccSymbolLabel').textContent = `${symbol} · Açık ${maxQty} lot`;
+  document.getElementById('ccMaxLabel').textContent = `(max ${maxQty})`;
+  document.getElementById('ccQty').value = maxQty;
+  document.getElementById('ccQty').max = maxQty;
+  document.getElementById('ccPrice').value = (suggestedPrice || 0).toFixed(2);
+  modal.dataset.posId = posId;
+  modal.dataset.maxQty = maxQty;
+  modal.dataset.symbol = symbol;
+  modal.style.display = 'flex';
+}
+
+async function submitCustomClose() {
+  const modal = document.getElementById('customCloseModal');
+  const posId = parseInt(modal.dataset.posId);
+  const maxQty = parseFloat(modal.dataset.maxQty);
+  const symbol = modal.dataset.symbol;
+  const uid = _getUid();
+  if (!uid || !posId) { alert('Giriş gerekli'); return; }
+  const qty = parseFloat(document.getElementById('ccQty').value);
+  const price = parseFloat(document.getElementById('ccPrice').value);
+  if (!qty || qty <= 0) { alert('Geçerli bir adet girin'); return; }
+  if (qty > maxQty + 0.01) { alert(`Adet pozisyondan fazla olamaz (max ${maxQty})`); return; }
+  if (!price || price <= 0) { alert('Geçerli bir fiyat girin'); return; }
+  const isPartial = qty < maxQty - 0.01;
+  const label = isPartial ? `KISMI KAPANIŞ: ${symbol} ${qty}/${maxQty} lot @ ${price.toFixed(2)} TL` : `TAM KAPANIŞ: ${symbol} ${qty} lot @ ${price.toFixed(2)} TL`;
+  if (!confirm(`${label}\n\nOnaylıyor musunuz?`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/auto-trade/close`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ userId: uid, positionId: posId, quantity: qty, price: price })
+    });
+    const data = await res.json();
+    if (data.success) {
+      modal.style.display = 'none';
+      loadAutoTrade();
+    } else {
+      alert(data.error || 'Hata');
+    }
+  } catch(e) { console.error('Custom kapatma hatasi:', e); alert('İstek başarısız'); }
+}
+
 // =============================================================================
 // INIT
 // =============================================================================
 document.addEventListener('DOMContentLoaded', () => {
-  loadDashboard().catch(() => dismissLoadingPopup());
-  updateUserUI();
-  validateSession().then(() => _loadPortfolioBadge()).catch(() => {});
-  _autoRefreshInit();
+  // Solo mode varsa once otomatik giris — sonra dashboard ve diger init'ler
+  initSoloMode().finally(() => {
+    loadDashboard().catch(() => dismissLoadingPopup());
+    updateUserUI();
+    validateSession().then(() => _loadPortfolioBadge()).catch(() => {});
+    _autoRefreshInit();
+  });
   // P&L badge ve hedef tracker'i her 2 dakikada bir yenile
   setInterval(() => { if (!document.hidden) _loadPortfolioBadge(); }, 120_000);
 });

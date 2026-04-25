@@ -123,14 +123,22 @@ def _step1_manage_positions(uid, cfg, positions):
                     # Telegram yok: trailing'i doğrudan güncelle (onay beklenemiyor)
                     _auto_update_trailing(pos['id'], round(new_trailing, 2), cur_price)
             else:
+                # Acilis ilk 15 dk trailing tetiklemesini atla (gap koruması);
+                # highest yine guncellenir ama stop tetiklenmez.
+                from datetime import datetime, timezone, timedelta
+                _tr_now = datetime.now(timezone(timedelta(hours=3)))
+                _opening_window = (_tr_now.weekday() < 5 and
+                                   _tr_now.hour == 10 and _tr_now.minute < 15)
                 trailing_sl = pos['trailingStop']
-                if trailing_sl > 0 and cur_price <= trailing_sl:
+                if (not _opening_window) and trailing_sl > 0 and cur_price <= trailing_sl:
                     _auto_close_position(pos['id'], cur_price, f"Trailing-Stop ({trailing_sl:.2f})")
                     _auto_log_trade(uid, sym, 'SELL_TRAIL', cur_price, pos['quantity'],
                                    f"Trailing SL: {cur_price:.2f} <= {trailing_sl:.2f}", 0, 0, pos['id'])
                     _sl_cooldown_block(uid, sym, cfg.get('tradeStyle', 'swing'))
                     _panic_clear(pos['id'])
                     continue
+                if _opening_window and trailing_sl > 0 and cur_price <= trailing_sl:
+                    print(f"[AUTO-TRADE] {sym} trailing stop tetiklendi fakat acilis penceresinde (ilk 15dk) — atlaniyor")
 
         # Panic-Sell kontrolü (ani ters dönüş — SL beklemeden çık)
         if cfg.get('panicSellEnabled'):

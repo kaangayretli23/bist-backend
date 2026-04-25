@@ -38,8 +38,9 @@ except ImportError as e:
 # Auto-trading engine
 try:
     import auto_trader
-    # Routes (endpoint decoratorları) ayrı modülde — import edilince @app.route'lar kaydolur
+    # Routes (endpoint decoratorları) ayrı modüllerde — import edilince @app.route'lar kaydolur
     import auto_trader_routes  # noqa: F401
+    import auto_trader_routes_positions  # noqa: F401
 except ImportError as e:
     print(f"[HATA] auto_trader.py import hatasi: {e}")
 

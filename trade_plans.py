@@ -130,8 +130,8 @@ def calc_trade_plan(hist, indicators=None, symbol=None):
             plans[tf_label] = cached_tf
 
         for tf_label, tf_days, atr_mult, target_mult in [
-            ('daily', 1, 1.0, [1.0, 1.5, 2.5]),
-            ('weekly', 5, 1.5, [1.5, 2.5, 4.0]),
+            ('daily',   1,  0.5, [0.5, 1.0, 1.5]),
+            ('weekly',  5,  1.5, [1.5, 2.5, 4.0]),
             ('monthly', 22, 2.5, [2.5, 4.0, 6.0]),
         ]:
             # Zaten kilitliyse hesaplama

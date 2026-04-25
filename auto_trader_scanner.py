@@ -5,7 +5,7 @@ auto_trader_engine.py'dan ayrıştırıldı (600 satır kuralı).
 """
 # Not: config, auto_trader, signals, indicators, signals_core, routes_telegram,
 # realtime_prices, data_fetcher, trade_plans fonksiyon içinde lazy import edilir.
-from auto_trader_risk import _sl_cooldown_check
+from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check
 from signals_market import REGIMES_BEARISH
 
 
@@ -41,6 +41,8 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         if sym in blocked:
             continue
         if _sl_cooldown_check(uid, sym, cfg.get('tradeStyle', 'swing')):
+            continue
+        if _reject_cooldown_check(uid, sym):
             continue
         if not _signals_ok:
             continue
@@ -173,9 +175,18 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             continue
         position_cost = quantity * price
 
+        # Serbest sermayeye gore quantity'i kirp — "100 TL kaldi, 2000 TL'lik al" demesin
         used_capital = sum(p['entryPrice'] * p['quantity'] for p in open_positions)
-        if used_capital + position_cost > cfg['capital']:
-            continue
+        free_capital = max(0, cfg['capital'] - used_capital)
+        if position_cost > free_capital:
+            affordable_qty = int(free_capital / price) if price > 0 else 0
+            if affordable_qty < 1:
+                print(f"[AUTO-TRADE] {sym} atlandi — serbest sermaye {free_capital:.0f} TL (1 lot {price:.2f} TL)")
+                continue
+            print(f"[AUTO-TRADE] {sym} adet kirpildi: {quantity} -> {affordable_qty} "
+                  f"(serbest={free_capital:.0f} TL)")
+            quantity = affordable_qty
+            position_cost = quantity * price
 
         _tg_sent = False
         _already_pending = False

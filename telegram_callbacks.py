@@ -104,9 +104,16 @@ def _handle_reject(signal_id, message_id):
         signal = _pending_signals.pop(signal_id, None)
 
     if signal:
+        # Hard reject: 12 saat boyunca bu hisse bir daha onerilmesin
+        try:
+            from auto_trader_risk import _reject_cooldown_block
+            _reject_cooldown_block(signal.get('uid', ''), signal['symbol'], reason='hard')
+        except Exception as _rc_err:
+            print(f"[TELEGRAM] Reject cooldown yazma hatasi: {_rc_err}")
         edit_telegram_message(
             message_id,
-            f"❌ <b>{signal['symbol']}</b> sinyali reddedildi."
+            f"❌ <b>{signal['symbol']}</b> sinyali reddedildi.\n"
+            f"<i>Bu hisse 12 saat tekrar önerilmeyecek.</i>"
         )
 
 
@@ -230,7 +237,13 @@ def _cleanup_expired_signals():
                     del _pending_signals[sid]
             for sig in expired_list:
                 print(f"[TELEGRAM] Suresi dolan sinyal temizlendi: {sig['symbol']} ({sig.get('uid', '')})")
-                send_telegram(f"⏰ <b>{sig['symbol']}</b> sinyali yanıtlanmadı, iptal edildi.")
+                # Soft reject: 2 saat sessiz kalsin (yanit yok, ama belki gun icinde tekrar degerlendirilir)
+                try:
+                    from auto_trader_risk import _reject_cooldown_block
+                    _reject_cooldown_block(sig.get('uid', ''), sig['symbol'], reason='soft')
+                except Exception as _rc_err:
+                    print(f"[TELEGRAM] Expired reject cooldown hatasi: {_rc_err}")
+                send_telegram(f"⏰ <b>{sig['symbol']}</b> sinyali yanıtlanmadı, iptal edildi.\n<i>Bu hisse 2 saat tekrar önerilmeyecek.</i>")
 
             # Trailing güncellemelerini temizle (süresi dolanlar otomatik onaylanır)
             expired_trails = []

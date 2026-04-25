@@ -492,7 +492,7 @@ def briefing_endpoint():
                     sells.sort(key=lambda r: float(r.get('score', 0)))
                     def _slim(r):
                         return {
-                            'symbol':     r.get('symbol', ''),
+                            'symbol':     r.get('symbol') or r.get('code', ''),
                             'name':       r.get('name', ''),
                             'price':      r.get('price', 0),
                             'score':      r.get('score', 0),

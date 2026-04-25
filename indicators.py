@@ -29,7 +29,7 @@ from indicators_basic import (
 from indicators_patterns import (
     _rsi_series, _find_peaks, _find_troughs,
     calc_mtf_signal, calc_divergence, calc_volume_profile,
-    calc_smc, calc_chart_patterns,
+    calc_smc, calc_chart_patterns,  # re-exported from indicators_smc via indicators_patterns
 )
 
 # Advanced indicators

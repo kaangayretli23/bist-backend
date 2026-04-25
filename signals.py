@@ -9,12 +9,10 @@ from indicators import *
 from indicators import _market_regime_cache, _resample_to_tf
 
 # Core signals
-from signals_core import (
-    calc_recommendation, calc_fundamentals, calc_52w,
-    fetch_fundamental_data, check_signal_alerts, calc_ml_confidence,
-)
+from signals_core import calc_recommendation
+from signals_confidence import check_signal_alerts, calc_ml_confidence
+from signals_fundamental import calc_fundamentals, calc_52w, fetch_fundamental_data
 
 # Backtest & market analysis
-from signals_backtest import (
-    calc_signal_backtest, calc_market_regime, calc_sector_relative_strength,
-)
+from signals_backtest import calc_signal_backtest
+from signals_market import calc_market_regime, calc_sector_relative_strength

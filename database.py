@@ -81,7 +81,7 @@ def init_db():
                 capital REAL DEFAULT 100000,
                 max_positions INTEGER DEFAULT 5,
                 risk_per_trade REAL DEFAULT 2.0,
-                min_score REAL DEFAULT 8.0,
+                min_score REAL DEFAULT 5.0,
                 min_confidence REAL DEFAULT 60,
                 trade_style TEXT DEFAULT 'swing',
                 stop_loss_pct REAL DEFAULT 3.0,
@@ -126,6 +126,27 @@ def init_db():
                 confidence REAL,
                 position_id INTEGER,
                 created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS signal_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                action TEXT NOT NULL,
+                score REAL NOT NULL,
+                price_at_signal REAL,
+                rsi REAL,
+                macd REAL,
+                logged_at REAL NOT NULL,
+                outcome_checked INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS signal_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL REFERENCES signal_log(id),
+                horizon_days INTEGER NOT NULL,
+                price_at_horizon REAL,
+                return_pct REAL,
+                win INTEGER DEFAULT 0,
+                UNIQUE(signal_id, horizon_days)
             );
         ''')
         db.commit()
@@ -183,7 +204,7 @@ def init_db():
                 capital REAL DEFAULT 100000,
                 max_positions INTEGER DEFAULT 5,
                 risk_per_trade REAL DEFAULT 2.0,
-                min_score REAL DEFAULT 8.0,
+                min_score REAL DEFAULT 5.0,
                 min_confidence REAL DEFAULT 60,
                 trade_style TEXT DEFAULT 'swing',
                 stop_loss_pct REAL DEFAULT 3.0,
@@ -232,10 +253,64 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );
+            CREATE TABLE IF NOT EXISTS signal_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                action TEXT NOT NULL,
+                score REAL NOT NULL,
+                price_at_signal REAL,
+                rsi REAL,
+                macd REAL,
+                logged_at REAL NOT NULL,
+                outcome_checked INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS signal_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL,
+                horizon_days INTEGER NOT NULL,
+                price_at_horizon REAL,
+                return_pct REAL,
+                win INTEGER DEFAULT 0,
+                UNIQUE(signal_id, horizon_days),
+                FOREIGN KEY(signal_id) REFERENCES signal_log(id)
+            );
         ''')
         db.commit()
         db.close()
         print("[DB] SQLite hazir:", DB_PATH)
+
+    # Migrations — idempotent ALTER TABLE (both Postgres & SQLite tolerate IF NOT EXISTS via try/except)
+    _migrations = [
+        ("ALTER TABLE auto_config ADD COLUMN panic_sell_enabled INTEGER DEFAULT 0", True),
+        ("ALTER TABLE auto_config ADD COLUMN panic_drop_pct REAL DEFAULT 2.0", True),
+        ("ALTER TABLE auto_config ADD COLUMN panic_window_min INTEGER DEFAULT 5", True),
+        # Komisyon + BSMV (Midas BIST'te 0; broker degisirse veya US stocks/Matriks icin doldurulur)
+        ("ALTER TABLE auto_config ADD COLUMN commission_pct REAL DEFAULT 0", True),
+        ("ALTER TABLE auto_config ADD COLUMN bsmv_pct REAL DEFAULT 5", True),
+        # min_score default 8→5 bumpup (yalnız 8.0 bırakılmış default kayıtlar)
+        ("UPDATE auto_config SET min_score=5.0 WHERE min_score=8.0", False),
+        # SL cooldown persistence (restart sonrası kaybolmasın)
+        ("CREATE TABLE IF NOT EXISTS sl_cooldown ("
+         "  uid_sym TEXT PRIMARY KEY,"
+         "  hit_at REAL NOT NULL,"
+         "  trade_style TEXT NOT NULL"
+         ")", True),
+    ]
+    for _mig, _idempotent in _migrations:
+        try:
+            _mdb = get_db()
+            try:
+                _mdb.execute(_mig)
+                _mdb.commit()
+            except Exception as _me:
+                if not _idempotent:
+                    print(f"[DB-MIGRATION] Uyarı: '{_mig[:60]}…' hata: {_me}")
+                # Idempotent ALTER TABLE'larda 'column already exists' beklenen hata
+            finally:
+                _mdb.close()
+        except Exception as _oe:
+            print(f"[DB-MIGRATION] Bağlantı hatası: {_oe}")
 
 
 # =====================================================================
@@ -350,7 +425,7 @@ def _db_load_market_snapshot():
                 for hk, compressed in hist_payload.items():
                     try:
                         raw = gzip.decompress(base64.b64decode(compressed)).decode()
-                        df = pd.read_json(raw, orient='split')
+                        df = pd.read_json(io.StringIO(raw), orient='split')
                         if len(df) >= 10:
                             _cset(_hist_cache, hk, df)
                             loaded += 1

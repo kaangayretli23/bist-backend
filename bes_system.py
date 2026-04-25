@@ -13,6 +13,8 @@ from bes_data import (
     _fetch_tefas_funds, _fetch_tefas_compare,
     _fetch_tefas_allocation, _fetch_tefas_history_chunked,
     _get_tefas_field, _parse_fund_row, _parse_compare_row, _parse_tefas_date,
+)
+from bes_analysis import (
     _analyze_fund_performance, _bes_optimize, _fund_reasoning, _simulate_bes,
 )
 

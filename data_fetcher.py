@@ -1,5 +1,6 @@
 """
 BIST Pro - Data Fetcher & Background Loader Module
+Ham veri çekme fonksiyonları → data_fetcher_raw.py
 """
 import os, time, threading, traceback, json, re
 from datetime import datetime, timedelta
@@ -19,6 +20,13 @@ from config import (
     _cget, _cset, _ctouch, _cget_hist, _get_stocks,
     _loader_started, _status, CACHE_TTL, CACHE_STALE_TTL, HIST_CACHE_TTL,
     BIST100_STOCKS, BIST30, INDEX_TICKERS, PARALLEL_WORKERS, app, BASE_DIR
+)
+from data_fetcher_raw import (
+    _normalize_ohlcv_df,
+    _fetch_isyatirim_df, _fetch_isyatirim_quick,
+    _fetch_yahoo_http, _fetch_yahoo_http_df,
+    _fetch_borsapy_quick, _fetch_borsapy_hist,
+    IS_YATIRIM_HEADERS,
 )
 
 # Lazy imports to avoid circular dependencies
@@ -43,14 +51,14 @@ def _get_db():
 
 def _get_send_telegram_alerts():
     try:
-        from backend import _send_telegram_alerts
+        from routes_portfolio import _send_telegram_alerts
         return _send_telegram_alerts
     except Exception:
         return None
 
 def _get_auto_engine():
     try:
-        from auto_trader import _auto_engine_cycle
+        from auto_trader_engine import _auto_engine_cycle
         return _auto_engine_cycle
     except Exception:
         return None
@@ -61,286 +69,28 @@ import requests as req_lib
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-def _normalize_ohlcv_df(df):
-    """DataFrame OHLCV normalizasyonu: NaN doldur, High>=Close, Low<=Close"""
-    df['Open'] = df['Open'].fillna(df['Close'])
-    df['High'] = df['High'].fillna(df['Close'])
-    df['Low'] = df['Low'].fillna(df['Close'])
-    df['High'] = df[['High', 'Close']].max(axis=1)
-    df['Low'] = df[['Low', 'Close']].min(axis=1)
-    return df
-
-IS_YATIRIM_BASE = "https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx/HisseTekil"
-IS_YATIRIM_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Referer': 'https://www.isyatirim.com.tr/',
-    'Accept': 'application/json',
-}
-
-# ---- IS YATIRIM API ----
-def _fetch_isyatirim_df(symbol, days=365):
-    """Is Yatirim'dan OHLCV DataFrame cek - BIRINCIL KAYNAK"""
-    try:
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
-        sd = start_date.strftime('%d-%m-%Y')
-        ed = end_date.strftime('%d-%m-%Y')
-        url = f"{IS_YATIRIM_BASE}?hisse={symbol}&startdate={sd}&enddate={ed}"
-
-        print(f"  [ISYATIRIM] {symbol} {days}d cekiliyor...")
-        resp = None
-        last_err = None
-        for http_attempt in range(2):
-            try:
-                resp = req_lib.get(url, headers=IS_YATIRIM_HEADERS, timeout=10, verify=False)
-                resp.raise_for_status()
-                break
-            except Exception as http_e:
-                last_err = http_e
-                if http_attempt < 1:
-                    print(f"  [ISYATIRIM] {symbol} HTTP hata ({http_e}), 0.5s sonra tekrar...")
-                    time.sleep(0.5)
-        if resp is None:
-            print(f"  [ISYATIRIM] {symbol} HTTP denemesi basarisiz: {last_err}")
-            return None
-
-        try:
-            data = resp.json()
-        except Exception as json_e:
-            print(f"  [ISYATIRIM] {symbol}: JSON parse hatasi: {json_e}, ilk 200 karakter: {resp.text[:200]}")
-            return None
-
-        # API yanit formatini kontrol et (value, d, veya dogrudan liste)
-        rows = data.get('value', [])
-        if not rows:
-            rows = data.get('d', [])
-        if not rows and isinstance(data, list):
-            rows = data
-
-        if not rows or len(rows) < 2:
-            print(f"  [ISYATIRIM] {symbol}: bos veri ({len(rows) if rows else 0} satir), response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-            return None
-
-        # Ilk satirdaki TUM kolonlari logla
-        if len(rows) > 0:
-            cols = list(rows[0].keys())
-            print(f"  [ISYATIRIM] {symbol}: {len(rows)} satir, kolonlar: {cols}")
-
-        # DataFrame olustur - kolon isimlerini otomatik kesfet
-        df_raw = pd.DataFrame(rows)
-
-        # Tarih kolonu - esnek arama
-        date_col = None
-        for c in df_raw.columns:
-            cu = c.upper()
-            if 'TARIH' in cu or 'DATE' in cu or 'TARH' in cu:
-                date_col = c; break
-        if not date_col:
-            print(f"  [ISYATIRIM] {symbol}: tarih kolonu bulunamadi, kolonlar: {list(df_raw.columns)}")
-            return None
-
-        # OHLCV kolonlari - esnek mapping (API degisikliklerine karsi guclu)
-        col_map = {}
-        for c in df_raw.columns:
-            cu = c.upper()
-            # Close: KAPANIS_FIYATI, KAPANIS, HISSE_KAPANIS, vb.
-            if 'Close' not in col_map and 'KAPANIS' in cu and 'DUZELTILMIS' not in cu:
-                col_map['Close'] = c
-            # Open: ACILIS_FIYATI, ACILIS, vb.
-            elif 'Open' not in col_map and 'ACILIS' in cu:
-                col_map['Open'] = c
-            # High: EN_YUKSEK, YUKSEK, YUKSEK_FIYAT, vb.
-            elif 'High' not in col_map and ('YUKSEK' in cu or 'EN_YUKSEK' in cu or 'HIGH' in cu):
-                col_map['High'] = c
-            # Low: EN_DUSUK, DUSUK, DUSUK_FIYAT, vb.
-            elif 'Low' not in col_map and ('DUSUK' in cu or 'EN_DUSUK' in cu or 'LOW' in cu):
-                col_map['Low'] = c
-            # Volume: HACIM_LOT, HACIM (LOT), ISLEM_HACMI, vb.
-            elif 'Volume' not in col_map and 'HACIM' in cu and 'TL' not in cu:
-                col_map['Volume'] = c
-
-        # Volume bulunamadiysa HACIM iceren herhangi bir kolonu dene
-        if 'Volume' not in col_map:
-            for c in df_raw.columns:
-                cu = c.upper()
-                if 'HACIM' in cu or 'VOLUME' in cu or 'ADET' in cu:
-                    col_map['Volume'] = c; break
-
-        # Close bulunamadiysa DUZELTILMIS KAPANIS veya herhangi kapanis
-        if 'Close' not in col_map:
-            for c in df_raw.columns:
-                if 'KAPANIS' in c.upper():
-                    col_map['Close'] = c; break
-            if 'Close' not in col_map:
-                # Son care: numerik kolonlari dene (CLOSE, PRICE, FIYAT)
-                for c in df_raw.columns:
-                    cu = c.upper()
-                    if 'CLOSE' in cu or 'FIYAT' in cu or 'PRICE' in cu:
-                        col_map['Close'] = c; break
-            if 'Close' not in col_map:
-                print(f"  [ISYATIRIM] {symbol}: Close kolonu bulunamadi, kolonlar: {list(df_raw.columns)}")
-                return None
-
-        print(f"  [ISYATIRIM] {symbol} mapping: {col_map}")
-
-        # DataFrame build
-        df = pd.DataFrame(index=pd.DatetimeIndex(pd.to_datetime(df_raw[date_col])))
-        df['Close'] = pd.to_numeric(df_raw[col_map['Close']].values, errors='coerce')
-        df['Open'] = pd.to_numeric(df_raw[col_map.get('Open', col_map['Close'])].values, errors='coerce')
-        df['High'] = pd.to_numeric(df_raw[col_map.get('High', col_map['Close'])].values, errors='coerce')
-        df['Low'] = pd.to_numeric(df_raw[col_map.get('Low', col_map['Close'])].values, errors='coerce')
-
-        if 'Volume' in col_map:
-            df['Volume'] = pd.to_numeric(df_raw[col_map['Volume']].values, errors='coerce').fillna(0).astype(int)
-        else:
-            df['Volume'] = 0
-
-        df = _normalize_ohlcv_df(df)
-        df = df.dropna(subset=['Close']).sort_index()
-
-        if len(df) < 2:
-            return None
-
-        # Veri kalitesi kontrolu
-        nan_counts = df[['Open','High','Low','Close']].isna().sum()
-        total_nan = nan_counts.sum()
-        if total_nan > 0:
-            print(f"  [ISYATIRIM] {symbol} UYARI: {total_nan} NaN deger doldurulamadi: {nan_counts.to_dict()}")
-
-        # Son fiyat kontrolu
-        last_close = float(df['Close'].iloc[-1])
-        if last_close <= 0:
-            print(f"  [ISYATIRIM] {symbol} UYARI: Son kapanis fiyati 0 veya negatif: {last_close}")
-
-        print(f"  [ISYATIRIM] {symbol} OK: {len(df)} bar, {df.index[0].strftime('%Y-%m-%d')} -> {df.index[-1].strftime('%Y-%m-%d')}, son fiyat: {last_close}")
-        return df
-
-    except Exception as e:
-        print(f"  [ISYATIRIM] {symbol} HATA: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-
-def _fetch_isyatirim_quick(symbol):
-    """Is Yatirim'dan son fiyat bilgisi (quick - dashboard icin)"""
-    try:
-        df = _fetch_isyatirim_df(symbol, days=5)
-        if df is None or len(df) < 2:
-            return None
-        cur = float(df['Close'].iloc[-1])
-        prev = float(df['Close'].iloc[-2])
-        return {
-            'close': cur, 'prev': prev,
-            'open': float(df['Open'].iloc[-1]),
-            'high': float(df['High'].iloc[-1]),
-            'low': float(df['Low'].iloc[-1]),
-            'volume': int(df['Volume'].iloc[-1]),
-        }
-    except Exception as e:
-        print(f"  [ISYATIRIM-Q] {symbol}: {e}")
-        return None
-
-
-# ---- YAHOO HTTP API (YEDEK) ----
-def _fetch_yahoo_http(symbol, period1_days=14):
-    """Yahoo Finance v8 chart API - yedek kaynak"""
-    try:
-        now = int(time.time())
-        p1 = now - (period1_days * 86400)
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1={p1}&period2={now}&interval=1d"
-        r = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        with urllib.request.urlopen(r, timeout=8) as resp:
-            raw = json.loads(resp.read().decode())
-
-        result = raw.get('chart', {}).get('result', [])
-        if not result: return None
-
-        data = result[0]
-        quote = data.get('indicators', {}).get('quote', [{}])[0]
-        closes = quote.get('close', [])
-        if not closes or len(closes) < 2: return None
-
-        valid = [(i, c) for i, c in enumerate(closes) if c is not None]
-        if len(valid) < 2: return None
-
-        last_i, cur = valid[-1]; prev_i, prev = valid[-2]
-        opens = quote.get('open', []); highs = quote.get('high', [])
-        lows = quote.get('low', []); volumes = quote.get('volume', [])
-
-        o_val = float(opens[last_i]) if last_i < len(opens) and opens[last_i] is not None else float(cur)
-        h_val = float(highs[last_i]) if last_i < len(highs) and highs[last_i] is not None else float(cur)
-        l_val = float(lows[last_i]) if last_i < len(lows) and lows[last_i] is not None else float(cur)
-        v_val = int(volumes[last_i]) if last_i < len(volumes) and volumes[last_i] is not None else 0
-        return {
-            'close': float(cur), 'prev': float(prev),
-            'open': o_val, 'high': max(h_val, float(cur)), 'low': min(l_val, float(cur)),
-            'volume': v_val,
-        }
-    except Exception as e:
-        print(f"  [YAHOO-HTTP] {symbol}: {e}")
-        return None
-
-
-def _fetch_yahoo_http_df(symbol, period1_days=365):
-    """Yahoo Finance v8 - tam DataFrame (yedek)"""
-    try:
-        now = int(time.time())
-        p1 = now - (period1_days * 86400)
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1={p1}&period2={now}&interval=1d"
-        r = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        with urllib.request.urlopen(r, timeout=12) as resp:
-            raw = json.loads(resp.read().decode())
-
-        result = raw.get('chart', {}).get('result', [])
-        if not result: return None
-
-        data = result[0]
-        timestamps = data.get('timestamp', [])
-        quote = data.get('indicators', {}).get('quote', [{}])[0]
-        if not timestamps or not quote.get('close'): return None
-
-        dates = [datetime.fromtimestamp(ts) for ts in timestamps]
-        df = pd.DataFrame({
-            'Open': [float(v) if v else np.nan for v in quote.get('open', [])],
-            'High': [float(v) if v else np.nan for v in quote.get('high', [])],
-            'Low': [float(v) if v else np.nan for v in quote.get('low', [])],
-            'Close': [float(v) if v else np.nan for v in quote.get('close', [])],
-            'Volume': [int(v) if v else 0 for v in quote.get('volume', [])],
-        }, index=pd.DatetimeIndex(dates))
-        df = df.dropna(subset=['Close'])
-
-        df = _normalize_ohlcv_df(df)
-
-        if len(df) < 10: return None
-        print(f"  [YAHOO-DF] {symbol}: {len(df)} bar")
-        return df
-    except Exception as e:
-        print(f"  [YAHOO-DF] {symbol}: {e}")
-        return None
-
-
-# ---- BIRLESIK FETCHER (3 katmanli fallback) ----
+# ---- BIRLESIK FETCHER (4 katmanli fallback) ----
 def _fetch_stock_data(sym, retry_count=2):
-    """Hisse verisi cek: 1.IsYatirim -> 2.Yahoo HTTP -> 3.yfinance (retry destekli)"""
+    """Hisse verisi cek: 1.borsapy -> 2.IsYatirim -> 3.Yahoo HTTP -> 4.yfinance"""
     for attempt in range(1, retry_count + 1):
-        # 1. Is Yatirim
+        # 1. borsapy (birincil - en guncel)
+        data = _fetch_borsapy_quick(sym)
+        if data:
+            return data
+
+        # 2. Is Yatirim
         data = _fetch_isyatirim_quick(sym)
         if data:
             return data
 
-        # 2. Yahoo HTTP
+        # 3. Yahoo HTTP
         for ticker in [f"{sym}.IS", sym]:
             data = _fetch_yahoo_http(ticker)
             if data:
                 print(f"  [YAHOO] {sym} OK")
                 return data
 
-        # 3. yfinance (son care)
+        # 4. yfinance (son care)
         if YF_OK:
             try:
                 h = yf.Ticker(f"{sym}.IS").history(period="5d", timeout=6)
@@ -364,15 +114,20 @@ def _fetch_stock_data(sym, retry_count=2):
 
 
 def _fetch_hist_df(sym, period='1y'):
-    """Tam DataFrame cek (indicators icin): 1.IsYatirim -> 2.Yahoo HTTP DF -> 3.yfinance"""
+    """Tam DataFrame cek (indicators icin): 1.borsapy -> 2.IsYatirim -> 3.Yahoo HTTP DF -> 4.yfinance"""
     period_days = {'1mo':30,'3mo':90,'6mo':180,'1y':365,'2y':730,'5y':1825}.get(period, 365)
 
-    # 1. Is Yatirim
+    # 1. borsapy (birincil)
+    df = _fetch_borsapy_hist(sym, period)
+    if df is not None and len(df) >= 10:
+        return df
+
+    # 2. Is Yatirim
     df = _fetch_isyatirim_df(sym, period_days)
     if df is not None and len(df) >= 10:
         return df
 
-    # 2. Yahoo HTTP DataFrame
+    # 3. Yahoo HTTP DataFrame
     for ticker in [f"{sym}.IS", sym]:
         df = _fetch_yahoo_http_df(ticker, period_days)
         if df is not None and len(df) >= 10:
@@ -537,7 +292,7 @@ def _auto_check_all_alerts():
     """Background loop'ta tum aktif alert'leri kontrol et (cooldown destekli)"""
     try:
         db = _get_db()()
-        rows = db.execute("SELECT * FROM alerts WHERE active=1 AND triggered=0").fetchall()
+        rows = db.execute("SELECT * FROM alerts WHERE active=1").fetchall()
         if not rows:
             db.close()
             return
@@ -572,7 +327,7 @@ def _auto_check_all_alerts():
 
             if fire:
                 cooldown_end = (now + timedelta(minutes=30)).isoformat()
-                db.execute("UPDATE alerts SET triggered=1, triggered_at=?, cooldown_until=? WHERE id=?",
+                db.execute("UPDATE alerts SET triggered_at=?, cooldown_until=? WHERE id=?",
                            (now.isoformat(), cooldown_end, r['id']))
                 triggered_count += 1
 
@@ -605,8 +360,21 @@ def _preload_one_hist(sym):
         print(f"  [HIST] {sym}: {e}")
     return sym, False
 
+_hist_preload_running = False
+
 def _preload_hist_data():
     """Tum hisselerin tarihsel verisini paralel on-yukle"""
+    global _hist_preload_running
+    if _hist_preload_running:
+        print("[HIST-PRELOAD] Zaten calisiyor, atlandi")
+        return
+    _hist_preload_running = True
+    try:
+        _preload_hist_data_inner()
+    finally:
+        _hist_preload_running = False
+
+def _preload_hist_data_inner():
     # XU100 endeks verisini de yukle (market regime icin)
     if _cget_hist("XU100_1y") is None:
         try:

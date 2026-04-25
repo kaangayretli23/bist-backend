@@ -70,6 +70,8 @@ def _auto_get_config(user_id):
                 'panicSellEnabled': bool(_row_get(row, 'panic_sell_enabled', 0)),
                 'panicDropPct': float(_row_get(row, 'panic_drop_pct', 2.0) or 2.0),
                 'panicWindowMin': int(_row_get(row, 'panic_window_min', 5) or 5),
+                'commissionPct': float(_row_get(row, 'commission_pct', 0) or 0),
+                'bsmvPct': float(_row_get(row, 'bsmv_pct', 5) or 5),
             }
         return None
     except Exception as e:
@@ -152,11 +154,11 @@ def _auto_open_position(user_id, symbol, price, quantity, stop_loss, tp1, tp2, t
                     print(f"[AUTO-TRADE] Pozisyon açılmadı — max_positions sınırına ulaşıldı ({cur_count}/{max_pos})")
                     db.close()
                     return 0
-                if capital > 0 and (used_capital + cost) > capital * 1.001:  # %0.1 tolerans
-                    print(f"[AUTO-TRADE] Pozisyon açılmadı — sermaye yetersiz "
-                          f"(kullanılan={used_capital:.0f} + yeni={cost:.0f} > kapital={capital:.0f})")
-                    db.close()
-                    return 0
+                # Sermaye kontrolu: artik gercek alim Midas'ta yapildigi icin BLOK degil sadece UYARI
+                if capital > 0 and (used_capital + cost) > capital * 1.001:
+                    print(f"[AUTO-TRADE] UYARI — sermaye limiti asildi ama yine de aciliyor "
+                          f"(kullanılan={used_capital:.0f} + yeni={cost:.0f} > kapital={capital:.0f}). "
+                          "Risk takibi icin capital ayarini guncelleyin.")
         except Exception as _guard_err:
             print(f"[AUTO-TRADE] Son-an kontrol hatası (devam ediliyor): {_guard_err}")
         db.execute(
@@ -173,10 +175,39 @@ def _auto_open_position(user_id, symbol, price, quantity, stop_loss, tp1, tp2, t
             row = db.execute("SELECT last_insert_rowid() as mid").fetchone()
         pos_id = int(row['mid']) if row else 0
         db.close()
+        # Portfoy senkronu: gercek alim oldugu icin manuel portfoye de ekle
+        try:
+            from auto_trader_sync import _sync_portfolio_buy
+            _sync_portfolio_buy(user_id, symbol, quantity, price)
+        except Exception as _ps_err:
+            print(f"[AUTO-TRADE] Portfoy BUY sync hatasi: {_ps_err}")
+        # Realtime fiyat takibi: tüm açılış path'leri (scanner, plan, telegram approve) için ortak nokta
+        try:
+            from realtime_prices import subscribe as _rt_sub
+            _rt_sub(symbol)
+        except Exception:
+            pass
         return pos_id
     except Exception as e:
         print(f"[AUTO-TRADE] Pozisyon acma hatasi: {e}")
         return 0
+
+def _calc_trade_costs(user_id, notional_buy, notional_sell):
+    """Komisyon + BSMV'yi hesapla (BUY ve SELL tarafinda ayri ayri).
+    Midas BIST'te 0 — cfg bos/yoksa 0 dondurur. BSMV komisyon uzerinden alinir.
+    """
+    try:
+        cfg = _auto_get_config(user_id) or {}
+        c_pct = float(cfg.get('commissionPct', 0) or 0)
+        b_pct = float(cfg.get('bsmvPct', 0) or 0)
+        if c_pct <= 0:
+            return 0.0
+        comm = (notional_buy + notional_sell) * (c_pct / 100.0)
+        bsmv = comm * (b_pct / 100.0)
+        return round(comm + bsmv, 2)
+    except Exception:
+        return 0.0
+
 
 def _auto_close_position(position_id, close_price, reason):
     """Pozisyon kapat"""
@@ -188,8 +219,12 @@ def _auto_close_position(position_id, close_price, reason):
             return
         entry = float(row['entry_price'])
         qty = float(row['quantity'])
-        pnl = (close_price - entry) * qty
+        gross = (close_price - entry) * qty
+        costs = _calc_trade_costs(row['user_id'], entry * qty, close_price * qty)
+        pnl = gross - costs
         pnl_pct = ((close_price - entry) / entry * 100) if entry > 0 else 0
+        if entry > 0 and qty > 0 and costs > 0:
+            pnl_pct = (pnl / (entry * qty)) * 100
         now_str = _now_ist().isoformat()
         db.execute(
             "UPDATE auto_positions SET status='closed', closed_at=?, close_price=?, close_reason=?, pnl=?, pnl_pct=? WHERE id=?",
@@ -197,6 +232,27 @@ def _auto_close_position(position_id, close_price, reason):
         )
         db.commit()
         db.close()
+        # Portfoy senkronu: SELL -> portfolios'tan dus
+        try:
+            from auto_trader_sync import _sync_portfolio_sell
+            _sync_portfolio_sell(row['user_id'], row['symbol'], qty)
+        except Exception as _ps_err:
+            print(f"[AUTO-TRADE] Portfoy SELL sync hatasi: {_ps_err}")
+        # Realtime takibi durdur — başka açık pozisyon yoksa
+        try:
+            from realtime_prices import unsubscribe as _rt_unsub
+            db2 = get_db()
+            try:
+                rem = db2.execute(
+                    "SELECT COUNT(*) AS c FROM auto_positions WHERE symbol=? AND status='open'",
+                    (row['symbol'],)
+                ).fetchone()
+                if rem and int(rem['c']) == 0:
+                    _rt_unsub(row['symbol'])
+            finally:
+                db2.close()
+        except Exception:
+            pass
         print(f"[AUTO-TRADE] Pozisyon kapatildi #{position_id}: {row['symbol']} PnL={pnl:.2f} TL ({pnl_pct:.1f}%) - {reason}")
         # Telegram bildirimi
         try:
@@ -225,8 +281,12 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
             db.close()
             return
         remaining = round(cur_qty - actual_sell, 2)
-        pnl = (price - entry) * actual_sell
+        gross = (price - entry) * actual_sell
+        costs = _calc_trade_costs(row['user_id'], entry * actual_sell, price * actual_sell)
+        pnl = gross - costs
         pnl_pct = ((price - entry) / entry * 100) if entry > 0 else 0
+        if entry > 0 and actual_sell > 0 and costs > 0:
+            pnl_pct = (pnl / (entry * actual_sell)) * 100
 
         if remaining <= 0.01:
             # Kalan yok — tam kapat
@@ -245,6 +305,12 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
             db.execute("UPDATE auto_positions SET quantity=? WHERE id=?", [remaining, position_id])
         db.commit()
         db.close()
+        # Portfoy senkronu: kismi SELL -> portfolios'tan actual_sell kadar dus
+        try:
+            from auto_trader_sync import _sync_portfolio_sell
+            _sync_portfolio_sell(row['user_id'], row['symbol'], actual_sell)
+        except Exception as _ps_err:
+            print(f"[AUTO-TRADE] Portfoy partial SELL sync hatasi: {_ps_err}")
         print(f"[AUTO-TRADE] Kısmi satış #{position_id}: {row['symbol']} "
               f"{actual_sell:.2f} lot @ {price:.2f}, kalan={remaining:.2f}, "
               f"PnL={pnl:.2f} ({pnl_pct:.1f}%) - {reason}")

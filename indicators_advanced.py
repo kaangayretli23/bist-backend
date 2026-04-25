@@ -132,11 +132,11 @@ def calc_advanced_indicators(hist):
 
         # Ichimoku
         if n >= 52:
-            def mid(arr, period):
-                return (pd.Series(arr).rolling(period).max() + pd.Series(arr).rolling(period).min()) / 2
-            tenkan = mid(h, 9).values; kijun = mid(h, 26).values
+            def mid_hl(high_arr, low_arr, period):
+                return (pd.Series(high_arr).rolling(period).max() + pd.Series(low_arr).rolling(period).min()) / 2
+            tenkan = mid_hl(h, l, 9).values; kijun = mid_hl(h, l, 26).values
             senkou_a = ((pd.Series(tenkan) + pd.Series(kijun)) / 2).shift(26).values
-            senkou_b = mid(h, 52).shift(26).values
+            senkou_b = mid_hl(h, l, 52).shift(26).values
             cur_price = float(c[-1])
             sa = float(senkou_a[-27]) if not np.isnan(senkou_a[-27]) else 0
             sb = float(senkou_b[-27]) if not np.isnan(senkou_b[-27]) else 0
@@ -205,14 +205,12 @@ def calc_dynamic_thresholds(closes, highs, lows, volumes):
         n = len(closes)
         if n < 60:
             return {'rsi_oversold': 30, 'rsi_overbought': 70, 'vol_spike': 2.0, 'bb_std': 2.0}
-        rsi_values = []
-        for i in range(20, n):
-            rv = calc_rsi_single(closes[:i+1])
-            if rv is not None:
-                rsi_values.append(rv)
-        if len(rsi_values) < 20:
+        # Vektörel RSI serisi — tek geçişte Wilder hesabı (O(n²) → O(n))
+        from indicators_patterns import _rsi_series
+        rsi_arr_full = _rsi_series(closes, period=14)
+        rsi_arr = rsi_arr_full[~np.isnan(rsi_arr_full)]
+        if len(rsi_arr) < 20:
             return {'rsi_oversold': 30, 'rsi_overbought': 70, 'vol_spike': 2.0, 'bb_std': 2.0}
-        rsi_arr = np.array(rsi_values)
         rsi_oversold = max(20, min(40, float(sf(np.percentile(rsi_arr, 10)))))
         rsi_overbought = max(60, min(85, float(sf(np.percentile(rsi_arr, 90)))))
         if n >= 60:

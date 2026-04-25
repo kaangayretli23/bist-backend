@@ -77,6 +77,12 @@ def _auto_engine_cycle():
 
                 daily_trades = _auto_get_daily_trade_count(uid)
                 if daily_trades >= cfg['maxDailyTrades']:
+                    # Telegram'a uyari (gun icinde 1 kez)
+                    try:
+                        from auto_trader_alerts import check_daily_alerts
+                        check_daily_alerts(uid, cfg, 0.0, 0.0, daily_trades)
+                    except Exception:
+                        pass
                     continue
 
                 allowed = set(s.strip() for s in cfg['allowedSymbols'].split(',') if s.strip()) if cfg['allowedSymbols'] else set()
@@ -123,6 +129,12 @@ def _auto_engine_cycle():
                             _unrealized += (_cp - _p['entryPrice']) * _p['quantity']
                     _total_pnl = _today_pnl + _unrealized
                     _daily_loss_limit = cfg['capital'] * 0.05
+                    # Telegram risk uyarilari (%70 ve %100 esikler, gun icinde 1 kez)
+                    try:
+                        from auto_trader_alerts import check_daily_alerts
+                        check_daily_alerts(uid, cfg, _today_pnl, _unrealized, daily_trades)
+                    except Exception:
+                        pass
                     if _total_pnl < -_daily_loss_limit:
                         print(f"[AUTO-TRADE] Günlük zarar limiti aşıldı "
                               f"(gerçekleşen={_today_pnl:.0f} + açık={_unrealized:.0f} = {_total_pnl:.0f} TL, "

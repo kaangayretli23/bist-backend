@@ -40,9 +40,24 @@ def send_telegram(message):
         return False
 
 
+def _news_quiet_hours() -> bool:
+    """BIST news botu sessiz saatleri: 18:00 sonrasi ve 07:00 oncesi (TR saati).
+    Piyasa kapandiktan sonra kullaniciyi rahatsiz etmemek icin."""
+    try:
+        from datetime import datetime, timezone, timedelta
+        _tr = datetime.now(timezone(timedelta(hours=3)))
+        h = _tr.hour
+        return h >= 18 or h < 7
+    except Exception:
+        return False
+
+
 def send_news_telegram(message):
-    """Haber/rapor botu — KAP haberleri, günlük raporlar (TELEGRAM_NEWS_BOT_TOKEN + TELEGRAM_NEWS_CHAT_ID)"""
+    """Haber/rapor botu — KAP haberleri, günlük raporlar (TELEGRAM_NEWS_BOT_TOKEN + TELEGRAM_NEWS_CHAT_ID).
+    18:00–07:00 TR arasi sessiz (piyasa kapali)."""
     if not TELEGRAM_NEWS_BOT_TOKEN or not TELEGRAM_NEWS_CHAT_ID:
+        return False
+    if _news_quiet_hours():
         return False
     try:
         import requests as req

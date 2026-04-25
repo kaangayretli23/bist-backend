@@ -55,6 +55,12 @@ def health():
     with _lock:
         fresh = [k for k, v in _stock_cache.items() if now - v['ts'] < CACHE_TTL]
         stale = [k for k, v in _stock_cache.items() if CACHE_TTL <= now - v['ts'] < CACHE_STALE_TTL]
+        stock_count = len(_stock_cache)
+        index_count = len(_index_cache)
+        hist_count = len(_hist_cache)
+        cached_stocks = list(_stock_cache.keys())
+        cached_indices = list(_index_cache.keys())
+        missing = [s for s in BIST100_STOCKS.keys() if s not in _stock_cache]
     hist_ready = sum(1 for s in BIST100_STOCKS if _cget_hist(f"{s}_1y") is not None)
     try:
         usage = shutil.disk_usage('/')
@@ -71,16 +77,16 @@ def health():
         'time': datetime.now().isoformat(),
         'loader': _status,
         'loaderStarted': _loader_started,
-        'stockCache': len(_stock_cache),
+        'stockCache': stock_count,
         'stockCacheFresh': len(fresh),
         'stockCacheStale': len(stale),
-        'indexCache': len(_index_cache),
+        'indexCache': index_count,
         'histCache': hist_ready,
-        'histCacheTotal': len(_hist_cache),
-        'cachedStocks': list(_stock_cache.keys()),
-        'cachedIndices': list(_index_cache.keys()),
+        'histCacheTotal': hist_count,
+        'cachedStocks': cached_stocks,
+        'cachedIndices': cached_indices,
         'totalDefined': len(BIST100_STOCKS),
-        'missingStocks': [s for s in BIST100_STOCKS.keys() if s not in _stock_cache],
+        'missingStocks': missing,
         'disk': disk_info,
     })
 
@@ -195,15 +201,12 @@ def network_info():
 
 @system_bp.route('/')
 def index():
+    _load_index_html()  # mtime degistiyse otomatik yeniden yukler
     with _html_page_cache_lock:
         raw = _html_page_cache['raw']
         gz = _html_page_cache['gz']
     if not raw:
-        if not _load_index_html():
-            return jsonify({'error': 'index.html bulunamadi'}), 500
-        with _html_page_cache_lock:
-            raw = _html_page_cache['raw']
-            gz = _html_page_cache['gz']
+        return jsonify({'error': 'index.html bulunamadi'}), 500
     ae = request.headers.get('Accept-Encoding', '')
     if 'gzip' in ae and gz:
         resp = make_response(gz)
