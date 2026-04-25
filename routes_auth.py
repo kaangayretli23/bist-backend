@@ -3,9 +3,19 @@ Authentication routes: register, login, profile, session check.
 """
 import uuid
 from flask import Blueprint, jsonify, request
-from config import get_db, db_conn, hash_password, safe_dict
+from config import get_db, db_conn, hash_password, safe_dict, SOLO_MODE, SOLO_USER_ID, SOLO_USERNAME
 
 auth_bp = Blueprint('auth', __name__)
+
+
+@auth_bp.route('/api/auth/solo-info', methods=['GET'])
+def solo_info():
+    """Frontend bu endpoint'e bakarak solo mode'da otomatik giris yapar."""
+    return jsonify({
+        'solo': bool(SOLO_MODE),
+        'userId': SOLO_USER_ID if SOLO_MODE else '',
+        'username': SOLO_USERNAME if SOLO_MODE else '',
+    })
 
 
 @auth_bp.route('/api/auth/register', methods=['POST'])
@@ -80,7 +90,10 @@ def update_profile():
 
 @auth_bp.route('/api/auth/check')
 def check_session():
-    """localStorage oturumunun hala gecerli olup olmadigini kontrol et"""
+    """localStorage oturumunun hala gecerli olup olmadigini kontrol et.
+    Solo mode'da her zaman valid doner (auth bypass)."""
+    if SOLO_MODE:
+        return jsonify({'valid': True, 'solo': True, 'userId': SOLO_USER_ID})
     uid = request.args.get('userId', '')
     if not uid:
         return jsonify({'valid': False})

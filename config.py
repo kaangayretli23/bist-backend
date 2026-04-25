@@ -5,6 +5,13 @@ Extracted from backend.py: imports, DB config, cache, constants, utilities.
 from flask import Flask, jsonify, request, send_from_directory, make_response, session
 from flask_cors import CORS
 import traceback, os, time, threading, json, hashlib, sqlite3, uuid, re, gzip, io
+
+# .env dosyasini yukle (varsa)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
@@ -29,6 +36,12 @@ USE_POSTGRES = bool(DATABASE_URL)
 
 # SQLite fallback
 DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'bist.db'))
+
+# Solo mode: tek kullanicili ev kullanimi. Aktifken auth bypass edilir, userId default 'kaan'.
+# Production cok-kullanicili modda env: SOLO_MODE=0
+SOLO_MODE = os.environ.get('SOLO_MODE', '1') == '1'
+SOLO_USER_ID = os.environ.get('SOLO_USER_ID', 'kaan')
+SOLO_USERNAME = os.environ.get('SOLO_USERNAME', 'Kaan')
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bist-pro-secret-' + str(hash(BASE_DIR)))
@@ -120,7 +133,9 @@ def hash_password(pw):
 def sf(v, d=2):
     try:
         f = float(v)
-        return 0.0 if f != f else round(f, d)
+        if f != f or f == float('inf') or f == float('-inf'):
+            return 0.0
+        return round(f, d)
     except (ValueError, TypeError): return 0.0
 
 def si(v):
@@ -131,7 +146,10 @@ def safe_dict(d):
     if isinstance(d, dict): return {str(k): safe_dict(v) for k, v in d.items()}
     if isinstance(d, list): return [safe_dict(i) for i in d]
     if hasattr(d, 'item'): return d.item()
-    if isinstance(d, float): return 0.0 if d != d else round(d, 4)
+    if isinstance(d, float):
+        if d != d or d == float('inf') or d == float('-inf'):
+            return 0.0
+        return round(d, 4)
     return d
 
 # =====================================================================
