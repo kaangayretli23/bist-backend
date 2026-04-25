@@ -2,12 +2,16 @@
 BIST Pro - Data Fetcher & Background Loader Module
 Ham veri çekme fonksiyonları → data_fetcher_raw.py
 """
-import os, time, threading, traceback, json, re
+import os, time, threading, traceback, json, re, logging
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     import yfinance as yf
     YF_OK = True
+    # yfinance "$XYZ.IS: possibly delisted" log spam'ini bastir — biz zaten
+    # alternatif kaynaklara fallback ediyoruz, kullaniciyi rahatsiz etmesin.
+    logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+    logging.getLogger('yfinance.utils').setLevel(logging.CRITICAL)
 except ImportError:
     YF_OK = False
 try:
