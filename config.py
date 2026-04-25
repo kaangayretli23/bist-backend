@@ -40,7 +40,10 @@ DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'bist.db'))
 # Solo mode: tek kullanicili ev kullanimi. Aktifken auth bypass edilir, userId default 'kaan'.
 # Production cok-kullanicili modda env: SOLO_MODE=0
 SOLO_MODE = os.environ.get('SOLO_MODE', '1') == '1'
-SOLO_USER_ID = os.environ.get('SOLO_USER_ID', 'kaan')
+# NOT: SOLO_USER_ID, kullanicinin DB'deki mevcut UUID'sine isaret etmeli — geçmiş tum
+# auto_trades/auto_positions/portfolios/auto_config bu uid'ye bagli. Kaan'in kayitlari
+# 27 Mart 2026'da olusturulmus '0fec3983' user_id'sinde.
+SOLO_USER_ID = os.environ.get('SOLO_USER_ID', '0fec3983')
 SOLO_USERNAME = os.environ.get('SOLO_USERNAME', 'Kaan')
 
 app = Flask(__name__)
