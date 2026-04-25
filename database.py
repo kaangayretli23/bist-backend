@@ -148,6 +148,21 @@ def init_db():
                 win INTEGER DEFAULT 0,
                 UNIQUE(signal_id, horizon_days)
             );
+            CREATE TABLE IF NOT EXISTS auto_decisions (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT,
+                decision TEXT NOT NULL,
+                reason TEXT,
+                detail TEXT,
+                price REAL,
+                score REAL,
+                confidence REAL,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_auto_decisions_user_time
+                ON auto_decisions(user_id, created_at DESC);
         ''')
         db.commit()
         db.close()
@@ -275,6 +290,21 @@ def init_db():
                 UNIQUE(signal_id, horizon_days),
                 FOREIGN KEY(signal_id) REFERENCES signal_log(id)
             );
+            CREATE TABLE IF NOT EXISTS auto_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT,
+                decision TEXT NOT NULL,
+                reason TEXT,
+                detail TEXT,
+                price REAL,
+                score REAL,
+                confidence REAL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_auto_decisions_user_time
+                ON auto_decisions(user_id, created_at DESC);
         ''')
         db.commit()
         db.close()

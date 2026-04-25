@@ -6,7 +6,7 @@ auto_trader_engine.py'dan ayrıştırıldı (600 satır kuralı).
 import time
 # Not: config, auto_trader, signals, indicators, signals_core, routes_telegram
 # fonksiyon içinde lazy import edilir (circular/partial load önlemi).
-from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check
+from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check, _log_decision
 from signals_market import REGIMES_BEARISH
 
 
@@ -43,16 +43,22 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
             if allowed and sym not in allowed:
                 continue
             if sym in blocked:
+                _log_decision(uid, sym, 'SKIP', 'blocked', tf=tf)
                 continue
             if _sl_cooldown_check(uid, sym, cfg.get('tradeStyle', 'swing')):
+                _log_decision(uid, sym, 'SKIP', 'sl_cooldown', tf=tf)
                 continue
             if _reject_cooldown_check(uid, sym):
+                _log_decision(uid, sym, 'SKIP', 'reject_cooldown', tf=tf)
                 continue
 
             # Plan suresini kontrol et
             lock_cfg = PLAN_LOCK_CONFIG.get(tf, PLAN_LOCK_CONFIG.get('daily', {}))
             age = time.time() - entry.get('locked_at', 0)
             if age > lock_cfg.get('max_lock', 86400):
+                _log_decision(uid, sym, 'SKIP', 'plan_expired',
+                              detail=f"age={age/3600:.1f}h > {lock_cfg.get('max_lock', 86400)/3600:.0f}h",
+                              tf=tf)
                 continue  # Plan suresi dolmus
 
             # Guncel fiyat al
@@ -74,6 +80,9 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                 if deviation > _dev_limit:
                     print(f"[AUTO-TRADE] {sym} plan iptal — fiyat sapması %{deviation*100:.1f} "
                           f"(limit %{_dev_limit*100:.0f}, kilitli={locked_price:.2f}, güncel={cur_price:.2f})")
+                    _log_decision(uid, sym, 'SKIP', 'deviation',
+                                  detail=f"sapma=%{deviation*100:.1f} > limit=%{_dev_limit*100:.0f}",
+                                  tf=tf, price=cur_price)
                     with _plan_lock_cache_lock:
                         _plan_lock_cache.pop(lock_key, None)
                     continue
@@ -109,6 +118,9 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                 if _regime.get('regime') in REGIMES_BEARISH and float(_regime.get('strength', 0)) > 60:
                     print(f"[AUTO-TRADE] {sym} plan ertelendi — güçlü ayı piyasası "
                           f"(güç={_regime.get('strength', 0):.0f})")
+                    _log_decision(uid, sym, 'SKIP', 'regime',
+                                  detail=f"{_regime.get('regime')}/{_regime.get('strength', 0):.0f}",
+                                  tf=tf, price=cur_price)
                     continue
             except Exception:
                 pass
@@ -122,6 +134,9 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                     if vol_avg20 > 0 and vol_today < vol_avg20 * 0.5:
                         print(f"[AUTO-TRADE] {sym} plan ertelendi — düşük hacim "
                               f"(bugün={vol_today:.0f}, ort20={vol_avg20:.0f})")
+                        _log_decision(uid, sym, 'SKIP', 'volume',
+                                      detail=f"bugun={vol_today:.0f} < ort20*0.5={vol_avg20*0.5:.0f}",
+                                      tf=tf, price=cur_price)
                         continue
             except Exception:
                 pass
@@ -135,6 +150,9 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                     rsi_now = calc_rsi_single(closes)
                     if rsi_now is not None and rsi_now > 80:
                         print(f"[AUTO-TRADE] {sym} plan ertelendi — RSI={rsi_now:.1f} aşırı alım")
+                        _log_decision(uid, sym, 'SKIP', 'rsi_overbought',
+                                      detail=f"RSI={rsi_now:.1f} > 80",
+                                      tf=tf, price=cur_price)
                         continue
             except Exception:
                 pass
@@ -176,6 +194,9 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                 affordable_qty = int(free_capital / cur_price) if cur_price > 0 else 0
                 if affordable_qty < 1:
                     print(f"[AUTO-TRADE-PLAN] {sym} atlandi — serbest sermaye {free_capital:.0f} TL (1 lot {cur_price:.2f} TL)")
+                    _log_decision(uid, sym, 'SKIP', 'budget',
+                                  detail=f"[PLAN] serbest={free_capital:.0f} TL, 1 lot={cur_price:.2f} TL",
+                                  tf=tf, price=cur_price)
                     continue
                 print(f"[AUTO-TRADE-PLAN] {sym} adet kirpildi: {quantity} -> {affordable_qty} "
                       f"(serbest={free_capital:.0f} TL)")
@@ -210,9 +231,13 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                 print(f"[AUTO-TRADE] {sym} plan bayatlamis — atlandi "
                       f"(skor={plan_score:.1f} < {_plan_min_score:.1f} veya "
                       f"guven=%{plan_conf:.0f} < %{_plan_min_conf:.0f})")
+                _log_decision(uid, sym, 'SKIP', 'plan_stale',
+                              detail=f"sc={plan_score:.1f}/{_plan_min_score:.1f}, conf={plan_conf:.0f}/{_plan_min_conf:.0f}",
+                              tf=tf, price=cur_price, score=plan_score, confidence=plan_conf)
                 continue
             if not _score_ok:
                 print(f"[AUTO-TRADE] {sym} plan skor hesaplanamadi — atlandi (hist cache bos olabilir)")
+                _log_decision(uid, sym, 'SKIP', 'score_unavailable', tf=tf, price=cur_price)
                 continue
 
             # Telegram bildirimi veya direkt ac
@@ -238,6 +263,9 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
 
             if _already_pending or _tg_sent:
                 open_symbols.add(sym)
+                _log_decision(uid, sym, 'PENDING', 'telegram_approve',
+                              detail=f"[PLAN] qty={quantity}, SL={stop_loss:.2f}, TP1={tp1:.2f}",
+                              tf=tf, price=cur_price, score=plan_score, confidence=plan_conf)
             else:
                 pos_id = _auto_open_position(uid, sym, cur_price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl)
                 if pos_id:
@@ -251,6 +279,9 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                     slots -= 1
                     daily_remaining -= 1
                     print(f"[AUTO-TRADE] {sym} Plan Merkezi planından pozisyon açıldı (fiyat={cur_price:.2f})")
+                    _log_decision(uid, sym, 'BUY', 'opened',
+                                  detail=f"[PLAN] qty={quantity}, SL={stop_loss:.2f}, TP1={tp1:.2f}",
+                                  tf=tf, price=cur_price, score=plan_score, confidence=plan_conf)
     except Exception as _plan_err:
         print(f"[AUTO-TRADE] Plan Merkezi kontrolü hatası: {_plan_err}")
 

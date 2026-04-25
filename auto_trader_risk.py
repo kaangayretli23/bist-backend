@@ -1,11 +1,38 @@
 """
 BIST Pro - Auto Trading Risk Helpers
-SL cooldown (DB persisted) + panic-sell ring buffer (deque).
+SL cooldown (DB persisted) + panic-sell ring buffer (deque) + karar log helper.
 auto_trader_engine.py'dan ayrıştırıldı (700 satır kuralı).
 """
 import time
 from collections import deque
 from config import get_db
+
+
+def _log_decision(uid: str, sym: str, decision: str, reason: str = '',
+                  detail: str = '', tf: str = '', price: float = 0.0,
+                  score: float = 0.0, confidence: float = 0.0) -> None:
+    """auto_decisions tablosuna karar yaz. Sessiz hata — log yazimi engel olmasin.
+    decision: 'SKIP', 'BUY', 'PENDING' (Telegram onayi bekleniyor)
+    reason: 'reject_cooldown', 'sl_cooldown', 'regime', 'volume', 'rsi', 'budget',
+            'score', 'gap_down', 'opened', 'pending', 'plan_stale', 'deviation', vb.
+    """
+    if not uid or not sym:
+        return
+    try:
+        db = get_db()
+        try:
+            db.execute(
+                "INSERT INTO auto_decisions "
+                "(user_id, symbol, timeframe, decision, reason, detail, price, score, confidence) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (uid, sym.upper(), tf or '', decision, reason or '',
+                 (detail or '')[:500], float(price or 0), float(score or 0), float(confidence or 0))
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception as _le:
+        print(f"[DECISION-LOG] Yazilamadi {sym}/{reason}: {_le}")
 
 # SL sonrası yeniden giriş engeli: {uid_sym: (timestamp, trade_style)}
 _sl_cooldown: dict = {}

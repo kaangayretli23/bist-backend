@@ -1546,6 +1546,15 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
   <!-- Performans Ozeti -->
   <div id="atPerformance" class="grid-2 mb-16"></div>
 
+  <!-- Bugunku Ozet -->
+  <div class="card mb-16">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <div class="section-title" style="margin:0;"><span class="icon">📅</span> Bugünkü Özet</div>
+      <button onclick="loadDailySummary()" style="background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">↻ Yenile</button>
+    </div>
+    <div id="atDailySummary" style="font-size:13px;color:var(--text-dim);">Yükleniyor…</div>
+  </div>
+
   <!-- Acik Pozisyonlar -->
   <div class="card mb-16">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -1553,6 +1562,7 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
       <div style="display:flex;gap:6px;">
         <button onclick="openCapitalAdjustModal()" title="Sermayeyi hizlica artir/azalt (diger ayarlar korunur)" style="background:#9b59b6;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">💰 Bakiye</button>
         <button onclick="openReconcileModal()" title="Oto-trade pozisyonlarini manuel portfoy ile karsilastir" style="background:var(--blue);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">🔍 Senkron Kontrol</button>
+        <button onclick="openDecisionsModal()" title="Bugun hangi hisseler taranıp neden alınmadı" style="background:#e67e22;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">📋 Karar Logu</button>
         <button onclick="openAddPositionModal()" title="Midas'tan aldiginiz bir hisseyi sisteme ekleyin" style="background:var(--green);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">➕ Pozisyon Ekle</button>
       </div>
     </div>
@@ -7210,6 +7220,80 @@ async function loadAutoTrade() {
   } catch(e) {
     console.error('Auto-trade yukleme hatasi:', e);
   }
+
+  // Bugunku ozet de yenilensin (paralel, cevap bekleme)
+  loadDailySummary().catch(() => {});
+}
+
+// Bugunku ozet kartini doldur — daily-summary endpoint'inden
+async function loadDailySummary() {
+  const uid = _getUid();
+  const el = document.getElementById('atDailySummary');
+  if (!el) return;
+  if (!uid) { el.textContent = 'Giris yapmaniz gerekiyor'; return; }
+  try {
+    const r = await fetch(`${API_BASE}/auto-trade/daily-summary?userId=${encodeURIComponent(uid)}`);
+    const js = await r.json();
+    if (!js.success) { el.innerHTML = `<span style="color:var(--red);">Hata: ${js.error||''}</span>`; return; }
+
+    const pnl = js.pnl || {};
+    const tr = js.trades || {};
+    const dec = js.decisionTotal || {};
+    const _fmt = (n) => (n>=0?'+':'') + (n||0).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' TL';
+    const _color = (n) => n>0 ? 'var(--green)' : n<0 ? 'var(--red)' : 'var(--text-dim)';
+
+    let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;">';
+    html += `<div style="background:var(--bg);border-radius:6px;padding:10px;text-align:center;">
+      <div style="font-size:11px;color:var(--text-dim);">Gerçekleşen P&L</div>
+      <div style="font-size:18px;font-weight:700;color:${_color(pnl.realized)};">${_fmt(pnl.realized)}</div>
+      <div style="font-size:10px;color:var(--text-dim);">${tr.closedToday||0} işlem · ${tr.winners||0}K/${tr.losers||0}Z</div>
+    </div>`;
+    html += `<div style="background:var(--bg);border-radius:6px;padding:10px;text-align:center;">
+      <div style="font-size:11px;color:var(--text-dim);">Açık (Unrealized)</div>
+      <div style="font-size:18px;font-weight:700;color:${_color(pnl.unrealized)};">${_fmt(pnl.unrealized)}</div>
+      <div style="font-size:10px;color:var(--text-dim);">${js.openPositions||0} açık pozisyon</div>
+    </div>`;
+    html += `<div style="background:var(--bg);border-radius:6px;padding:10px;text-align:center;">
+      <div style="font-size:11px;color:var(--text-dim);">Toplam P&L</div>
+      <div style="font-size:18px;font-weight:700;color:${_color(pnl.total)};">${_fmt(pnl.total)}</div>
+      <div style="font-size:10px;color:var(--text-dim);">Komisyon: ${(pnl.commissionToday||0).toFixed(2)} TL</div>
+    </div>`;
+    html += `<div style="background:var(--bg);border-radius:6px;padding:10px;text-align:center;cursor:pointer;" onclick="openDecisionsModal()">
+      <div style="font-size:11px;color:var(--text-dim);">Bugünkü Kararlar</div>
+      <div style="font-size:14px;font-weight:600;">
+        <span style="color:var(--green);">${dec.BUY||0} alım</span> ·
+        <span style="color:#3498db;">${dec.PENDING||0} bekleyen</span> ·
+        <span style="color:var(--text-dim);">${dec.SKIP||0} atla</span>
+      </div>
+      <div style="font-size:10px;color:var(--accent);">Detay için tıkla →</div>
+    </div>`;
+    html += '</div>';
+
+    // Reject cooldown chips
+    if (js.cooldownActive && js.cooldownActive.length) {
+      html += '<div style="margin-top:10px;font-size:11px;color:var(--text-dim);">⏸ Reject cooldown: ';
+      html += js.cooldownActive.slice(0, 8).map(c => {
+        const rcol = c.reason === 'hard' ? 'var(--red)' : '#f1c40f';
+        return `<span style="background:var(--bg);color:${rcol};padding:2px 6px;border-radius:3px;margin-right:4px;">${c.symbol} ${c.remainingMin}dk</span>`;
+      }).join('');
+      if (js.cooldownActive.length > 8) html += `<span>+${js.cooldownActive.length - 8} daha</span>`;
+      html += '</div>';
+    }
+
+    // Bugun kapanan pozisyonlar (varsa)
+    if (js.closedPositions && js.closedPositions.length) {
+      html += '<div style="margin-top:10px;font-size:11px;color:var(--text-dim);">Bugün kapanan: ';
+      html += js.closedPositions.slice(0, 5).map(p => {
+        const c = p.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        return `<span style="margin-right:8px;"><b>${p.symbol}</b> <span style="color:${c};">${p.pnl>=0?'+':''}${p.pnl.toFixed(0)}TL (${p.pnlPct.toFixed(1)}%)</span></span>`;
+      }).join('');
+      html += '</div>';
+    }
+
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--red);">İstek hatası: ${e.message}</span>`;
+  }
 }
 
 async function toggleAutoTrade() {
@@ -7549,6 +7633,99 @@ async function reconcileFix(symbol) {
     if (js.success) { alert(js.message); openReconcileModal(); }
     else alert('Hata: ' + (js.error||''));
   } catch(e) { alert('İstek başarısız: ' + e.message); }
+}
+
+// Karar Logu — bugun scanner/plan hangi hisseleri taradi, neyi neden atladi
+const _DECISION_LABELS = {
+  'reject_cooldown': '⛔ Reddedildi (cooldown)', 'sl_cooldown': '⏸ SL cooldown',
+  'blocked': '🚫 Yasaklı liste', 'regime': '🐻 Ayı piyasası',
+  'volume': '📉 Düşük hacim', 'gap_down': '⬇️ Açılış gap-down',
+  'rsi_overbought': '🔥 RSI aşırı alım', 'budget': '💸 Bütçe yetmedi',
+  'score': '📊 Skor/güven yetmedi', 'plan_stale': '🍞 Plan bayatlamış',
+  'plan_expired': '⏰ Plan süresi dolmuş', 'deviation': '📐 Fiyat sapması',
+  'score_unavailable': '❓ Skor hesaplanamadı',
+  'opened': '✅ Pozisyon açıldı', 'telegram_approve': '📨 Telegram onayda',
+};
+async function openDecisionsModal(filter='') {
+  const uid = (window.currentUser && currentUser.userId) || '';
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
+  let modal = document.getElementById('decisionsModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'decisionsModal';
+    modal.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;align-items:center;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:var(--bg-card);color:var(--text);border-radius:8px;padding:20px;max-width:820px;width:96%;max-height:85vh;overflow:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-weight:700;font-size:16px;">📋 Bugünkü Karar Logu</div>
+          <button onclick="document.getElementById('decisionsModal').style.display='none';" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
+        </div>
+        <div id="decisionsFilter" style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap;"></div>
+        <div id="decisionsSummary" style="margin-bottom:10px;font-size:12px;color:var(--text-dim);"></div>
+        <div id="decisionsBody" style="font-size:12px;color:var(--text-dim);">Yükleniyor…</div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'flex';
+  const body = document.getElementById('decisionsBody');
+  const summary = document.getElementById('decisionsSummary');
+  const filterBar = document.getElementById('decisionsFilter');
+  body.innerHTML = 'Yükleniyor…';
+  try {
+    const url = '/api/auto-trade/decisions?userId=' + encodeURIComponent(uid)
+              + '&limit=300' + (filter ? '&decision=' + encodeURIComponent(filter) : '');
+    const r = await fetch(url);
+    const js = await r.json();
+    if (!js.success) { body.innerHTML = `<div style="color:var(--red);">Hata: ${js.error||''}</div>`; return; }
+
+    // Filter chips
+    const chips = ['', 'BUY', 'PENDING', 'SKIP'];
+    filterBar.innerHTML = chips.map(c => {
+      const label = c || 'Tümü';
+      const active = (filter || '') === c;
+      return `<button onclick="openDecisionsModal('${c}')" style="background:${active?'var(--accent)':'transparent'};color:${active?'#000':'var(--text)'};border:1px solid var(--border);border-radius:4px;padding:4px 10px;font-size:11px;cursor:pointer;font-weight:${active?700:500};">${label}</button>`;
+    }).join('');
+
+    // Summary
+    if (js.summary && js.summary.length) {
+      const summaryText = js.summary.map(s => {
+        const lbl = _DECISION_LABELS[s.reason] || s.reason || s.decision;
+        return `${lbl}: <b>${s.count}</b>`;
+      }).join(' · ');
+      summary.innerHTML = `Bugünkü dağılım — ${summaryText}`;
+    } else { summary.innerHTML = 'Bugün henüz karar kaydedilmedi.'; }
+
+    if (!js.decisions.length) { body.innerHTML = '<div style="padding:8px;">Kayıt yok.</div>'; return; }
+
+    let html = '<table style="width:100%;border-collapse:collapse;">';
+    html += '<thead><tr style="border-bottom:1px solid var(--border);">';
+    html += '<th style="text-align:left;padding:6px 4px;">Saat</th>';
+    html += '<th style="text-align:left;padding:6px 4px;">Sembol</th>';
+    html += '<th style="text-align:center;padding:6px 4px;">TF</th>';
+    html += '<th style="text-align:left;padding:6px 4px;">Karar</th>';
+    html += '<th style="text-align:left;padding:6px 4px;">Sebep · Ayrıntı</th>';
+    html += '<th style="text-align:right;padding:6px 4px;">Skor</th>';
+    html += '</tr></thead><tbody>';
+    const decColor = {'BUY':'var(--green)','PENDING':'#3498db','SKIP':'var(--text-dim)'};
+    for (const d of js.decisions) {
+      const t = (d.createdAt || '').substring(11,16);
+      const lbl = _DECISION_LABELS[d.reason] || d.reason;
+      const detail = d.detail ? ` <span style="color:var(--text-dim);">— ${d.detail}</span>` : '';
+      const scoreStr = d.score > 0 ? `${d.score.toFixed(1)} / %${d.confidence.toFixed(0)}` : '';
+      html += `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 4px;color:var(--text-dim);">${t}</td>
+        <td style="padding:5px 4px;font-weight:600;">${d.symbol}</td>
+        <td style="padding:5px 4px;text-align:center;color:var(--text-dim);font-size:10px;">${d.tf}</td>
+        <td style="padding:5px 4px;color:${decColor[d.decision]||'var(--text)'};font-weight:600;">${d.decision}</td>
+        <td style="padding:5px 4px;">${lbl}${detail}</td>
+        <td style="padding:5px 4px;text-align:right;color:var(--text-dim);font-size:11px;">${scoreStr}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  } catch(e) {
+    body.innerHTML = `<div style="color:var(--red);">İstek hatası: ${e.message}</div>`;
+  }
 }
 
 // Manuel Pozisyon Ekleme — Midas'ta alinmis ama oto-trader'a kayitli olmayan hisse icin

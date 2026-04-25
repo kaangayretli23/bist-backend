@@ -5,7 +5,7 @@ auto_trader_engine.py'dan ayrıştırıldı (600 satır kuralı).
 """
 # Not: config, auto_trader, signals, indicators, signals_core, routes_telegram,
 # realtime_prices, data_fetcher, trade_plans fonksiyon içinde lazy import edilir.
-from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check
+from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check, _log_decision
 from signals_market import REGIMES_BEARISH
 
 
@@ -31,6 +31,7 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         _signals_ok = False
 
     _tf_map = {'daily': 'daily', 'swing': 'weekly', 'monthly': 'monthly'}
+    _tf_now = _tf_map.get(cfg.get('tradeStyle', 'swing'), 'weekly')
 
     for s in stocks:
         sym = s.get('code', '')
@@ -39,10 +40,13 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         if allowed and sym not in allowed:
             continue
         if sym in blocked:
+            _log_decision(uid, sym, 'SKIP', 'blocked', tf=_tf_now)
             continue
         if _sl_cooldown_check(uid, sym, cfg.get('tradeStyle', 'swing')):
+            _log_decision(uid, sym, 'SKIP', 'sl_cooldown', tf=_tf_now)
             continue
         if _reject_cooldown_check(uid, sym):
+            _log_decision(uid, sym, 'SKIP', 'reject_cooldown', tf=_tf_now)
             continue
         if not _signals_ok:
             continue
@@ -83,6 +87,9 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             continue
 
         if signal not in ('AL', 'GÜÇLÜ AL') or score < cfg['minScore'] or confidence < cfg['minConfidence']:
+            _log_decision(uid, sym, 'SKIP', 'score',
+                          detail=f"sig={signal}, sc={score:.1f}/{cfg['minScore']}, conf={confidence:.0f}/{cfg['minConfidence']}",
+                          tf=_tf_now, price=live_price, score=score, confidence=confidence)
             continue
 
         # Piyasa rejimi: güçlü ayı piyasasında yeni alım yapma
@@ -91,6 +98,9 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             _reg = _cmr()
             if _reg.get('regime') in REGIMES_BEARISH and float(_reg.get('strength', 0)) > 60:
                 print(f"[AUTO-TRADE] {sym} atlandi — ayi piyasasi (guc={_reg.get('strength')})")
+                _log_decision(uid, sym, 'SKIP', 'regime',
+                              detail=f"{_reg.get('regime')}/{_reg.get('strength', 0):.0f}",
+                              tf=_tf_now, price=live_price)
                 continue
         except Exception:
             pass
@@ -101,6 +111,9 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                 vol_today = float(hist['Volume'].iloc[-1])
                 vol_avg20 = float(hist['Volume'].iloc[-20:].mean())
                 if vol_avg20 > 0 and vol_today < vol_avg20 * 0.5:
+                    _log_decision(uid, sym, 'SKIP', 'volume',
+                                  detail=f"bugun={vol_today:.0f} < ort20*0.5={vol_avg20*0.5:.0f}",
+                                  tf=_tf_now, price=live_price)
                     continue
             except Exception:
                 pass
@@ -111,6 +124,9 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                 prev_close = float(hist['Close'].iloc[-2])
                 today_open = float(hist['Open'].iloc[-1])
                 if prev_close > 0 and (prev_close - today_open) / prev_close > 0.03:
+                    _log_decision(uid, sym, 'SKIP', 'gap_down',
+                                  detail=f"prev={prev_close:.2f} -> open={today_open:.2f}",
+                                  tf=_tf_now, price=live_price)
                     continue
             except Exception:
                 pass
@@ -182,6 +198,9 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             affordable_qty = int(free_capital / price) if price > 0 else 0
             if affordable_qty < 1:
                 print(f"[AUTO-TRADE] {sym} atlandi — serbest sermaye {free_capital:.0f} TL (1 lot {price:.2f} TL)")
+                _log_decision(uid, sym, 'SKIP', 'budget',
+                              detail=f"serbest={free_capital:.0f} TL, 1 lot={price:.2f} TL",
+                              tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
                 continue
             print(f"[AUTO-TRADE] {sym} adet kirpildi: {quantity} -> {affordable_qty} "
                   f"(serbest={free_capital:.0f} TL)")
@@ -215,6 +234,9 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             except Exception:
                 pass
             open_symbols.add(sym)
+            _log_decision(uid, sym, 'PENDING', 'telegram_approve',
+                          detail=f"qty={quantity}, SL={stop_loss:.2f}, TP1={tp1:.2f}",
+                          tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
         else:
             pos_id = _auto_open_position(uid, sym, price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl)
             if pos_id:
@@ -223,3 +245,6 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                                cand['score'], cand['confidence'], pos_id)
                 open_positions = _auto_get_open_positions(uid)
                 open_symbols.add(sym)
+                _log_decision(uid, sym, 'BUY', 'opened',
+                              detail=f"qty={quantity}, SL={stop_loss:.2f}, TP1={tp1:.2f}",
+                              tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])

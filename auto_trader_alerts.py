@@ -1,13 +1,15 @@
 """
 BIST Pro - Auto Trader Gunluk Risk Uyarilari
 Telegram'a: (a) gunluk zarar limiti %70'e ulasinca, (b) max_daily_trades doldu uyarilari.
-Gun icinde tekrar etmesin diye dedupe: {uid_key: set(alert_code)} + tarih resetlenir.
+Gun icinde tekrar etmesin diye dedupe: auto_decisions tablosuna decision='ALERT' yazilir;
+restart sonrasi da gunluk dedup korunur.
 """
 from datetime import datetime, timezone, timedelta
 
 _TZ_TR = timezone(timedelta(hours=3))
 
-# {date_str: {uid: set(['loss70','loss100','dailymax'])}}
+# RAM cache: {date_str: {uid: set(['loss70','loss100','dailymax'])}}
+# Sadece hizlandirma — kanonik kaynak DB. Cold start'ta DB'den seedlenir.
 _alerts_sent: dict = {}
 
 
@@ -21,12 +23,38 @@ def _already_sent(uid: str, code: str) -> bool:
     for d in list(_alerts_sent.keys()):
         if d != today:
             _alerts_sent.pop(d, None)
-    return code in _alerts_sent.get(today, {}).get(uid, set())
+    if code in _alerts_sent.get(today, {}).get(uid, set()):
+        return True
+    # DB tabanlı: bugun bu kod icin ALERT yazilmis mi
+    try:
+        from config import get_db
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT 1 FROM auto_decisions "
+                "WHERE user_id=? AND decision='ALERT' AND reason=? AND created_at >= ? "
+                "LIMIT 1",
+                (uid, code, today + ' 00:00:00')
+            ).fetchone()
+            if row:
+                _alerts_sent.setdefault(today, {}).setdefault(uid, set()).add(code)
+                return True
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return False
 
 
 def _mark_sent(uid: str, code: str) -> None:
     today = _today_str()
     _alerts_sent.setdefault(today, {}).setdefault(uid, set()).add(code)
+    # DB'ye de yaz — restart sonrasi tekrar tetiklenmesin
+    try:
+        from auto_trader_risk import _log_decision
+        _log_decision(uid, '_DAILY', 'ALERT', reason=code, detail=f"Gunluk uyari: {code}")
+    except Exception:
+        pass
 
 
 def _send(message: str) -> None:

@@ -295,6 +295,10 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
             return
 
         # Quantity azalt + tetiklenen TP'yi sıfırla (SQL whitelist: kullanıcı input'undan bağımsız)
+        # TP1 tetiklenirse: SL'yi giriş fiyatına çek (break-even) — kar geri verilmesin.
+        # Sadece mevcut SL girişin altındaysa yukarı taşı; trailing yukarı sürüklediyse dokunma.
+        _BUMP_SL_TO_BE = clear_tp_field == 'take_profit1'
+        _be_price = round(entry * 1.001, 2)  # %0.1 tampon
         _ALLOWED_CLEAR_TP = {
             'take_profit1': "UPDATE auto_positions SET quantity=?, take_profit1=0 WHERE id=?",
             'take_profit2': "UPDATE auto_positions SET quantity=?, take_profit2=0 WHERE id=?",
@@ -303,6 +307,13 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
             db.execute(_ALLOWED_CLEAR_TP[clear_tp_field], [remaining, position_id])
         else:
             db.execute("UPDATE auto_positions SET quantity=? WHERE id=?", [remaining, position_id])
+        # Break-even SL: TP1 sonrası, mevcut SL girişin altındaysa yukarı çek
+        _be_applied = False
+        if _BUMP_SL_TO_BE:
+            cur_sl = float(row['stop_loss'] or 0)
+            if cur_sl < _be_price:
+                db.execute("UPDATE auto_positions SET stop_loss=? WHERE id=?", (_be_price, position_id))
+                _be_applied = True
         db.commit()
         db.close()
         # Portfoy senkronu: kismi SELL -> portfolios'tan actual_sell kadar dus
@@ -311,14 +322,16 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
             _sync_portfolio_sell(row['user_id'], row['symbol'], actual_sell)
         except Exception as _ps_err:
             print(f"[AUTO-TRADE] Portfoy partial SELL sync hatasi: {_ps_err}")
+        _be_msg = f", SL→BE ({_be_price:.2f})" if _be_applied else ""
         print(f"[AUTO-TRADE] Kısmi satış #{position_id}: {row['symbol']} "
               f"{actual_sell:.2f} lot @ {price:.2f}, kalan={remaining:.2f}, "
-              f"PnL={pnl:.2f} ({pnl_pct:.1f}%) - {reason}")
+              f"PnL={pnl:.2f} ({pnl_pct:.1f}%) - {reason}{_be_msg}")
         try:
             from routes_telegram import send_position_closed_notification
+            _be_tail = f"\n🛡 SL break-even'a çekildi: {_be_price:.2f}" if _be_applied else ""
             send_position_closed_notification(
                 row['symbol'], price, round(pnl, 2), round(pnl_pct, 2),
-                f"{reason} (kısmi — kalan {remaining:.2f} lot)")
+                f"{reason} (kısmi — kalan {remaining:.2f} lot){_be_tail}")
         except Exception:
             pass
     except Exception as e:

@@ -288,6 +288,188 @@ def auto_trade_trades():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/auto-trade/decisions')
+@require_user
+def auto_trade_decisions():
+    """Karar log'u — bugun veya verilen aralik icin scanner/plan kararlari.
+    Query: userId, limit (1..500, default 200), since (ISO datetime opsiyonel),
+           decision ('SKIP'|'BUY'|'PENDING' opsiyonel filtre)
+    """
+    try:
+        uid = request.args.get('userId', '')
+        if not uid:
+            return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+        try:
+            limit = min(max(int(request.args.get('limit', 200)), 1), 500)
+        except (TypeError, ValueError):
+            limit = 200
+        decision_filter = (request.args.get('decision', '') or '').upper().strip()
+        since = (request.args.get('since', '') or '').strip()
+
+        sql = "SELECT * FROM auto_decisions WHERE user_id=?"
+        params = [uid]
+        if decision_filter in ('SKIP', 'BUY', 'PENDING'):
+            sql += " AND decision=?"
+            params.append(decision_filter)
+        if since:
+            sql += " AND created_at >= ?"
+            params.append(since)
+        else:
+            # default: bugun (UTC tabanli, basit)
+            from datetime import datetime as _dt
+            sql += " AND created_at >= ?"
+            params.append(_dt.now().strftime('%Y-%m-%d 00:00:00'))
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        db = get_db()
+        rows = db.execute(sql, tuple(params)).fetchall()
+        # Reason ozet (bugunku)
+        summary_rows = db.execute(
+            "SELECT decision, reason, COUNT(*) AS c FROM auto_decisions "
+            "WHERE user_id=? AND created_at >= ? GROUP BY decision, reason ORDER BY c DESC",
+            (uid, params[-2] if since else params[-2])
+        ).fetchall() if rows else []
+        db.close()
+
+        items = [{
+            'id': r['id'], 'symbol': r['symbol'], 'tf': r['timeframe'] or '',
+            'decision': r['decision'], 'reason': r['reason'] or '',
+            'detail': r['detail'] or '',
+            'price': float(r['price'] or 0), 'score': float(r['score'] or 0),
+            'confidence': float(r['confidence'] or 0),
+            'createdAt': r['created_at'],
+        } for r in rows]
+        summary = [{'decision': r['decision'], 'reason': r['reason'] or '', 'count': int(r['c'])}
+                   for r in summary_rows]
+        return jsonify(safe_dict({'success': True, 'decisions': items, 'summary': summary, 'count': len(items)}))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/auto-trade/daily-summary')
+@require_user
+def auto_trade_daily_summary():
+    """Bugunku tum aktiviteyi tek ekranda topla:
+       - kapali isemler P&L (gross/net/komisyon)
+       - acik pozisyon unrealized P&L
+       - bugunki BUY/SELL sayisi
+       - karar log dagilimi (skip/buy/pending)
+       - aktif reject cooldown listesi
+    """
+    try:
+        uid = request.args.get('userId', '')
+        if not uid:
+            return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+        from datetime import datetime as _dt
+        today = _dt.now().strftime('%Y-%m-%d')
+        today_floor = today + ' 00:00:00'
+
+        db = get_db()
+        # Bugun kapatilan pozisyonlar (PnL)
+        closed = db.execute(
+            "SELECT symbol, entry_price, close_price, quantity, pnl, pnl_pct, close_reason, closed_at "
+            "FROM auto_positions WHERE user_id=? AND status='closed' AND closed_at >= ? "
+            "ORDER BY closed_at DESC",
+            (uid, today_floor)
+        ).fetchall()
+        realized_pnl = sum(float(r['pnl'] or 0) for r in closed)
+        winners = sum(1 for r in closed if float(r['pnl'] or 0) > 0)
+        losers = sum(1 for r in closed if float(r['pnl'] or 0) < 0)
+
+        # Bugunku trade log (buy + sell)
+        trades_today = db.execute(
+            "SELECT COUNT(*) AS c, action FROM auto_trades "
+            "WHERE user_id=? AND created_at >= ? GROUP BY action",
+            (uid, today_floor)
+        ).fetchall()
+        trade_counts = {r['action']: int(r['c']) for r in trades_today}
+
+        # Karar dagilimi
+        dec_summary = db.execute(
+            "SELECT decision, reason, COUNT(*) AS c FROM auto_decisions "
+            "WHERE user_id=? AND created_at >= ? GROUP BY decision, reason ORDER BY c DESC",
+            (uid, today_floor)
+        ).fetchall()
+        decisions = [{'decision': r['decision'], 'reason': r['reason'] or '', 'count': int(r['c'])}
+                     for r in dec_summary]
+        # Decision aggregate
+        dec_total = {'BUY': 0, 'PENDING': 0, 'SKIP': 0}
+        for d in decisions:
+            if d['decision'] in dec_total:
+                dec_total[d['decision']] += d['count']
+
+        # Acik pozisyon unrealized P&L
+        from auto_trader import _auto_get_open_positions
+        from config import _cget, _stock_cache
+        open_positions = _auto_get_open_positions(uid) or []
+        unrealized = 0.0
+        for p in open_positions:
+            stock = _cget(_stock_cache, p['symbol'])
+            cur = float(stock.get('price', 0)) if stock else 0
+            if cur <= 0:
+                continue
+            unrealized += (cur - float(p['entryPrice'])) * float(p['quantity'])
+
+        # Aktif reject cooldown listesi (ram-resident)
+        from auto_trader_risk import _reject_cooldown
+        import time as _t
+        now_ts = _t.time()
+        cooldown_active = []
+        for k, (exp, reason) in list(_reject_cooldown.items()):
+            if not k.startswith(uid + '_'):
+                continue
+            if exp <= now_ts:
+                continue
+            sym = k[len(uid)+1:]
+            cooldown_active.append({
+                'symbol': sym, 'reason': reason,
+                'remainingMin': int((exp - now_ts) / 60),
+            })
+        cooldown_active.sort(key=lambda x: -x['remainingMin'])
+
+        # Komisyon toplam (closed today)
+        from auto_trader import _calc_trade_costs
+        commission_today = 0.0
+        for r in closed:
+            entry = float(r['entry_price'] or 0)
+            cp = float(r['close_price'] or 0)
+            qty = float(r['quantity'] or 0)
+            commission_today += _calc_trade_costs(uid, entry * qty, cp * qty)
+
+        db.close()
+
+        return jsonify(safe_dict({
+            'success': True,
+            'date': today,
+            'pnl': {
+                'realized': round(realized_pnl, 2),
+                'unrealized': round(unrealized, 2),
+                'total': round(realized_pnl + unrealized, 2),
+                'commissionToday': round(commission_today, 2),
+            },
+            'trades': {
+                'closedToday': len(closed),
+                'winners': winners,
+                'losers': losers,
+                'buyCount': trade_counts.get('BUY', 0),
+                'sellCount': sum(trade_counts.get(a, 0) for a in trade_counts if a.startswith('SELL')),
+            },
+            'closedPositions': [{
+                'symbol': r['symbol'], 'entry': float(r['entry_price'] or 0),
+                'close': float(r['close_price'] or 0), 'qty': float(r['quantity'] or 0),
+                'pnl': float(r['pnl'] or 0), 'pnlPct': float(r['pnl_pct'] or 0),
+                'reason': r['close_reason'] or '', 'closedAt': r['closed_at'],
+            } for r in closed],
+            'decisions': decisions,
+            'decisionTotal': dec_total,
+            'cooldownActive': cooldown_active,
+            'openPositions': len(open_positions),
+        }))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/auto-trade/run', methods=['POST'])
 @require_user
 def auto_trade_run_now():
