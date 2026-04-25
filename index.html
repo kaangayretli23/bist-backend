@@ -6932,6 +6932,8 @@ function updatePosition(card) {
 let _atEnabled = false;
 
 function _getUid() {
+  // Once memory'deki currentUser (initSoloMode tarafindan guncellenir), sonra localStorage fallback
+  if (currentUser && currentUser.userId) return currentUser.userId;
   const u = _safeParseUser();
   return u ? u.userId : '';
 }
@@ -7485,7 +7487,7 @@ async function reopenPosition(posId, symbol) {
 
 // Sermaye hizli ayar — diger ayarlara dokunmadan capital'i artir/azalt
 async function openCapitalAdjustModal() {
-  const uid = (window.currentUser && currentUser.userId) || '';
+  const uid = (currentUser && currentUser.userId) || '';
   if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
   let curCapital = 0;
   try {
@@ -7540,7 +7542,7 @@ async function openCapitalAdjustModal() {
 }
 
 async function submitCapitalAdjust(curCapital) {
-  const uid = (window.currentUser && currentUser.userId) || '';
+  const uid = (currentUser && currentUser.userId) || '';
   const amt = parseFloat(document.getElementById('capAdjAmount').value);
   const mode = document.getElementById('capAdjMode').value;
   if (!amt || amt <= 0) { alert('Gecerli bir tutar girin'); return; }
@@ -7566,7 +7568,7 @@ async function submitCapitalAdjust(curCapital) {
 
 // Portfolio ↔ auto_positions reconciliation: iki tablo arasi tutarliligi kontrol et
 async function openReconcileModal() {
-  const uid = (window.currentUser && currentUser.userId) || '';
+  const uid = (currentUser && currentUser.userId) || '';
   if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
   let modal = document.getElementById('reconcileModal');
   if (!modal) {
@@ -7621,7 +7623,7 @@ async function openReconcileModal() {
 }
 
 async function reconcileFix(symbol) {
-  const uid = (window.currentUser && currentUser.userId) || '';
+  const uid = (currentUser && currentUser.userId) || '';
   if (!uid || !symbol) return;
   if (!confirm(`${symbol}: portfoy satırı oto-trade değerlerine göre güncellenecek. Devam?`)) return;
   try {
@@ -7647,7 +7649,7 @@ const _DECISION_LABELS = {
   'opened': '✅ Pozisyon açıldı', 'telegram_approve': '📨 Telegram onayda',
 };
 async function openDecisionsModal(filter='') {
-  const uid = (window.currentUser && currentUser.userId) || '';
+  const uid = (currentUser && currentUser.userId) || '';
   if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
   let modal = document.getElementById('decisionsModal');
   if (!modal) {
