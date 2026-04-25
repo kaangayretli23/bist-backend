@@ -5,3 +5,15 @@ __pycache__/
 venv/
 .env
 backend_original.py
+
+# Log / runtime
+*.log
+server.log
+server2.log
+regime_error.log
+
+# IDE / AI artefactlari
+.claude/
+.cursor/
+_bmad/
+_bmad-output/
