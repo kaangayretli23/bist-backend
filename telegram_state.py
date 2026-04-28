@@ -35,6 +35,19 @@ _telegram_thread_lock = threading.Lock()
 _pending_signals = {}
 _pending_lock = threading.Lock()
 
+def load_pending_from_db():
+    """Restart sonrasi DB'den onay bekleyen sinyalleri yukle. init_db()'den sonra
+    cagrilmali — _start_telegram_thread() icinde tetiklenir."""
+    try:
+        from database import _db_load_pending_signals
+        loaded = _db_load_pending_signals()
+        with _pending_lock:
+            _pending_signals.update(loaded)
+        if loaded:
+            print(f"[TELEGRAM-STATE] {len(loaded)} bekleyen sinyal DB'den yuklendi")
+    except Exception as e:
+        print(f"[TELEGRAM-STATE] Pending yukleme hatasi: {e}")
+
 # Bekleyen trailing güncellemeleri:
 #   {trail_id: {position_id, symbol, new_trailing, new_highest, expires_at}}
 _pending_trailing = {}

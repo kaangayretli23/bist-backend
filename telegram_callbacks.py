@@ -38,6 +38,11 @@ def _handle_approve(signal_id, message_id):
     """Kullanici ONAYLA'ya basti"""
     with _pending_lock:
         signal = _pending_signals.pop(signal_id, None)
+    try:
+        from database import _db_delete_pending_signal
+        _db_delete_pending_signal(signal_id)
+    except Exception:
+        pass
 
     if not signal:
         edit_telegram_message(message_id, "⚠️ Sinyal bulunamadı veya süresi dolmuş.")
@@ -102,6 +107,11 @@ def _handle_reject(signal_id, message_id):
     """Kullanici REDDET'e basti"""
     with _pending_lock:
         signal = _pending_signals.pop(signal_id, None)
+    try:
+        from database import _db_delete_pending_signal
+        _db_delete_pending_signal(signal_id)
+    except Exception:
+        pass
 
     if signal:
         # Hard reject: 12 saat boyunca bu hisse bir daha onerilmesin
@@ -235,6 +245,14 @@ def _cleanup_expired_signals():
                 for sid in expired:
                     expired_list.append(_pending_signals[sid].copy())
                     del _pending_signals[sid]
+            # DB'den de sil
+            if expired:
+                try:
+                    from database import _db_delete_pending_signal
+                    for sid in expired:
+                        _db_delete_pending_signal(sid)
+                except Exception:
+                    pass
             for sig in expired_list:
                 print(f"[TELEGRAM] Suresi dolan sinyal temizlendi: {sig['symbol']} ({sig.get('uid', '')})")
                 # Soft reject: 2 saat sessiz kalsin (yanit yok, ama belki gun icinde tekrar degerlendirilir)
@@ -272,6 +290,13 @@ def _start_telegram_thread():
 
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
+
+    # Restart resilience: DB'den onay bekleyen sinyalleri RAM'a geri al
+    try:
+        from telegram_state import load_pending_from_db
+        load_pending_from_db()
+    except Exception as e:
+        print(f"[TELEGRAM] Pending yukleme uyarisi: {e}")
 
     from telegram_reports import _auto_signal_check, _performance_reporter
     threading.Thread(target=_auto_signal_check, daemon=True).start()

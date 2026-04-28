@@ -196,6 +196,12 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
             'trailing_sl': trailing_sl,
             'expires_at': datetime.now() + timedelta(minutes=15),
         }
+    # Persist (restart-resilient onay sinyali)
+    try:
+        from database import _db_save_pending_signal
+        _db_save_pending_signal(signal_id, _pending_signals[signal_id])
+    except Exception:
+        pass
 
     msg = (
         f"🟢 <b>AL SİNYALİ — {symbol}</b>  <i>({sig_time_str})</i>\n"

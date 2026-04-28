@@ -235,6 +235,21 @@ _alert_state: dict = {}
 _alert_lock = threading.Lock()
 
 
+def _load_persisted_alert_state():
+    """Startup: DB'den alert state'leri RAM'a al. {pos_key: state} formatina cevir.
+    pos_key = f'{user_id}_{symbol}'"""
+    try:
+        from database import _db_load_alert_states
+        loaded = _db_load_alert_states()  # {(uid, sym, pid): state}
+        with _alert_lock:
+            for (uid, sym, _pid), st in loaded.items():
+                _alert_state[f"{uid}_{sym}"] = st
+        if loaded:
+            print(f"[RT-MONITOR] {len(loaded)} alert state DB'den yuklendi")
+    except Exception as e:
+        print(f"[RT-MONITOR] Alert state yukleme hatasi: {e}")
+
+
 def _get_open_positions():
     """DB'den açık pozisyonları güvenli şekilde çek."""
     try:
@@ -349,9 +364,14 @@ def _check_positions_once():
                         _panic_clear(pid)
                         state['sl_executed'] = True
                         print(f"[RT-EXEC] {sym} SL otomatik kapatildi @ {cur:.2f}")
-                        # Pozisyon kapandı → state'i temizle
+                        # Pozisyon kapandı → state'i temizle (RAM + DB)
                         with _alert_lock:
                             _alert_state.pop(pos_key, None)
+                        try:
+                            from database import _db_delete_alert_state
+                            _db_delete_alert_state(uid, sym, pid)
+                        except Exception:
+                            pass
                         unsubscribe(sym)
                         # Telegram'a son haber
                         if send_telegram and msgs:
@@ -396,6 +416,11 @@ def _check_positions_once():
                     print(f"[RT-EXEC] {sym} TP3 otomatik kapatildi @ {cur:.2f}")
                     with _alert_lock:
                         _alert_state.pop(pos_key, None)
+                    try:
+                        from database import _db_delete_alert_state
+                        _db_delete_alert_state(uid, sym, pid)
+                    except Exception:
+                        pass
                     unsubscribe(sym)
                     if send_telegram and msgs:
                         for m in msgs:
@@ -464,6 +489,20 @@ def _check_positions_once():
         with _alert_lock:
             _alert_state[pos_key] = state
 
+        # Persist (yalnizca flag degismis ise) — DB'ye yazma maliyetini azaltmak icin
+        # her tick degil, anlamli flag transition'larinda yazariz.
+        try:
+            if any(state.get(k) for k in (
+                'sl_warned', 'sl_hit', 'sl_executed',
+                'tp1_warned', 'tp1_hit', 'tp1_executed',
+                'tp2_warned', 'tp2_hit', 'tp2_executed',
+                'tp3_hit', 'tp3_executed',
+            )):
+                from database import _db_save_alert_state
+                _db_save_alert_state(uid, sym, pid, state)
+        except Exception:
+            pass
+
         if send_telegram:
             for msg in msgs:
                 try:
@@ -472,10 +511,16 @@ def _check_positions_once():
                     pass
 
 
-def reset_position_alerts(symbol: str, user_id: str) -> None:
-    """Pozisyon kapanınca uyarı state'ini temizle ve aboneliği iptal et."""
+def reset_position_alerts(symbol: str, user_id: str, position_id: int | None = None) -> None:
+    """Pozisyon kapanınca uyarı state'ini temizle (RAM+DB) ve aboneliği iptal et."""
     with _alert_lock:
         _alert_state.pop(f"{user_id}_{symbol}", None)
+    if position_id is not None:
+        try:
+            from database import _db_delete_alert_state
+            _db_delete_alert_state(user_id, symbol, position_id)
+        except Exception:
+            pass
     unsubscribe(symbol)
 
 
@@ -493,6 +538,9 @@ def start_realtime_monitor():
         if _monitor_started:
             return
         _monitor_started = True
+
+    # Restart sonrasi alert state'leri DB'den geri yukle (TP1/SL flagleri)
+    _load_persisted_alert_state()
 
     def _loop():
         # Başlangıçta stream'i bağla
