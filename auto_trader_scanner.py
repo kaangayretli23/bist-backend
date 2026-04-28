@@ -231,6 +231,21 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                   f"(tp1={tp1:.2f}, tp2={tp2:.2f}, tp3={tp3:.2f}) → default formul")
             tp1, tp2, tp3 = _tp_default_1, _tp_default_2, _tp_default_3
 
+        # R/R guard — TP1/SL ratio < 1 ise pozisyon acmiyoruz.
+        # Mantik: kazansa bile az kazanir, kaybetse cok kaybeder; matematik tutmaz
+        # (TUKAS gibi: SL %4.2, TP1 %3.1 → R/R=0.74 → win-rate %60+ gerekir kar icin).
+        sl_distance_for_rr = price - stop_loss
+        tp1_distance = tp1 - price
+        if sl_distance_for_rr > 0 and tp1_distance > 0:
+            rr = tp1_distance / sl_distance_for_rr
+            if rr < 1.0:
+                _log_decision(uid, sym, 'SKIP', 'poor_rr',
+                              detail=f"R/R={rr:.2f} (TP1=+{tp1_distance/price*100:.1f}%, "
+                                     f"SL=-{sl_distance_for_rr/price*100:.1f}%)",
+                              price=price, score=cand['score'], confidence=cand['confidence'])
+                print(f"[AUTO-TRADE] {sym} atlandi — kotu R/R={rr:.2f}")
+                continue
+
         risk_amount = cfg['capital'] * (cfg['riskPerTrade'] / 100)
         sl_distance = price - stop_loss
         if sl_distance <= 0:

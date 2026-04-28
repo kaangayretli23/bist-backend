@@ -291,6 +291,17 @@ def premarket_run_now():
         uid = data.get('userId', '') or request.args.get('userId', '')
         if not uid:
             return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+
+        # Telegram credentials kontrolu — yoksa kullaniciya net soyle
+        import os as _os
+        tg_token = _os.environ.get('TELEGRAM_BOT_TOKEN', '')
+        tg_chat = _os.environ.get('TELEGRAM_CHAT_ID', '')
+        if not tg_token or not tg_chat:
+            return jsonify({
+                'success': False,
+                'error': 'Telegram yapilandirilmamis (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env)',
+            }), 400
+
         from auto_trader_premarket import run_for_user_now
         watchlist = run_for_user_now(uid, top_n=10)
         return jsonify(safe_dict({
@@ -298,7 +309,7 @@ def premarket_run_now():
             'count': len(watchlist),
             'watchlist': watchlist,
             'message': (f"{len(watchlist)} aday Telegram'a yollandi"
-                        if watchlist else "Esigi gecen aday yok"),
+                        if watchlist else "Esigi gecen aday yok ama Telegram'a bildirim yollandi"),
         }))
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

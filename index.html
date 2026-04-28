@@ -2134,36 +2134,37 @@ function toggleMobileMenu() {
 // =============================================================================
 async function scanSignalsNow() {
   const btn = document.getElementById('scanNowBtn');
-  const uid = _getUid && _getUid();
-  if (!uid) { showToast && showToast('Giris yapmaniz gerekiyor', 'warning'); return; }
+  const uid = (currentUser && currentUser.userId) || (typeof _getUid === 'function' ? _getUid() : '');
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Taraniyor...'; }
   try {
-    const r = await apiCall('/api/premarket/run-now', {
+    const r = await fetch('/api/premarket/run-now', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: uid }),
     });
-    if (r && r.success) {
-      const n = r.count || 0;
+    const js = await r.json();
+    if (js && js.success) {
+      const n = js.count || 0;
       const msg = n > 0
         ? `🔔 ${n} aday Telegram'a yollandi`
-        : 'Esigi gecen aday yok (skor/guven dusuk)';
-      showToast && showToast(msg, n > 0 ? 'success' : 'info');
+        : 'Esigi gecen aday yok — Telegram uyari mesaji gonderildi';
+      alert(msg);
       // Sonuclari kartta da goster (ilk 3)
-      if (n > 0 && r.watchlist) {
+      if (n > 0 && js.watchlist) {
         const buyEl = document.getElementById('todayBuyContent');
         if (buyEl) {
-          const top3 = r.watchlist.slice(0, 3).map(c =>
+          const top3 = js.watchlist.slice(0, 3).map(c =>
             `<div style="margin-top:4px;"><b>${c.symbol}</b> sc=${c.score.toFixed(1)} guv=%${Math.round(c.confidence)} (${c.price.toFixed(2)} TL)</div>`
           ).join('');
           buyEl.innerHTML = `<div style="color:var(--green);font-weight:600;">Manuel tarama: ${n} aday</div>${top3}`;
         }
       }
     } else {
-      showToast && showToast('Tarama hatasi: ' + (r?.error || 'bilinmeyen'), 'error');
+      alert('Tarama hatasi: ' + (js?.error || 'bilinmeyen'));
     }
   } catch (e) {
-    showToast && showToast('Tarama hatasi: ' + e.message, 'error');
+    alert('Tarama hatasi: ' + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '🔄 Şimdi Tara'; }
   }
@@ -7672,15 +7673,29 @@ async function closePosition(posId) {
   const uid = _getUid();
   if (!uid) return;
   if (!confirm('Bu pozisyonu kapatmak istediginize emin misiniz?')) return;
+  await _doClose(uid, posId, {});
+}
+
+// Yardimci: close-with-confirm. Server needsConfirm donerse warning goster, devam edersen confirm:true ile retry.
+async function _doClose(uid, posId, extraBody) {
+  const body = Object.assign({ userId: uid, positionId: posId }, extraBody || {});
   try {
     const res = await fetch(`${API_BASE}/auto-trade/close`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ userId: uid, positionId: posId })
+      body: JSON.stringify(body)
     });
     const data = await res.json();
-    if (data.success) loadAutoTrade();
-    else alert(data.error || 'Hata');
-  } catch(e) { console.error('Pozisyon kapatma hatasi:', e); }
+    if (data.needsConfirm && data.warning) {
+      if (confirm(data.warning)) {
+        // Retry with confirm:true
+        return _doClose(uid, posId, Object.assign({}, extraBody || {}, { confirm: true }));
+      }
+      return false;
+    }
+    if (data.success) { loadAutoTrade(); return true; }
+    alert(data.error || 'Hata');
+    return false;
+  } catch(e) { console.error('Pozisyon kapatma hatasi:', e); alert('İstek başarısız'); return false; }
 }
 
 async function reopenPosition(posId, symbol) {
@@ -8209,19 +8224,9 @@ async function submitCustomClose() {
   const isPartial = qty < maxQty - 0.01;
   const label = isPartial ? `KISMI KAPANIŞ: ${symbol} ${qty}/${maxQty} lot @ ${price.toFixed(2)} TL` : `TAM KAPANIŞ: ${symbol} ${qty} lot @ ${price.toFixed(2)} TL`;
   if (!confirm(`${label}\n\nOnaylıyor musunuz?`)) return;
-  try {
-    const res = await fetch(`${API_BASE}/auto-trade/close`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ userId: uid, positionId: posId, quantity: qty, price: price })
-    });
-    const data = await res.json();
-    if (data.success) {
-      modal.style.display = 'none';
-      loadAutoTrade();
-    } else {
-      alert(data.error || 'Hata');
-    }
-  } catch(e) { console.error('Custom kapatma hatasi:', e); alert('İstek başarısız'); }
+  // _doClose erken-cikis koruma + needsConfirm retry'i halleder
+  const ok = await _doClose(uid, posId, { quantity: qty, price: price });
+  if (ok) modal.style.display = 'none';
 }
 
 // =============================================================================

@@ -70,9 +70,10 @@ def _build_watchlist(cfg: dict, top_n: int = 10) -> list:
     return candidates[:top_n]
 
 
-def _send_watchlist_telegram(watchlist: list) -> None:
+def _send_watchlist_telegram(watchlist: list) -> bool:
+    """Watchlist'i Telegram'a yolla. send_telegram'in basari/basarisizligini dondurur."""
     if not watchlist:
-        msg = "🌅 <b>Sabah Tarama (09:55)</b>\n⚠️ Bugün AL sinyali eşiğini geçen hisse yok."
+        msg = "🔔 <b>Tarama</b>\n⚠️ AL sinyali eşiğini geçen hisse yok (skor/güven düşük)."
     else:
         lines = [f"🌅 <b>Sabah Tarama — Top {len(watchlist)} Aday</b>"]
         for i, c in enumerate(watchlist, 1):
@@ -98,9 +99,13 @@ def _send_watchlist_telegram(watchlist: list) -> None:
         msg = '\n'.join(lines)
     try:
         from telegram_notifications import send_telegram
-        send_telegram(msg)
+        ok = send_telegram(msg)
+        if not ok:
+            print("[PRE-MARKET] send_telegram False dondu — TELEGRAM_BOT_TOKEN/CHAT_ID kontrol")
+        return bool(ok)
     except Exception as e:
         print(f"[PRE-MARKET] Telegram gonderim hatasi: {e}")
+        return False
 
 
 def _run_once_for_all_users() -> None:
@@ -163,16 +168,35 @@ def start_premarket_thread():
 def run_for_user_now(uid: str, top_n: int = 10) -> list:
     """Manuel tetik (UI butonu) — verilen kullanicinin watchlist'ini olustur,
     Telegram'a yolla, sonuclari dondur. Auto-trade aktif olmasa bile calisir
-    (sadece bilgilendirme; pozisyon ACMAZ)."""
+    (sadece bilgilendirme; pozisyon ACMAZ).
+    Config kaydedilmemisse default cfg ile tarar — buton her zaman calismali."""
     try:
         from auto_trader import _auto_get_config
         cfg = _auto_get_config(uid)
         if not cfg:
-            return []
+            # Config yok → makul default'larla tara (kayit etmeden)
+            print(f"[PRE-MARKET-MANUAL] {uid}: config yok, default ile taraniyor")
+            cfg = {
+                'tradeStyle': 'swing',
+                'minScore': 5.0,
+                'minConfidence': 60,
+                'allowedSymbols': '',
+                'blockedSymbols': '',
+            }
         watchlist = _build_watchlist(cfg, top_n=top_n)
-        _send_watchlist_telegram(watchlist)
-        print(f"[PRE-MARKET-MANUAL] {uid}: {len(watchlist)} aday yollandi")
+        print(f"[PRE-MARKET-MANUAL] {uid}: {len(watchlist)} aday bulundu, Telegram'a yollaniyor")
+        sent_ok = _send_watchlist_telegram(watchlist)
+        if not sent_ok:
+            print(f"[PRE-MARKET-MANUAL] {uid}: Telegram gonderimi BASARISIZ (token/chat_id?)")
         return watchlist
     except Exception as e:
         print(f"[PRE-MARKET-MANUAL] {uid} hata: {e}")
+        import traceback
+        traceback.print_exc()
+        # Hata olsa bile Telegram'a uyari yolla
+        try:
+            from telegram_notifications import send_telegram
+            send_telegram(f"⚠️ <b>Manuel Tarama Hatasi</b>\n{e}")
+        except Exception:
+            pass
         return []

@@ -66,6 +66,43 @@ def auto_trade_manual_close():
         else:
             sell_qty = pos_qty
 
+        # Erken/duygusal kapanis koruma — confirm bayragi yoksa, pozisyon SL'ye
+        # yari mesafe gelmediyse veya TP1'in yarisini gecmediyse uyari don.
+        # Mantik: bugun ARCLK vakasinda -%1'de elini cektin; sistem -%3'te SL'di.
+        confirm = bool(data.get('confirm', False))
+        if not confirm:
+            entry = float(row['entry_price'] or 0)
+            sl = float(row['stop_loss'] or 0)
+            tp1 = float(row['take_profit1'] or 0)
+            if entry > 0:
+                pnl_pct = (close_price - entry) / entry * 100
+                sl_pct = ((entry - sl) / entry * 100) if sl > 0 else 0
+                tp1_pct = ((tp1 - entry) / entry * 100) if tp1 > 0 else 0
+                # Zarardayken: SL'ye yari mesafe gelmediyse uyar
+                if pnl_pct < 0 and sl_pct > 0 and abs(pnl_pct) < sl_pct * 0.5:
+                    return jsonify({
+                        'success': False,
+                        'needsConfirm': True,
+                        'warning': (
+                            f"⚠️ Erken cikis: pozisyon zararda %{pnl_pct:.2f}, "
+                            f"otomatik SL %{sl_pct:.2f}'de ({sl:.2f} TL).\n"
+                            f"Sistem henuz SL'ye %{sl_pct - abs(pnl_pct):.2f} mesafede. "
+                            f"Disipline guvenip beklemek mi, simdi kapatmak mi? "
+                            f"Devam icin tekrar Onay'a bas."
+                        )
+                    }), 200
+                # Az kardayken: TP1'in yarisina gelmediyse uyar
+                if pnl_pct > 0 and tp1_pct > 0 and pnl_pct < tp1_pct * 0.5:
+                    return jsonify({
+                        'success': False,
+                        'needsConfirm': True,
+                        'warning': (
+                            f"⚠️ Erken kar realize: pozisyon karda +%{pnl_pct:.2f}, "
+                            f"TP1 +%{tp1_pct:.2f}'de ({tp1:.2f} TL).\n"
+                            f"Hedefin yarisindan azindasin. Devam icin tekrar Onay'a bas."
+                        )
+                    }), 200
+
         is_partial = sell_qty < pos_qty - 0.01
         if is_partial:
             _auto_partial_close(pos_id, sell_qty, close_price, "Manuel kismi kapanis")

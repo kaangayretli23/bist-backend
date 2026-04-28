@@ -111,6 +111,15 @@ def _step1_manage_positions(uid, cfg, positions):
         _tp2_hit = (tp1 == 0 and tp2 == 0 and tp3 > 0)
         _trailing_enabled = bool(cfg['trailingStop']) or _tp2_hit
         _trail_pct = float(cfg.get('tightTrailingPct', 1.0)) if _tp2_hit else float(cfg['trailingPct'])
+        # Tick-aware trail: dusuk fiyatli (mikro) hisselerde nominal %3 trail cok dar
+        # kaliyor (orn. TUKAS @2.60 + %3 = 0.078 TL = ~8 tick — normal volatilite).
+        # 10 TL alti hisselerde min trail %5; 5 TL alti %6 olsun. Runner mode'da
+        # (tightTrailing) bu bypass'i UYGULAMA — TP2 sonrasi sikiyiz.
+        if not _tp2_hit:
+            if cur_price < 5.0:
+                _trail_pct = max(_trail_pct, 6.0)
+            elif cur_price < 10.0:
+                _trail_pct = max(_trail_pct, 5.0)
         if _trailing_enabled:
             highest = pos['highestPrice']
             if cur_price > highest:
