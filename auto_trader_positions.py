@@ -104,14 +104,21 @@ def _step1_manage_positions(uid, cfg, positions):
             pass
 
         # Trailing Stop kontrolu
-        if cfg['trailingStop']:
+        # Runner mode: TP2 hit edilmis pozisyon (tp1=0 AND tp2=0 AND tp3>0) →
+        #   sıkı trail (tightTrailingPct), Telegram onayı bypass, master flag bypass.
+        # Mantik: TP2 sonrasi kazanan pozisyon, momentum verince TP3'e ya da daha
+        # uzaga gidebilir; ama donerse hizli kilitlemeliyiz (kar geri verilmesin).
+        _tp2_hit = (tp1 == 0 and tp2 == 0 and tp3 > 0)
+        _trailing_enabled = bool(cfg['trailingStop']) or _tp2_hit
+        _trail_pct = float(cfg.get('tightTrailingPct', 1.0)) if _tp2_hit else float(cfg['trailingPct'])
+        if _trailing_enabled:
             highest = pos['highestPrice']
             if cur_price > highest:
-                new_trailing = cur_price * (1 - cfg['trailingPct'] / 100)
+                new_trailing = cur_price * (1 - _trail_pct / 100)
                 import os as _os_tg
                 _tg_configured = bool(_os_tg.environ.get('TELEGRAM_BOT_TOKEN') and _os_tg.environ.get('TELEGRAM_CHAT_ID'))
-                if _tg_configured:
-                    # Telegram var: highest'i güncelle, trailing onayını bekle
+                if _tg_configured and not _tp2_hit:
+                    # Telegram var ve henüz TP2 öncesi: highest update + onay bekle
                     _auto_update_highest_price(pos['id'], cur_price)
                     try:
                         from routes_telegram import send_trailing_update
@@ -120,8 +127,11 @@ def _step1_manage_positions(uid, cfg, positions):
                     except Exception as _tr_err:
                         print(f"[AUTO-TRADER] Trailing bildirim hatası ({sym}): {_tr_err}")
                 else:
-                    # Telegram yok: trailing'i doğrudan güncelle (onay beklenemiyor)
+                    # Runner mode VEYA Telegram yok: trail'i doğrudan güncelle
                     _auto_update_trailing(pos['id'], round(new_trailing, 2), cur_price)
+                    if _tp2_hit:
+                        print(f"[AUTO-TRADE] {sym} runner trail: {new_trailing:.2f} "
+                              f"(TP2 sonrası, %{_trail_pct} sıkı trail)")
             else:
                 # Acilis ilk 15 dk trailing tetiklemesini atla (gap koruması);
                 # highest yine guncellenir ama stop tetiklenmez.

@@ -75,8 +75,21 @@ def _auto_engine_cycle():
                 if len(open_positions) >= cfg['maxPositions']:
                     continue
 
+                # Piyasa rejim filtresi: risk-off'ta yeni pozisyon yok, neutral'da daha sıkı
+                try:
+                    from auto_trader_regime import regime_blocks_new_position, regime_daily_trade_factor
+                    _block, _block_reason = regime_blocks_new_position()
+                    if _block:
+                        print(f"[AUTO-TRADE] {uid}: {_block_reason} — yeni pozisyon atlandi")
+                        continue
+                    _daily_factor = regime_daily_trade_factor()
+                except Exception as _re:
+                    print(f"[AUTO-TRADE] Rejim kontrol hatasi: {_re}")
+                    _daily_factor = 1.0
+
                 daily_trades = _auto_get_daily_trade_count(uid)
-                if daily_trades >= cfg['maxDailyTrades']:
+                _daily_cap_eff = max(1, int(cfg['maxDailyTrades'] * _daily_factor))
+                if daily_trades >= _daily_cap_eff:
                     # Telegram'a uyari (gun icinde 1 kez)
                     try:
                         from auto_trader_alerts import check_daily_alerts
@@ -89,7 +102,7 @@ def _auto_engine_cycle():
                 blocked = set(s.strip() for s in cfg['blockedSymbols'].split(',') if s.strip()) if cfg['blockedSymbols'] else set()
 
                 slots = cfg['maxPositions'] - len(open_positions)
-                daily_remaining = cfg['maxDailyTrades'] - daily_trades
+                daily_remaining = _daily_cap_eff - daily_trades
 
                 # İlk 15 dk (10:00-10:15) ve son 30 dk (17:30-18:00) yeni pozisyon açma
                 _now_tr = datetime.now(_TZ_TR)

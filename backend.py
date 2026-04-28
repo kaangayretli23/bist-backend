@@ -41,6 +41,7 @@ try:
     # Routes (endpoint decoratorları) ayrı modüllerde — import edilince @app.route'lar kaydolur
     import auto_trader_routes  # noqa: F401
     import auto_trader_routes_positions  # noqa: F401
+    import auto_trader_routes_analytics  # noqa: F401
 except ImportError as e:
     print(f"[HATA] auto_trader.py import hatasi: {e}")
 
@@ -150,6 +151,20 @@ def _outcome_checker_loop():
 
 _oc_thread = threading.Thread(target=_outcome_checker_loop, daemon=True)
 _oc_thread.start()
+
+# Pre-market watchlist (09:55-10:04 TR — hafta ici, gunde 1 kez)
+try:
+    from auto_trader_premarket import start_premarket_thread
+    start_premarket_thread()
+except Exception as e:
+    print(f"[UYARI] Pre-market thread baslatilamadi: {e}")
+
+# Gun sonu raporu (18:30-18:39 TR — hafta ici, gunde 1 kez)
+try:
+    from auto_trader_eod import start_eod_thread
+    start_eod_thread()
+except Exception as e:
+    print(f"[UYARI] EOD thread baslatilamadi: {e}")
 
 # ── STARTUP SELF-CHECK ──
 # Kritik fonksiyonların import zinciri sağlam mı? NameError gibi sessiz hataları yakala.
