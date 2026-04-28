@@ -5,7 +5,9 @@ routes_telegram.py'dan ayrıştırıldı (600 satır kuralı).
 """
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+_TZ_TR = timezone(timedelta(hours=3))
 
 from telegram_state import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
@@ -24,19 +26,32 @@ from telegram_state import (
 # =====================================================================
 
 def send_telegram(message):
-    """Trade bot — kritik AL/SAT bildirimleri (TELEGRAM_CHAT_ID)"""
+    """Trade bot — kritik AL/SAT bildirimleri (TELEGRAM_CHAT_ID).
+    HTTP cevabini dogrular: 200 + body['ok']==True olmadigi surece False doner.
+    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     try:
         import requests as req
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        req.post(url, json={
+        resp = req.post(url, json={
             'chat_id': TELEGRAM_CHAT_ID,
             'text': message,
             'parse_mode': 'HTML'
         }, timeout=10)
+        if not resp.ok:
+            print(f"[TELEGRAM] send_telegram HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
+        try:
+            data = resp.json()
+        except Exception:
+            return False
+        if not data.get('ok'):
+            print(f"[TELEGRAM] send_telegram API hata: {data.get('description', '?')}")
+            return False
         return True
-    except Exception:
+    except Exception as e:
+        print(f"[TELEGRAM] send_telegram exception: {e}")
         return False
 
 
@@ -54,7 +69,8 @@ def _news_quiet_hours() -> bool:
 
 def send_news_telegram(message):
     """Haber/rapor botu — KAP haberleri, günlük raporlar (TELEGRAM_NEWS_BOT_TOKEN + TELEGRAM_NEWS_CHAT_ID).
-    18:00–07:00 TR arasi sessiz (piyasa kapali)."""
+    18:00–07:00 TR arasi sessiz (piyasa kapali).
+    HTTP cevabini dogrular."""
     if not TELEGRAM_NEWS_BOT_TOKEN or not TELEGRAM_NEWS_CHAT_ID:
         return False
     if _news_quiet_hours():
@@ -62,32 +78,55 @@ def send_news_telegram(message):
     try:
         import requests as req
         url = f"https://api.telegram.org/bot{TELEGRAM_NEWS_BOT_TOKEN}/sendMessage"
-        req.post(url, json={
+        resp = req.post(url, json={
             'chat_id': TELEGRAM_NEWS_CHAT_ID,
             'text': message,
             'parse_mode': 'HTML'
         }, timeout=10)
+        if not resp.ok:
+            print(f"[TELEGRAM-NEWS] HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
+        try:
+            data = resp.json()
+        except Exception:
+            return False
+        if not data.get('ok'):
+            print(f"[TELEGRAM-NEWS] API hata: {data.get('description', '?')}")
+            return False
         return True
-    except Exception:
+    except Exception as e:
+        print(f"[TELEGRAM-NEWS] exception: {e}")
         return False
 
 
 def send_telegram_with_keyboard(message, keyboard):
-    """Inline butonlu Telegram mesaji gonder"""
+    """Inline butonlu Telegram mesaji gonder. HTTP cevabini dogrular —
+    bu fonksiyonun True donmesi sinyalin gercekten kullanicıya ulastigini ifade
+    eder; trade onay akisinin guvenligi buna bagli."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     try:
         import requests as req
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        req.post(url, json={
+        resp = req.post(url, json={
             'chat_id': TELEGRAM_CHAT_ID,
             'text': message,
             'parse_mode': 'HTML',
             'reply_markup': {'inline_keyboard': keyboard}
         }, timeout=10)
+        if not resp.ok:
+            print(f"[TELEGRAM] keyboard HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
+        try:
+            data = resp.json()
+        except Exception:
+            return False
+        if not data.get('ok'):
+            print(f"[TELEGRAM] keyboard API hata: {data.get('description', '?')}")
+            return False
         return True
     except Exception as e:
-        print(f"[TELEGRAM] Keyboard mesaj hatasi: {e}")
+        print(f"[TELEGRAM] keyboard exception: {e}")
         return False
 
 
@@ -140,6 +179,15 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
     # Limit emir önerisi: fiyatın %0.3 altı (daha iyi dolum)
     limit_oneri = round(price * 0.997, 2)
 
+    # Iptal koşulları:
+    #   chase_above: sinyalden %1.5 yukari kacarsa, alis cazibesini yitirdi (R/R bozulur)
+    #   abandon_below: SL altina inmise zaten zarar bolgesinde, hic alma
+    chase_above = round(price * 1.015, 2)
+    abandon_below = round(sl, 2)
+    sig_time = datetime.now(_TZ_TR)
+    sig_time_str = sig_time.strftime('%H:%M')
+    expire_time_str = (sig_time + timedelta(minutes=15)).strftime('%H:%M')
+
     with _pending_lock:
         _pending_signals[signal_id] = {
             'uid': uid, 'symbol': symbol, 'price': price,
@@ -150,7 +198,7 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
         }
 
     msg = (
-        f"🟢 <b>AL SİNYALİ — {symbol}</b>\n"
+        f"🟢 <b>AL SİNYALİ — {symbol}</b>  <i>({sig_time_str})</i>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📊 Skor: <b>{score:.1f}</b>  |  Güven: <b>%{confidence:.0f}</b>  |  R/R: <b>1:{rr}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -164,7 +212,10 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
         f"🎯 TP2: {tp2:.2f} TL  (+%{tp2_pct})\n"
         f"🎯 TP3: {tp3:.2f} TL  (+%{tp3_pct})\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"✅ Onaylarsan sisteme kaydedilir  |  ⏰ 15 dk"
+        f"⛔ <b>ALMA:</b> fiyat <b>{chase_above:.2f}</b> üstüne çıkarsa "
+        f"veya <b>{abandon_below:.2f}</b> altına inerse\n"
+        f"⏰ Geçerlilik: <b>{expire_time_str}</b>'e kadar (15 dk)\n"
+        f"✅ Onaylarsan sisteme kaydedilir"
     )
 
     keyboard = [[

@@ -241,7 +241,7 @@ def _get_open_positions():
         from config import get_db
         db = get_db()
         rows = db.execute(
-            "SELECT ap.id, ap.user_id, ap.symbol, ap.entry_price, "
+            "SELECT ap.id, ap.user_id, ap.symbol, ap.entry_price, ap.quantity, "
             "ap.stop_loss, ap.take_profit1, ap.take_profit2, ap.take_profit3 "
             "FROM auto_positions ap WHERE ap.status='open'"
         ).fetchall()
@@ -252,10 +252,32 @@ def _get_open_positions():
         return []
 
 
+def _enabled_user_styles() -> dict:
+    """{user_id: trade_style} — sadece auto-trade aktif kullanicilar.
+    SL/TP tetiklendiginde otomatik kapatma sadece bu kullanicilarda calisir."""
+    try:
+        from config import get_db
+        db = get_db()
+        rows = db.execute(
+            "SELECT user_id, trade_style FROM auto_config WHERE enabled=1"
+        ).fetchall()
+        db.close()
+        return {r['user_id']: (r['trade_style'] or 'swing') for r in rows}
+    except Exception:
+        return {}
+
+
+# Spike koruması: SL/TP tetiklemesi için ardışık tick sayısı.
+# Tek bir saçma tick'le kapatmayalım; iki ardışık tick istiyoruz.
+_RT_CONFIRM_TICKS = 2
+
+
 def _check_positions_once():
     """
-    Açık pozisyonları kontrol et, SL/TP'ye göre Telegram uyarısı gönder.
-    Her sembol için get_price() timeout korumalı — donma olmaz.
+    Açık pozisyonları kontrol et:
+      1) Telegram uyarısı (her durumda — auto-trade kapalı kullanıcılar için de)
+      2) Auto-trade aktif kullanıcılarda SL/TP tetiklenince otomatik kapat
+         (ardışık 2 tick koşulu — spike koruması).
     """
     positions = _get_open_positions()
     if not positions:
@@ -264,88 +286,190 @@ def _check_positions_once():
     try:
         from routes_telegram import send_telegram
     except Exception:
-        return
+        send_telegram = None
+
+    enabled_styles = _enabled_user_styles()
 
     for pos in positions:
         sym   = pos['symbol']
         entry = float(pos['entry_price'] or 0)
+        qty   = float(pos['quantity']    or 0)
         sl    = float(pos['stop_loss']   or 0)
         tp1   = float(pos['take_profit1'] or 0)
         tp2   = float(pos['take_profit2'] or 0)
         tp3   = float(pos['take_profit3'] or 0)
+        uid   = pos['user_id']
+        pid   = pos['id']
 
         cur = get_price(sym)
         if not cur or cur <= 0 or not entry:
             continue
 
         pnl_pct = (cur - entry) / entry * 100
-        pos_key = f"{pos['user_id']}_{sym}"
+        pos_key = f"{uid}_{sym}"
 
         with _alert_lock:
             state = _alert_state.setdefault(pos_key, {
-                'sl_warned': False, 'sl_hit': False,
-                'tp1_warned': False, 'tp1_hit': False,
-                'tp2_warned': False, 'tp2_hit': False,
-                'tp3_hit': False,
+                'sl_warned': False, 'sl_hit': False, 'sl_confirm': 0, 'sl_executed': False,
+                'tp1_warned': False, 'tp1_hit': False, 'tp1_confirm': 0, 'tp1_executed': False,
+                'tp2_warned': False, 'tp2_hit': False, 'tp2_confirm': 0, 'tp2_executed': False,
+                'tp3_hit': False, 'tp3_confirm': 0, 'tp3_executed': False,
             })
+            # Geriye-uyumluluk: eski state'lerde yeni alanlar yoksa ekle
+            for k in ('sl_confirm','sl_executed','tp1_confirm','tp1_executed',
+                      'tp2_hit','tp2_confirm','tp2_executed','tp3_confirm','tp3_executed'):
+                state.setdefault(k, 0 if k.endswith('_confirm') else False)
 
         msgs = []
+        auto_exec = uid in enabled_styles
+        style = enabled_styles.get(uid, 'swing')
 
-        # STOP-LOSS
+        # ---- STOP-LOSS ----
         if sl > 0:
-            if cur <= sl and not state['sl_hit']:
-                msgs.append(
-                    f"🚨 <b>STOP-LOSS — {sym}</b>\n"
-                    f"Fiyat: {cur:.2f} ≤ SL: {sl:.2f}\n"
-                    f"📉 Zarar: %{pnl_pct:.1f}\n"
-                    f"⚠️ <b>SATIŞ YAPINIZ</b>"
-                )
-                state['sl_hit'] = True
-            elif not state['sl_hit'] and not state['sl_warned'] and cur <= sl * 1.02:
-                msgs.append(
-                    f"⚠️ <b>SL Yaklaşıyor — {sym}</b>\n"
-                    f"Fiyat: {cur:.2f} | SL: {sl:.2f} "
-                    f"(%{abs((cur - sl) / sl * 100):.1f} uzakta)"
-                )
-                state['sl_warned'] = True
+            if cur <= sl:
+                state['sl_confirm'] = state['sl_confirm'] + 1
+                if not state['sl_hit']:
+                    msgs.append(
+                        f"🚨 <b>STOP-LOSS — {sym}</b>\n"
+                        f"Fiyat: {cur:.2f} ≤ SL: {sl:.2f}\n"
+                        f"📉 Zarar: %{pnl_pct:.1f}\n"
+                        f"⚠️ <b>SATIŞ YAPINIZ</b>"
+                    )
+                    state['sl_hit'] = True
+                # Auto-execute: 2 ardışık tick + cfg.enabled
+                if (auto_exec and not state['sl_executed']
+                        and state['sl_confirm'] >= _RT_CONFIRM_TICKS):
+                    try:
+                        from auto_trader import _auto_close_position, _auto_log_trade
+                        from auto_trader_risk import _sl_cooldown_block, _panic_clear
+                        _auto_close_position(pid, cur, f"Stop-Loss tetiklendi ({sl:.2f})")
+                        _auto_log_trade(uid, sym, 'SELL_SL', cur, qty,
+                                        f"SL RT: {cur:.2f} <= {sl:.2f}", 0, 0, pid)
+                        _sl_cooldown_block(uid, sym, style)
+                        _panic_clear(pid)
+                        state['sl_executed'] = True
+                        print(f"[RT-EXEC] {sym} SL otomatik kapatildi @ {cur:.2f}")
+                        # Pozisyon kapandı → state'i temizle
+                        with _alert_lock:
+                            _alert_state.pop(pos_key, None)
+                        unsubscribe(sym)
+                        # Telegram'a son haber
+                        if send_telegram and msgs:
+                            for m in msgs:
+                                try: send_telegram(m)
+                                except Exception: pass
+                            msgs = []
+                        continue
+                    except Exception as ex:
+                        print(f"[RT-EXEC] {sym} SL kapatma hatasi: {ex}")
+            else:
+                state['sl_confirm'] = 0
+                if (not state['sl_hit'] and not state['sl_warned']
+                        and cur <= sl * 1.02):
+                    msgs.append(
+                        f"⚠️ <b>SL Yaklaşıyor — {sym}</b>\n"
+                        f"Fiyat: {cur:.2f} | SL: {sl:.2f} "
+                        f"(%{abs((cur - sl) / sl * 100):.1f} uzakta)"
+                    )
+                    state['sl_warned'] = True
 
-        # TAKE-PROFIT (en yüksekten başla)
-        if tp3 > 0 and cur >= tp3 and not state['tp3_hit']:
-            msgs.append(
-                f"🎯 <b>TP3 HEDEFİ — {sym}</b>\n"
-                f"Fiyat: {cur:.2f} ≥ TP3: {tp3:.2f}\n"
-                f"📈 Kâr: %{pnl_pct:.1f} — <b>SATIŞ ÖNERİLİR</b>"
-            )
-            state['tp3_hit'] = True
-        elif tp2 > 0 and cur >= tp2 and not state['tp2_warned']:
-            msgs.append(
-                f"🎯 <b>TP2 HEDEFİ — {sym}</b>\n"
-                f"Fiyat: {cur:.2f} ≥ TP2: {tp2:.2f}\n"
-                f"📈 Kâr: %{pnl_pct:.1f} — <b>SATIŞ ÖNERİLİR</b>"
-            )
-            state['tp2_warned'] = True
-        elif tp1 > 0 and cur >= tp1 and not state['tp1_hit']:
-            msgs.append(
-                f"🎯 <b>TP1 HEDEFİ — {sym}</b>\n"
-                f"Fiyat: {cur:.2f} ≥ TP1: {tp1:.2f}\n"
-                f"📈 Kâr: %{pnl_pct:.1f}"
-            )
-            state['tp1_hit'] = True
-        elif tp1 > 0 and not state['tp1_warned'] and not state['tp1_hit'] and cur >= tp1 * 0.98:
-            msgs.append(
-                f"📍 <b>TP1 Yaklaşıyor — {sym}</b>\n"
-                f"Fiyat: {cur:.2f} | TP1: {tp1:.2f}"
-            )
-            state['tp1_warned'] = True
+        # ---- TAKE-PROFIT (yuksekten alcaga) ----
+        if tp3 > 0 and cur >= tp3:
+            state['tp3_confirm'] = state['tp3_confirm'] + 1
+            if not state['tp3_hit']:
+                msgs.append(
+                    f"🎯 <b>TP3 HEDEFİ — {sym}</b>\n"
+                    f"Fiyat: {cur:.2f} ≥ TP3: {tp3:.2f}\n"
+                    f"📈 Kâr: %{pnl_pct:.1f} — <b>SATIŞ ÖNERİLİR</b>"
+                )
+                state['tp3_hit'] = True
+            if (auto_exec and not state['tp3_executed']
+                    and state['tp3_confirm'] >= _RT_CONFIRM_TICKS):
+                try:
+                    from auto_trader import _auto_close_position, _auto_log_trade
+                    from auto_trader_risk import _panic_clear
+                    _auto_close_position(pid, cur, f"TP3 hedef ({tp3:.2f})")
+                    _auto_log_trade(uid, sym, 'SELL_TP3', cur, qty,
+                                    f"TP3 RT: {cur:.2f} >= {tp3:.2f}", 0, 0, pid)
+                    _panic_clear(pid)
+                    state['tp3_executed'] = True
+                    print(f"[RT-EXEC] {sym} TP3 otomatik kapatildi @ {cur:.2f}")
+                    with _alert_lock:
+                        _alert_state.pop(pos_key, None)
+                    unsubscribe(sym)
+                    if send_telegram and msgs:
+                        for m in msgs:
+                            try: send_telegram(m)
+                            except Exception: pass
+                        msgs = []
+                    continue
+                except Exception as ex:
+                    print(f"[RT-EXEC] {sym} TP3 kapatma hatasi: {ex}")
+        elif tp2 > 0 and cur >= tp2:
+            state['tp2_confirm'] = state['tp2_confirm'] + 1
+            if not state['tp2_hit']:
+                msgs.append(
+                    f"🎯 <b>TP2 HEDEFİ — {sym}</b>\n"
+                    f"Fiyat: {cur:.2f} ≥ TP2: {tp2:.2f}\n"
+                    f"📈 Kâr: %{pnl_pct:.1f} — <b>SATIŞ ÖNERİLİR</b>"
+                )
+                state['tp2_hit'] = True
+                state['tp2_warned'] = True
+            if (auto_exec and not state['tp2_executed']
+                    and state['tp2_confirm'] >= _RT_CONFIRM_TICKS):
+                try:
+                    from auto_trader import _auto_partial_close, _auto_log_trade
+                    sell_qty = int(qty * 0.5) or int(qty)
+                    _auto_partial_close(pid, sell_qty, cur,
+                                        f"TP2 hedef ({tp2:.2f})", clear_tp_field='take_profit2')
+                    _auto_log_trade(uid, sym, 'SELL_TP2', cur, sell_qty,
+                                    f"TP2 RT kismi: {cur:.2f} >= {tp2:.2f}", 0, 0, pid)
+                    state['tp2_executed'] = True
+                    print(f"[RT-EXEC] {sym} TP2 partial close @ {cur:.2f} ({sell_qty} adet)")
+                except Exception as ex:
+                    print(f"[RT-EXEC] {sym} TP2 partial hatasi: {ex}")
+        elif tp1 > 0 and cur >= tp1:
+            state['tp1_confirm'] = state['tp1_confirm'] + 1
+            if not state['tp1_hit']:
+                msgs.append(
+                    f"🎯 <b>TP1 HEDEFİ — {sym}</b>\n"
+                    f"Fiyat: {cur:.2f} ≥ TP1: {tp1:.2f}\n"
+                    f"📈 Kâr: %{pnl_pct:.1f}"
+                )
+                state['tp1_hit'] = True
+            if (auto_exec and not state['tp1_executed']
+                    and state['tp1_confirm'] >= _RT_CONFIRM_TICKS):
+                try:
+                    from auto_trader import _auto_partial_close, _auto_log_trade
+                    sell_qty = int(qty * 0.5) or int(qty)
+                    _auto_partial_close(pid, sell_qty, cur,
+                                        f"TP1 hedef ({tp1:.2f})", clear_tp_field='take_profit1')
+                    _auto_log_trade(uid, sym, 'SELL_TP1', cur, sell_qty,
+                                    f"TP1 RT kismi: {cur:.2f} >= {tp1:.2f}", 0, 0, pid)
+                    state['tp1_executed'] = True
+                    print(f"[RT-EXEC] {sym} TP1 partial close @ {cur:.2f} ({sell_qty} adet)")
+                except Exception as ex:
+                    print(f"[RT-EXEC] {sym} TP1 partial hatasi: {ex}")
+        else:
+            # Hicbir TP'de degil — confirm sayaclarini sifirla (spike kayboldu)
+            state['tp1_confirm'] = state['tp2_confirm'] = state['tp3_confirm'] = 0
+            if (tp1 > 0 and not state['tp1_warned'] and not state['tp1_hit']
+                    and cur >= tp1 * 0.98):
+                msgs.append(
+                    f"📍 <b>TP1 Yaklaşıyor — {sym}</b>\n"
+                    f"Fiyat: {cur:.2f} | TP1: {tp1:.2f}"
+                )
+                state['tp1_warned'] = True
 
         with _alert_lock:
             _alert_state[pos_key] = state
 
-        for msg in msgs:
-            try:
-                send_telegram(msg)
-            except Exception:
-                pass
+        if send_telegram:
+            for msg in msgs:
+                try:
+                    send_telegram(msg)
+                except Exception:
+                    pass
 
 
 def reset_position_alerts(symbol: str, user_id: str) -> None:
