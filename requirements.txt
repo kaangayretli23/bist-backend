@@ -6,3 +6,10 @@ pandas
 numpy
 requests
 psycopg2-binary
+python-dotenv
+urllib3
+
+# Opsiyonel - borsapy birincil veri kaynagi olarak kullaniliyor (try/except ile sarmali,
+# yoksa yfinance/Yahoo HTTP fallback'e dusuyor). Pip'te yoksa veya kurulum sorun cikariyorsa
+# yorum satiri olarak birakilabilir.
+# borsapy
