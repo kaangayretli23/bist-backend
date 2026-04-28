@@ -318,6 +318,13 @@ def init_db():
         # Komisyon + BSMV (Midas BIST'te 0; broker degisirse veya US stocks/Matriks icin doldurulur)
         ("ALTER TABLE auto_config ADD COLUMN commission_pct REAL DEFAULT 0", True),
         ("ALTER TABLE auto_config ADD COLUMN bsmv_pct REAL DEFAULT 5", True),
+        # Runner-mode trailing: TP2 sonrasi pozisyonda daha siki trail (%1 default vs normal %2)
+        ("ALTER TABLE auto_config ADD COLUMN tight_trailing_pct REAL DEFAULT 1.0", True),
+        # Sektor cap: ayni sektorden max N pozisyon (korelasyon riski)
+        ("ALTER TABLE auto_config ADD COLUMN max_per_sector INTEGER DEFAULT 2", True),
+        # Likidite filtresi: 20 gunluk ortalama TL turnover (Close*Volume) esigi.
+        # Cok sig hisseler (1M TL altinda gunluk islem hacmi) filtrelenir.
+        ("ALTER TABLE auto_config ADD COLUMN min_turnover_tl REAL DEFAULT 1000000", True),
         # min_score default 8→5 bumpup (yalnız 8.0 bırakılmış default kayıtlar)
         ("UPDATE auto_config SET min_score=5.0 WHERE min_score=8.0", False),
         # SL cooldown persistence (restart sonrası kaybolmasın)

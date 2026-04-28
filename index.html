@@ -879,6 +879,31 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
     </div>
   </div>
 
+  <!-- ═══════ BUGÜNÜN AKSİYONU (tek karar ekranı) ═══════ -->
+  <div class="card mb-24" id="todayActionCard" style="display:none;border-left:4px solid var(--green);background:linear-gradient(135deg,rgba(0,212,170,0.08),rgba(13,19,33,0.5));">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+      <div style="font-weight:700;font-size:15px;">🎯 Bugünün Aksiyonu <span id="todayActionTs" style="font-weight:400;font-size:11px;color:var(--text-muted);margin-left:8px;"></span></div>
+      <button class="btn btn-sm btn-secondary" onclick="loadTodayAction(true)" style="padding:3px 10px;font-size:11px;">↻ Yenile</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;">
+      <!-- Kutu 1: Yeni alım -->
+      <div style="background:rgba(0,212,170,0.05);border:1px solid rgba(0,212,170,0.2);border-radius:8px;padding:12px;">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px;">🟢 Yeni Alım</div>
+        <div id="todayBuyContent" style="font-size:12px;color:var(--text-muted);">—</div>
+      </div>
+      <!-- Kutu 2: Açık pozisyon aksiyonu -->
+      <div style="background:rgba(255,200,0,0.05);border:1px solid rgba(255,200,0,0.2);border-radius:8px;padding:12px;">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px;">⚡ Açık Pozisyon</div>
+        <div id="todayPosContent" style="font-size:12px;color:var(--text-muted);">—</div>
+      </div>
+      <!-- Kutu 3: Niye almadı -->
+      <div style="background:rgba(150,150,200,0.05);border:1px solid rgba(150,150,200,0.2);border-radius:8px;padding:12px;">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px;">📋 Niye Almadı</div>
+        <div id="todaySkipContent" style="font-size:12px;color:var(--text-muted);">—</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ═══════ SABAH BRIEFING ═══════ -->
   <div class="card mb-24" id="briefingCard" style="border-left:4px solid var(--accent);background:linear-gradient(135deg,rgba(0,212,170,0.06),rgba(13,19,33,0.4));">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
@@ -1563,6 +1588,7 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
         <button onclick="openCapitalAdjustModal()" title="Sermayeyi hizlica artir/azalt (diger ayarlar korunur)" style="background:#9b59b6;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">💰 Bakiye</button>
         <button onclick="openReconcileModal()" title="Oto-trade pozisyonlarini manuel portfoy ile karsilastir" style="background:var(--blue);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">🔍 Senkron Kontrol</button>
         <button onclick="openDecisionsModal()" title="Bugun hangi hisseler taranıp neden alınmadı" style="background:#e67e22;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">📋 Karar Logu</button>
+        <button onclick="openAnalyticsModal()" title="Win-rate / saat / skor band / top hisse analizi" style="background:#1abc9c;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">📈 Strateji Analizi</button>
         <button onclick="openAddPositionModal()" title="Midas'tan aldiginiz bir hisseyi sisteme ekleyin" style="background:var(--green);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">➕ Pozisyon Ekle</button>
       </div>
     </div>
@@ -1585,8 +1611,8 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
   <div class="card mb-16">
     <div class="section-title mb-12"><span class="icon">⚙</span> Konfigürasyon</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
-      <label style="font-size:12px;color:var(--text-dim);">Sermaye (TL)
-        <input id="atCapital" type="number" value="100000" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      <label style="font-size:12px;color:var(--text-dim);">Sermaye (TL) <span style="font-size:10px;color:var(--text-dim);opacity:0.7;">— "💰 Bakiye Ayarla" butonu</span>
+        <input id="atCapital" type="number" value="100000" readonly style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text-dim);margin-top:4px;cursor:not-allowed;opacity:0.75;">
       </label>
       <label style="font-size:12px;color:var(--text-dim);">Max Pozisyon
         <input id="atMaxPos" type="number" value="5" min="1" max="20" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
@@ -1625,6 +1651,12 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
       <label style="font-size:12px;color:var(--text-dim);">Trailing (%)
         <input id="atTrailPct" type="number" value="2" step="0.5" min="0.5" max="5" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
       </label>
+      <label style="font-size:12px;color:var(--text-dim);" title="TP2 hit edildikten sonra runner mode aktif olur — kazançı geri vermemek için bu daha sıkı yüzde kullanılır. Default %1 (normal trail %2).">Sıkı Trail TP2 sonrası (%)
+        <input id="atTightTrailPct" type="number" value="1" step="0.25" min="0.25" max="3" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);" title="Aynı sektörden en fazla kaç pozisyon açılabilir? Bankacılık 5 hisse aynı yöne hareket eder = tek pozisyon riski. 0 = sınırsız.">Sektör Cap (max/sektör)
+        <input id="atMaxPerSector" type="number" value="2" step="1" min="0" max="10" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
       <label style="font-size:12px;color:var(--text-dim);" title="Ani ters dönüşlerde SL beklemeden pozisyonu kapat. Kârdayken zirveden hızlı düşüş olursa tetiklenir.">Panic-Sell
         <select id="atPanicEnabled" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
           <option value="0" selected>Deaktif</option>
@@ -1638,8 +1670,9 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
         <input id="atPanicWindow" type="number" value="5" min="2" max="15" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
       </label>
     </div>
-    <div style="margin-top:12px;display:flex;gap:8px;">
+    <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
       <button onclick="saveAutoTradeConfig()" class="btn-signal btn-buy" style="padding:8px 20px;font-size:13px;">Kaydet</button>
+      <span style="font-size:11px;color:var(--text-dim);opacity:0.8;">ℹ️ Bakiye ve açık pozisyonlar etkilenmez</span>
       <span id="atSaveMsg" style="font-size:12px;color:var(--green);align-self:center;"></span>
     </div>
   </div>
@@ -2094,6 +2127,128 @@ function toggleMobileMenu() {
 }
 
 // =============================================================================
+// DASHBOARD — BUGÜNÜN AKSİYONU (tek karar ekrani)
+// =============================================================================
+async function loadTodayAction(forceRefresh) {
+  const card = document.getElementById('todayActionCard');
+  if (!card) return;
+  const uid = _getUid && _getUid();
+  if (!uid) { card.style.display = 'none'; return; }
+
+  const buyEl = document.getElementById('todayBuyContent');
+  const posEl = document.getElementById('todayPosContent');
+  const skipEl = document.getElementById('todaySkipContent');
+  if (forceRefresh) {
+    buyEl.textContent = 'Yenileniyor...';
+    posEl.textContent = 'Yenileniyor...';
+    skipEl.textContent = 'Yenileniyor...';
+  }
+
+  try {
+    const [statusRes, summaryRes] = await Promise.all([
+      fetch(`/api/auto-trade/status?userId=${encodeURIComponent(uid)}`).then(r => r.json()).catch(() => ({})),
+      fetch(`/api/auto-trade/daily-summary?userId=${encodeURIComponent(uid)}`).then(r => r.json()).catch(() => ({})),
+    ]);
+
+    // Auto-trade kapaliysa karti gizle
+    const cfg = (statusRes && statusRes.config) || null;
+    if (!cfg || !cfg.enabled) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    document.getElementById('todayActionTs').textContent = new Date().toLocaleTimeString('tr-TR', {hour:'2-digit', minute:'2-digit'});
+
+    const positions = (statusRes.positions || []);
+    const decTotal  = (summaryRes.decisionTotal || {});
+    const cooldown  = (summaryRes.cooldownActive || []);
+    const regime    = (summaryRes.regime || {});
+    const pnl       = (summaryRes.pnl || {});
+
+    // ────── 1) YENI ALIM ──────
+    const buyCount = decTotal.BUY || 0;
+    const pendCount = decTotal.PENDING || 0;
+    let buyHtml = '';
+    if (pendCount > 0) {
+      buyHtml += `<div style="color:var(--yellow);font-weight:600;">⏳ ${pendCount} sinyal Telegram onayı bekliyor</div>`;
+    }
+    if (buyCount > 0) {
+      buyHtml += `<div style="color:var(--green);font-weight:600;margin-top:4px;">✅ Bugün ${buyCount} yeni pozisyon açıldı</div>`;
+    }
+    if (!buyHtml) {
+      const regimeEmoji = ({'risk-on':'🟢','neutral':'🟡','risk-off':'🔴'})[regime.mode] || '⚪';
+      buyHtml = `<div style="color:var(--text-muted);">Bugün yeni alım yok</div>
+                 <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${regimeEmoji} Rejim: ${(regime.mode || '?').toUpperCase()}</div>`;
+    }
+    buyEl.innerHTML = buyHtml;
+
+    // ────── 2) AÇIK POZİSYON AKSİYONU ──────
+    if (!positions.length) {
+      posEl.innerHTML = '<div style="color:var(--text-muted);">Açık pozisyon yok</div>';
+    } else {
+      let slNear = 0, tpNear = 0, items = [];
+      for (const p of positions) {
+        const cur = parseFloat(p.currentPrice) || 0;
+        const sl = parseFloat(p.stopLoss) || 0;
+        const tp1 = parseFloat(p.takeProfit1) || 0;
+        const tp2 = parseFloat(p.takeProfit2) || 0;
+        const tp3 = parseFloat(p.takeProfit3) || 0;
+        if (cur > 0 && sl > 0 && cur <= sl * 1.03) { slNear++; items.push(`<span style="color:var(--red);">${p.symbol} SL!</span>`); }
+        const tpNext = tp1 > 0 ? tp1 : (tp2 > 0 ? tp2 : tp3);
+        if (cur > 0 && tpNext > 0 && cur >= tpNext * 0.97 && cur < tpNext) {
+          tpNear++; items.push(`<span style="color:var(--green);">${p.symbol} TP!</span>`);
+        }
+      }
+      let html = `<div style="font-weight:600;">${positions.length} açık pozisyon</div>`;
+      if (slNear > 0 || tpNear > 0) {
+        html += `<div style="margin-top:4px;">${items.slice(0, 3).join(' · ')}</div>`;
+        const more = (slNear + tpNear) - 3;
+        if (more > 0) html += `<div style="font-size:11px;color:var(--text-muted);">+${more} daha</div>`;
+      } else {
+        html += `<div style="color:var(--text-muted);font-size:11px;margin-top:4px;">Hepsi sakin — SL/TP uzakta</div>`;
+      }
+      if (typeof pnl.unrealized === 'number') {
+        const sign = pnl.unrealized >= 0 ? '+' : '';
+        const col = pnl.unrealized >= 0 ? 'var(--green)' : 'var(--red)';
+        html += `<div style="margin-top:4px;font-size:11px;">Unrealized: <span style="color:${col};font-weight:600;">${sign}${pnl.unrealized.toLocaleString('tr-TR')} TL</span></div>`;
+      }
+      posEl.innerHTML = html;
+    }
+
+    // ────── 3) NIYE ALMADI ──────
+    let skipHtml = '';
+    if (regime.mode === 'risk-off') {
+      skipHtml += `<div style="color:var(--red);font-weight:600;">🔴 Piyasa risk-off — motor yeni pozisyon açmayacak</div>`;
+    }
+    const skipReasons = (summaryRes.decisions || [])
+      .filter(d => d.decision === 'SKIP')
+      .slice(0, 3);
+    if (skipReasons.length) {
+      const labels = {
+        'score':'Skor düşük', 'regime':'Rejim uygun değil', 'volume':'Hacim yetersiz',
+        'turnover':'Likidite düşük', 'gap_down':'Gap-down', 'budget':'Bütçe yetersiz',
+        'sl_cooldown':'SL cooldown', 'reject_cooldown':'Reject cooldown',
+        'sector_cap':'Sektör dolu', 'blocked':'Bloklu', 'telegram_failed':'Telegram fail'
+      };
+      skipHtml += `<div style="margin-top:${skipHtml ? '4px':'0'};">`;
+      skipHtml += skipReasons.map(d => `<div>• ${labels[d.reason] || d.reason}: <b>${d.count}</b></div>`).join('');
+      skipHtml += `</div>`;
+    }
+    if (cooldown.length) {
+      skipHtml += `<div style="margin-top:4px;font-size:11px;color:var(--text-muted);">⏸ Cooldown: ${cooldown.length} sembol</div>`;
+    }
+    if (!skipHtml) {
+      skipHtml = '<div style="color:var(--text-muted);">Bugün karar log\'u yok</div>';
+    }
+    skipEl.innerHTML = skipHtml;
+
+  } catch (e) {
+    console.warn('todayAction yukleme hatasi:', e);
+    card.style.display = 'none';
+  }
+}
+
+// =============================================================================
 // DASHBOARD — BUGÜNÜN SİNYALLERİ
 // =============================================================================
 async function loadDashSignals() {
@@ -2542,6 +2697,7 @@ async function loadDashboard(forceRefresh) {
   loadDashSignals();
   loadBriefing();
   loadSectorRS();
+  loadTodayAction();
 
   // Önceki veri varsa hemen render et
   const cached = forceRefresh ? null : _getCached('dashboard');
@@ -6969,6 +7125,8 @@ async function loadAutoTrade() {
       document.getElementById('atStyle').value = cfg.tradeStyle;
       document.getElementById('atTrailing').value = cfg.trailingStop ? '1' : '0';
       document.getElementById('atTrailPct').value = cfg.trailingPct;
+      document.getElementById('atTightTrailPct').value = cfg.tightTrailingPct ?? 1;
+      document.getElementById('atMaxPerSector').value = cfg.maxPerSector ?? 2;
       document.getElementById('atPanicEnabled').value = cfg.panicSellEnabled ? '1' : '0';
       document.getElementById('atPanicDrop').value = cfg.panicDropPct ?? 2;
       document.getElementById('atPanicWindow').value = cfg.panicWindowMin ?? 5;
@@ -7244,7 +7402,19 @@ async function loadDailySummary() {
     const _fmt = (n) => (n>=0?'+':'') + (n||0).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' TL';
     const _color = (n) => n>0 ? 'var(--green)' : n<0 ? 'var(--red)' : 'var(--text-dim)';
 
-    let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;">';
+    // Piyasa rejim chip'i (en üstte)
+    let html = '';
+    if (js.regime && js.regime.mode) {
+      const m = js.regime.mode;
+      const cfg = m === 'risk-on' ? {bg:'rgba(46,204,113,0.15)', col:'var(--green)', icon:'🟢', label:'RISK-ON'}
+                : m === 'neutral' ? {bg:'rgba(241,196,15,0.15)', col:'#f1c40f', icon:'🟡', label:'NEUTRAL'}
+                : {bg:'rgba(231,76,60,0.15)', col:'var(--red)', icon:'🔴', label:'RISK-OFF'};
+      html += `<div style="background:${cfg.bg};border-left:3px solid ${cfg.col};border-radius:4px;padding:6px 10px;margin-bottom:8px;font-size:12px;" title="${(js.regime.detail||'').replace(/"/g,'&quot;')}">
+        ${cfg.icon} <b style="color:${cfg.col};">${cfg.label}</b>
+        <span style="color:var(--text-dim);">— ${js.regime.detail||''}</span>
+      </div>`;
+    }
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;">';
     html += `<div style="background:var(--bg);border-radius:6px;padding:10px;text-align:center;">
       <div style="font-size:11px;color:var(--text-dim);">Gerçekleşen P&L</div>
       <div style="font-size:18px;font-weight:700;color:${_color(pnl.realized)};">${_fmt(pnl.realized)}</div>
@@ -7353,9 +7523,10 @@ async function saveAutoTradeConfig() {
   const uid = _getUid();
   if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
   try {
+    // NOT: capital gonderilmez — bakiye sadece /capital/adjust endpointi ile
+    // degistirilebilir. Boylece "Kaydet" yanlislikla bakiyeyi sifirlamaz.
     const body = {
       userId: uid,
-      capital: parseFloat(document.getElementById('atCapital').value) || 100000,
       maxPositions: parseInt(document.getElementById('atMaxPos').value) || 5,
       riskPerTrade: parseFloat(document.getElementById('atRisk').value) || 2,
       minScore: parseFloat(document.getElementById('atMinScore').value) || 8,
@@ -7366,6 +7537,8 @@ async function saveAutoTradeConfig() {
       tradeStyle: document.getElementById('atStyle').value,
       trailingStop: parseInt(document.getElementById('atTrailing').value),
       trailingPct: parseFloat(document.getElementById('atTrailPct').value) || 2,
+      tightTrailingPct: parseFloat(document.getElementById('atTightTrailPct').value) || 1,
+      maxPerSector: parseInt(document.getElementById('atMaxPerSector').value) || 0,
       panicSellEnabled: parseInt(document.getElementById('atPanicEnabled').value) || 0,
       panicDropPct: parseFloat(document.getElementById('atPanicDrop').value) || 2,
       panicWindowMin: parseInt(document.getElementById('atPanicWindow').value) || 5,
@@ -7643,6 +7816,7 @@ const _DECISION_LABELS = {
   'blocked': '🚫 Yasaklı liste', 'regime': '🐻 Ayı piyasası',
   'volume': '📉 Düşük hacim', 'gap_down': '⬇️ Açılış gap-down',
   'rsi_overbought': '🔥 RSI aşırı alım', 'budget': '💸 Bütçe yetmedi',
+  'sector_cap': '🏛 Sektör cap doldu',
   'score': '📊 Skor/güven yetmedi', 'plan_stale': '🍞 Plan bayatlamış',
   'plan_expired': '⏰ Plan süresi dolmuş', 'deviation': '📐 Fiyat sapması',
   'score_unavailable': '❓ Skor hesaplanamadı',
@@ -7724,6 +7898,123 @@ async function openDecisionsModal(filter='') {
       </tr>`;
     }
     html += '</tbody></table>';
+    body.innerHTML = html;
+  } catch(e) {
+    body.innerHTML = `<div style="color:var(--red);">İstek hatası: ${e.message}</div>`;
+  }
+}
+
+// Strateji Analizi — win-rate by hour/score-band/symbol
+async function openAnalyticsModal(days=30) {
+  const uid = (currentUser && currentUser.userId) || '';
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
+  let modal = document.getElementById('analyticsModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'analyticsModal';
+    modal.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;align-items:center;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:var(--bg-card);color:var(--text);border-radius:8px;padding:20px;max-width:900px;width:96%;max-height:88vh;overflow:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-weight:700;font-size:16px;">📈 Strateji Analizi</div>
+          <button onclick="document.getElementById('analyticsModal').style.display='none';" style="background:transparent;border:none;color:var(--text);font-size:20px;cursor:pointer;">✕</button>
+        </div>
+        <div id="analyticsRange" style="margin-bottom:10px;display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-dim);">
+          Periyot:
+          <button onclick="openAnalyticsModal(7)" style="background:transparent;border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">7g</button>
+          <button onclick="openAnalyticsModal(30)" style="background:transparent;border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">30g</button>
+          <button onclick="openAnalyticsModal(90)" style="background:transparent;border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">90g</button>
+          <button onclick="openAnalyticsModal(365)" style="background:transparent;border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">1y</button>
+        </div>
+        <div id="analyticsBody" style="font-size:12px;">Yükleniyor…</div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'flex';
+  const body = document.getElementById('analyticsBody');
+  body.innerHTML = 'Yükleniyor…';
+  try {
+    const r = await fetch(`/api/auto-trade/analytics?userId=${encodeURIComponent(uid)}&days=${days}`);
+    const js = await r.json();
+    if (!js.success) { body.innerHTML = `<div style="color:var(--red);">Hata: ${js.error||''}</div>`; return; }
+    if (js.summary.totalTrades === 0) {
+      body.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-dim);">Son ${days} günde kapanmış işlem yok. Daha geniş periyot deneyin.</div>`;
+      return;
+    }
+    const s = js.summary;
+    const _col = (n) => n > 0 ? 'var(--green)' : n < 0 ? 'var(--red)' : 'var(--text-dim)';
+    let html = '';
+    // Summary cards
+    html += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:14px;">
+      <div style="background:var(--bg);border-radius:6px;padding:10px;text-align:center;">
+        <div style="font-size:11px;color:var(--text-dim);">Win-Rate (${s.totalTrades} işlem)</div>
+        <div style="font-size:22px;font-weight:700;color:${s.winRate >= 50 ? 'var(--green)':'var(--red)'};">%${s.winRate}</div>
+        <div style="font-size:10px;color:var(--text-dim);">${s.wins}K / ${s.losses}Z</div>
+      </div>
+      <div style="background:var(--bg);border-radius:6px;padding:10px;text-align:center;">
+        <div style="font-size:11px;color:var(--text-dim);">Net P&L (${days}g)</div>
+        <div style="font-size:22px;font-weight:700;color:${_col(s.totalPnl)};">${s.totalPnl >= 0 ? '+':''}${s.totalPnl.toLocaleString('tr-TR')} TL</div>
+      </div>
+      <div style="background:var(--bg);border-radius:6px;padding:10px;text-align:center;" title="Beklenen değer: kazançta ortalama %, kayıpta ortalama %">
+        <div style="font-size:11px;color:var(--text-dim);">Expectancy / işlem</div>
+        <div style="font-size:22px;font-weight:700;color:${_col(s.expectancy)};">%${s.expectancy}</div>
+        <div style="font-size:10px;color:var(--text-dim);">+%${s.avgWinPct} / %${s.avgLossPct}</div>
+      </div>
+    </div>`;
+
+    // Hourly bar chart (basit)
+    html += `<div style="margin-bottom:14px;"><div style="font-weight:600;margin-bottom:6px;font-size:13px;">⏰ Saat bazlı win-rate</div>`;
+    html += '<div style="display:flex;gap:4px;align-items:end;height:90px;background:var(--bg);border-radius:4px;padding:8px;">';
+    for (const h of js.hourly) {
+      const wr = h.winRate;
+      const _h = h.trades > 0 ? Math.max(8, wr * 0.7) : 4;
+      const _bg = h.trades === 0 ? 'var(--border)' : wr >= 50 ? 'var(--green)' : 'var(--red)';
+      html += `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:end;" title="${h.hour}:00 — ${h.trades} işlem · %${wr} kazanım · ${h.pnl} TL">
+        <div style="background:${_bg};width:100%;height:${_h}%;border-radius:2px 2px 0 0;"></div>
+        <div style="font-size:9px;color:var(--text-dim);margin-top:2px;">${h.hour}:00</div>
+        <div style="font-size:10px;font-weight:600;">${h.trades > 0 ? '%'+wr : '-'}</div>
+      </div>`;
+    }
+    html += '</div></div>';
+
+    // Score bands table
+    html += `<div style="margin-bottom:14px;"><div style="font-weight:600;margin-bottom:6px;font-size:13px;">📊 Sinyal skoru bandlarına göre</div>`;
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    html += '<thead><tr style="border-bottom:1px solid var(--border);color:var(--text-dim);"><th style="text-align:left;padding:6px;">Band</th><th style="text-align:right;padding:6px;">İşlem</th><th style="text-align:right;padding:6px;">Win-Rate</th><th style="text-align:right;padding:6px;">Avg %</th><th style="text-align:right;padding:6px;">Toplam P&L</th></tr></thead><tbody>';
+    for (const b of js.scoreBands) {
+      if (b.trades === 0) continue;
+      const wrCol = b.winRate >= 50 ? 'var(--green)' : 'var(--red)';
+      html += `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 6px;font-weight:600;">${b.band}</td>
+        <td style="padding:5px 6px;text-align:right;">${b.trades}</td>
+        <td style="padding:5px 6px;text-align:right;color:${wrCol};font-weight:600;">%${b.winRate}</td>
+        <td style="padding:5px 6px;text-align:right;color:${_col(b.avgPct)};">%${b.avgPct}</td>
+        <td style="padding:5px 6px;text-align:right;color:${_col(b.pnl)};">${b.pnl >= 0 ? '+':''}${b.pnl.toLocaleString('tr-TR')} TL</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+
+    // Top winners / losers
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">`;
+    html += `<div><div style="font-weight:600;margin-bottom:6px;font-size:13px;color:var(--green);">🏆 En Kazançlı 5</div>`;
+    if (js.topWinners.length) {
+      html += '<table style="width:100%;font-size:11px;border-collapse:collapse;">';
+      for (const t of js.topWinners) {
+        html += `<tr style="border-bottom:1px solid var(--border);"><td style="padding:4px 6px;font-weight:600;">${t.symbol}</td><td style="padding:4px 6px;text-align:right;">${t.trades}x</td><td style="padding:4px 6px;text-align:right;color:var(--green);">+${t.totalPnl.toLocaleString('tr-TR')} TL</td><td style="padding:4px 6px;text-align:right;color:var(--green);">%${t.avgPct}</td></tr>`;
+      }
+      html += '</table>';
+    } else { html += '<div style="color:var(--text-dim);">Veri yok</div>'; }
+    html += '</div>';
+    html += `<div><div style="font-weight:600;margin-bottom:6px;font-size:13px;color:var(--red);">📉 En Çok Kaybettirenler</div>`;
+    if (js.topLosers.length) {
+      html += '<table style="width:100%;font-size:11px;border-collapse:collapse;">';
+      for (const t of js.topLosers) {
+        html += `<tr style="border-bottom:1px solid var(--border);"><td style="padding:4px 6px;font-weight:600;">${t.symbol}</td><td style="padding:4px 6px;text-align:right;">${t.trades}x</td><td style="padding:4px 6px;text-align:right;color:var(--red);">${t.totalPnl.toLocaleString('tr-TR')} TL</td><td style="padding:4px 6px;text-align:right;color:var(--red);">%${t.avgPct}</td></tr>`;
+      }
+      html += '</table>';
+    } else { html += '<div style="color:var(--text-dim);">Veri yok</div>'; }
+    html += '</div></div>';
+
     body.innerHTML = html;
   } catch(e) {
     body.innerHTML = `<div style="color:var(--red);">İstek hatası: ${e.message}</div>`;

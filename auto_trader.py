@@ -72,6 +72,9 @@ def _auto_get_config(user_id):
                 'panicWindowMin': int(_row_get(row, 'panic_window_min', 5) or 5),
                 'commissionPct': float(_row_get(row, 'commission_pct', 0) or 0),
                 'bsmvPct': float(_row_get(row, 'bsmv_pct', 5) or 5),
+                'tightTrailingPct': float(_row_get(row, 'tight_trailing_pct', 1.0) or 1.0),
+                'maxPerSector': int(_row_get(row, 'max_per_sector', 2) or 2),
+                'minTurnoverTL': float(_row_get(row, 'min_turnover_tl', 1_000_000) or 1_000_000),
             }
         return None
     except Exception as e:

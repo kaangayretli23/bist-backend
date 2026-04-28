@@ -39,16 +39,18 @@ def auto_trade_config():
         existing = db.execute("SELECT * FROM auto_config WHERE user_id=?", (uid,)).fetchone()
 
         if existing:
+            # NOT: capital UPDATE'ten cikarildi — bakiye sadece /capital/adjust ile
+            # degisir. Boylece "Kaydet" butonu yanlislikla bakiyeyi sifirlamaz.
             db.execute("""UPDATE auto_config SET
-                enabled=?, capital=?, max_positions=?, risk_per_trade=?,
+                enabled=?, max_positions=?, risk_per_trade=?,
                 min_score=?, min_confidence=?, trade_style=?,
                 stop_loss_pct=?, take_profit_pct=?, trailing_stop=?, trailing_pct=?,
                 allowed_symbols=?, blocked_symbols=?, max_daily_trades=?,
                 panic_sell_enabled=?, panic_drop_pct=?, panic_window_min=?,
-                commission_pct=?, bsmv_pct=?
+                commission_pct=?, bsmv_pct=?, tight_trailing_pct=?, max_per_sector=?,
+                min_turnover_tl=?
                 WHERE user_id=?""",
                 (int(data.get('enabled', existing['enabled'])),
-                 float(data.get('capital', existing['capital'])),
                  int(data.get('maxPositions', existing['max_positions'])),
                  float(data.get('riskPerTrade', existing['risk_per_trade'])),
                  float(data.get('minScore', existing['min_score'])),
@@ -66,6 +68,9 @@ def auto_trade_config():
                  int(data.get('panicWindowMin', _row_get(existing, 'panic_window_min', 5) or 5)),
                  float(data.get('commissionPct', _row_get(existing, 'commission_pct', 0) or 0)),
                  float(data.get('bsmvPct', _row_get(existing, 'bsmv_pct', 5) or 5)),
+                 float(data.get('tightTrailingPct', _row_get(existing, 'tight_trailing_pct', 1.0) or 1.0)),
+                 int(data.get('maxPerSector', _row_get(existing, 'max_per_sector', 2) or 2)),
+                 float(data.get('minTurnoverTL', _row_get(existing, 'min_turnover_tl', 1_000_000) or 1_000_000)),
                  uid))
         else:
             db.execute("""INSERT INTO auto_config
@@ -74,8 +79,9 @@ def auto_trade_config():
                  stop_loss_pct, take_profit_pct, trailing_stop, trailing_pct,
                  allowed_symbols, blocked_symbols, max_daily_trades,
                  panic_sell_enabled, panic_drop_pct, panic_window_min,
-                 commission_pct, bsmv_pct)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 commission_pct, bsmv_pct, tight_trailing_pct, max_per_sector,
+                 min_turnover_tl)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (uid,
                  int(data.get('enabled', 0)),
                  float(data.get('capital', 100000)),
@@ -95,7 +101,10 @@ def auto_trade_config():
                  float(data.get('panicDropPct', 2.0)),
                  int(data.get('panicWindowMin', 5)),
                  float(data.get('commissionPct', 0)),
-                 float(data.get('bsmvPct', 5))))
+                 float(data.get('bsmvPct', 5)),
+                 float(data.get('tightTrailingPct', 1.0)),
+                 int(data.get('maxPerSector', 2)),
+                 float(data.get('minTurnoverTL', 1_000_000))))
         db.commit()
         db.close()
         return jsonify({'success': True, 'message': 'Konfigürasyon kaydedildi'})
@@ -191,10 +200,24 @@ def auto_trade_status():
         daily_count = _auto_get_daily_trade_count(uid)
 
         # Acik pozisyonlara guncel fiyat ekle
+        # Once realtime (WebSocket/yfinance fresh), sonra batch cache, en son fetch.
+        try:
+            from realtime_prices import get_price as _rt_get
+        except Exception:
+            _rt_get = None
         total_pnl = 0
         for pos in positions:
-            stock = _cget(_stock_cache, pos['symbol'])
-            cur_price = float(stock.get('price', 0)) if stock else 0
+            cur_price = 0.0
+            if _rt_get:
+                try:
+                    rt = _rt_get(pos['symbol'])
+                    if rt and rt > 0:
+                        cur_price = float(rt)
+                except Exception:
+                    pass
+            if cur_price <= 0:
+                stock = _cget(_stock_cache, pos['symbol'])
+                cur_price = float(stock.get('price', 0)) if stock else 0
             # Cache'de yoksa direkt fetch dene (portföydeki hisse)
             if cur_price == 0:
                 try:
@@ -399,14 +422,27 @@ def auto_trade_daily_summary():
             if d['decision'] in dec_total:
                 dec_total[d['decision']] += d['count']
 
-        # Acik pozisyon unrealized P&L
+        # Acik pozisyon unrealized P&L — realtime fiyat oncelikli
         from auto_trader import _auto_get_open_positions
         from config import _cget, _stock_cache
+        try:
+            from realtime_prices import get_price as _rt_get
+        except Exception:
+            _rt_get = None
         open_positions = _auto_get_open_positions(uid) or []
         unrealized = 0.0
         for p in open_positions:
-            stock = _cget(_stock_cache, p['symbol'])
-            cur = float(stock.get('price', 0)) if stock else 0
+            cur = 0.0
+            if _rt_get:
+                try:
+                    rt = _rt_get(p['symbol'])
+                    if rt and rt > 0:
+                        cur = float(rt)
+                except Exception:
+                    pass
+            if cur <= 0:
+                stock = _cget(_stock_cache, p['symbol'])
+                cur = float(stock.get('price', 0)) if stock else 0
             if cur <= 0:
                 continue
             unrealized += (cur - float(p['entryPrice'])) * float(p['quantity'])
@@ -427,6 +463,13 @@ def auto_trade_daily_summary():
                 'remainingMin': int((exp - now_ts) / 60),
             })
         cooldown_active.sort(key=lambda x: -x['remainingMin'])
+
+        # Piyasa rejimi (cache'li)
+        try:
+            from auto_trader_regime import get_market_regime
+            _regime_mode, _regime_detail = get_market_regime()
+        except Exception:
+            _regime_mode, _regime_detail = 'risk-on', 'Rejim modulü yüklenemedi'
 
         # Komisyon toplam (closed today)
         from auto_trader import _calc_trade_costs
@@ -465,6 +508,7 @@ def auto_trade_daily_summary():
             'decisionTotal': dec_total,
             'cooldownActive': cooldown_active,
             'openPositions': len(open_positions),
+            'regime': {'mode': _regime_mode, 'detail': _regime_detail},
         }))
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
