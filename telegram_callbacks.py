@@ -127,6 +127,102 @@ def _handle_reject(signal_id, message_id):
         )
 
 
+def _handle_snooze(signal_id, message_id):
+    """Sinyali 30 dk ertele — expires_at uzatilir, mesaj guncellenir.
+    Kullanici karar veremediyse Midas'i acmak icin ek sure verir."""
+    from datetime import timedelta as _td
+    new_exp = datetime.now() + _td(minutes=30)
+    with _pending_lock:
+        signal = _pending_signals.get(signal_id)
+        if signal:
+            signal['expires_at'] = new_exp
+    if not signal:
+        edit_telegram_message(message_id, "⚠️ Sinyal bulunamadı veya süresi dolmuş.")
+        return
+    # DB'de de uzat
+    try:
+        from database import _db_save_pending_signal
+        _db_save_pending_signal(signal_id, signal)
+    except Exception:
+        pass
+    new_exp_str = new_exp.strftime('%H:%M')
+    edit_telegram_message(
+        message_id,
+        f"⏸ <b>{signal['symbol']}</b> sinyali 30 dk ertelendi.\n"
+        f"⏰ Yeni geçerlilik: <b>{new_exp_str}</b>'e kadar\n"
+        f"<i>Karar verince yukarıdaki ✅ Aldım veya ❌ Geç butonlarına basabilirsin.</i>"
+    )
+
+
+def _handle_detail(signal_id, message_id):
+    """Sinyalin detayini ek mesaj olarak yolla — RSI/MACD/hacim/son 5 gun.
+    Orijinal mesaji DEGISTIRMEZ (onay butonlari aktif kalir)."""
+    with _pending_lock:
+        signal = _pending_signals.get(signal_id)
+    if not signal:
+        edit_telegram_message(message_id, "⚠️ Sinyal bulunamadı veya süresi dolmuş.")
+        return
+
+    sym = signal['symbol']
+    detail_msg = f"📊 <b>{sym} DETAY</b>\n"
+
+    try:
+        from config import _cget_hist
+        hist = _cget_hist(f"{sym}_1y")
+        if hist is None or len(hist) < 30:
+            detail_msg += "⚠️ Tarihsel veri bulunamadi."
+        else:
+            from indicators import calc_all_indicators
+            last_close = float(hist['Close'].iloc[-1])
+            ind = calc_all_indicators(hist, last_close) or {}
+            rsi = ind.get('rsi', 0) or 0
+            macd = ind.get('macd', 0) or 0
+            macd_sig = ind.get('macd_signal', 0) or 0
+            macd_dir = "↑ AL" if macd > macd_sig else "↓ SAT"
+
+            # Hacim ortalamasi vs son
+            vol_last = float(hist['Volume'].iloc[-1]) if 'Volume' in hist.columns else 0
+            vol_20 = float(hist['Volume'].iloc[-20:].mean()) if 'Volume' in hist.columns else 1
+            vol_ratio = (vol_last / vol_20) if vol_20 > 0 else 0
+
+            # 20-gun TL ciro
+            try:
+                turnover20 = float((hist['Close'].iloc[-20:] * hist['Volume'].iloc[-20:]).mean())
+                turn_str = f"{turnover20/1_000_000:.1f}M TL"
+            except Exception:
+                turn_str = "—"
+
+            # Son 5 gun ozeti
+            recent = hist.tail(5)
+            day_lines = []
+            for idx, row in recent.iterrows():
+                date_str = idx.strftime('%d.%m') if hasattr(idx, 'strftime') else str(idx)[:10]
+                op = float(row.get('Open', 0))
+                cl = float(row.get('Close', 0))
+                ch_pct = ((cl - op) / op * 100) if op > 0 else 0
+                arrow = "🟢" if ch_pct >= 0 else "🔴"
+                day_lines.append(f"  {date_str}: {arrow} {cl:.2f} ({ch_pct:+.1f}%)")
+
+            detail_msg += (
+                f"📈 RSI: <b>{rsi:.1f}</b> "
+                f"{'(asiri alim)' if rsi > 70 else ('(asiri satim)' if rsi < 30 else '(notr)')}\n"
+                f"📊 MACD: <b>{macd:.3f}</b> / sig {macd_sig:.3f} <b>{macd_dir}</b>\n"
+                f"📦 Hacim: son {vol_last/1e6:.1f}M / 20g ort {vol_20/1e6:.1f}M "
+                f"(<b>x{vol_ratio:.1f}</b>)\n"
+                f"💰 Likidite: 20g TL ciro <b>{turn_str}</b>\n"
+                f"\n<b>Son 5 gun:</b>\n" + '\n'.join(day_lines)
+            )
+    except Exception as e:
+        detail_msg += f"⚠️ Detay alinamadi: {e}"
+
+    # Yeni mesaj olarak yolla — orijinal sinyaldeki butonlar aktif kalsin
+    try:
+        from telegram_notifications import send_telegram
+        send_telegram(detail_msg)
+    except Exception as e:
+        print(f"[TELEGRAM] Detail yollama hatasi: {e}")
+
+
 def _handle_trailing_approve(trail_id, message_id):
     """Trailing stop onaylandı — DB'yi güncelle"""
     with _pending_trailing_lock:
@@ -188,6 +284,10 @@ def _process_update(update):
         _handle_approve(data.replace('approve_', ''), message_id)
     elif data.startswith('reject_'):
         _handle_reject(data.replace('reject_', ''), message_id)
+    elif data.startswith('snooze_'):
+        _handle_snooze(data.replace('snooze_', ''), message_id)
+    elif data.startswith('detail_'):
+        _handle_detail(data.replace('detail_', ''), message_id)
 
 
 # =====================================================================

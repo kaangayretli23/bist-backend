@@ -883,7 +883,10 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
   <div class="card mb-24" id="todayActionCard" style="display:none;border-left:4px solid var(--green);background:linear-gradient(135deg,rgba(0,212,170,0.08),rgba(13,19,33,0.5));">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
       <div style="font-weight:700;font-size:15px;">🎯 Bugünün Aksiyonu <span id="todayActionTs" style="font-weight:400;font-size:11px;color:var(--text-muted);margin-left:8px;"></span></div>
-      <button class="btn btn-sm btn-secondary" onclick="loadTodayAction(true)" style="padding:3px 10px;font-size:11px;">↻ Yenile</button>
+      <div style="display:flex;gap:6px;">
+        <button id="scanNowBtn" class="btn btn-sm" onclick="scanSignalsNow()" style="padding:3px 10px;font-size:11px;background:var(--green);color:#fff;border:none;border-radius:6px;cursor:pointer;">🔄 Şimdi Tara</button>
+        <button class="btn btn-sm btn-secondary" onclick="loadTodayAction(true)" style="padding:3px 10px;font-size:11px;">↻ Yenile</button>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;">
       <!-- Kutu 1: Yeni alım -->
@@ -2129,6 +2132,43 @@ function toggleMobileMenu() {
 // =============================================================================
 // DASHBOARD — BUGÜNÜN AKSİYONU (tek karar ekrani)
 // =============================================================================
+async function scanSignalsNow() {
+  const btn = document.getElementById('scanNowBtn');
+  const uid = _getUid && _getUid();
+  if (!uid) { showToast && showToast('Giris yapmaniz gerekiyor', 'warning'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Taraniyor...'; }
+  try {
+    const r = await apiCall('/api/premarket/run-now', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: uid }),
+    });
+    if (r && r.success) {
+      const n = r.count || 0;
+      const msg = n > 0
+        ? `🔔 ${n} aday Telegram'a yollandi`
+        : 'Esigi gecen aday yok (skor/guven dusuk)';
+      showToast && showToast(msg, n > 0 ? 'success' : 'info');
+      // Sonuclari kartta da goster (ilk 3)
+      if (n > 0 && r.watchlist) {
+        const buyEl = document.getElementById('todayBuyContent');
+        if (buyEl) {
+          const top3 = r.watchlist.slice(0, 3).map(c =>
+            `<div style="margin-top:4px;"><b>${c.symbol}</b> sc=${c.score.toFixed(1)} guv=%${Math.round(c.confidence)} (${c.price.toFixed(2)} TL)</div>`
+          ).join('');
+          buyEl.innerHTML = `<div style="color:var(--green);font-weight:600;">Manuel tarama: ${n} aday</div>${top3}`;
+        }
+      }
+    } else {
+      showToast && showToast('Tarama hatasi: ' + (r?.error || 'bilinmeyen'), 'error');
+    }
+  } catch (e) {
+    showToast && showToast('Tarama hatasi: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Şimdi Tara'; }
+  }
+}
+
 async function loadTodayAction(forceRefresh) {
   const card = document.getElementById('todayActionCard');
   if (!card) return;

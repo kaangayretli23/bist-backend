@@ -158,3 +158,21 @@ def start_premarket_thread():
     t = threading.Thread(target=_premarket_loop, daemon=True, name='premarket-watchlist')
     t.start()
     return t
+
+
+def run_for_user_now(uid: str, top_n: int = 10) -> list:
+    """Manuel tetik (UI butonu) — verilen kullanicinin watchlist'ini olustur,
+    Telegram'a yolla, sonuclari dondur. Auto-trade aktif olmasa bile calisir
+    (sadece bilgilendirme; pozisyon ACMAZ)."""
+    try:
+        from auto_trader import _auto_get_config
+        cfg = _auto_get_config(uid)
+        if not cfg:
+            return []
+        watchlist = _build_watchlist(cfg, top_n=top_n)
+        _send_watchlist_telegram(watchlist)
+        print(f"[PRE-MARKET-MANUAL] {uid}: {len(watchlist)} aday yollandi")
+        return watchlist
+    except Exception as e:
+        print(f"[PRE-MARKET-MANUAL] {uid} hata: {e}")
+        return []

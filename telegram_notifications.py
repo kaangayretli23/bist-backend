@@ -224,10 +224,16 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
         f"✅ Onaylarsan sisteme kaydedilir"
     )
 
-    keyboard = [[
-        {'text': '✅ Aldım / Takibe Al', 'callback_data': f'approve_{signal_id}'},
-        {'text': '❌ Geç', 'callback_data': f'reject_{signal_id}'}
-    ]]
+    keyboard = [
+        [
+            {'text': '✅ Aldım / Takibe Al', 'callback_data': f'approve_{signal_id}'},
+            {'text': '❌ Geç', 'callback_data': f'reject_{signal_id}'}
+        ],
+        [
+            {'text': '⏸ Ertele 30dk', 'callback_data': f'snooze_{signal_id}'},
+            {'text': '📊 Detay', 'callback_data': f'detail_{signal_id}'}
+        ]
+    ]
 
     return send_telegram_with_keyboard(msg, keyboard)
 

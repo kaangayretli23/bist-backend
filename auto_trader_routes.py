@@ -281,6 +281,29 @@ def auto_trade_run_now():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/premarket/run-now', methods=['POST'])
+@require_user
+def premarket_run_now():
+    """Manuel tarama: kullanicinin watchlist'ini olustur + Telegram'a yolla.
+    Pozisyon ACMAZ (sadece bilgilendirme — gun ortasinda da guvenli)."""
+    try:
+        data = request.json or {}
+        uid = data.get('userId', '') or request.args.get('userId', '')
+        if not uid:
+            return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+        from auto_trader_premarket import run_for_user_now
+        watchlist = run_for_user_now(uid, top_n=10)
+        return jsonify(safe_dict({
+            'success': True,
+            'count': len(watchlist),
+            'watchlist': watchlist,
+            'message': (f"{len(watchlist)} aday Telegram'a yollandi"
+                        if watchlist else "Esigi gecen aday yok"),
+        }))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/auto-trade/debug')
 @require_user
 def auto_trade_debug():
