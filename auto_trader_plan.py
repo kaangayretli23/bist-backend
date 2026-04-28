@@ -51,6 +51,17 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
             if _reject_cooldown_check(uid, sym):
                 _log_decision(uid, sym, 'SKIP', 'reject_cooldown', tf=tf)
                 continue
+            # Sektor cap: ayni sektorden max N pozisyon
+            try:
+                from auto_trader_sectors import sector_full
+                _full, _sec, _cur = sector_full(sym, open_positions, int(cfg.get('maxPerSector', 2)))
+                if _full:
+                    _log_decision(uid, sym, 'SKIP', 'sector_cap',
+                                  detail=f"[PLAN] {_sec} dolu ({_cur}/{int(cfg.get('maxPerSector', 2))})",
+                                  tf=tf)
+                    continue
+            except Exception:
+                pass
 
             # Plan suresini kontrol et
             lock_cfg = PLAN_LOCK_CONFIG.get(tf, PLAN_LOCK_CONFIG.get('daily', {}))
@@ -175,6 +186,18 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                 tp2 = _tp_val(targets[1], tp2)
             if len(targets) >= 3 and _tp_val(targets[2], 0) > cur_price:
                 tp3 = _tp_val(targets[2], tp3)
+
+            # TP monotonik kontrol (kademeli kar alma icin tp1<tp2<tp3 + min %0.5 spread)
+            _tp_def_1 = round(cur_price * (1 + cfg['takeProfitPct'] / 100), 2)
+            _tp_def_2 = round(cur_price * (1 + cfg['takeProfitPct'] * 1.5 / 100), 2)
+            _tp_def_3 = round(cur_price * (1 + cfg['takeProfitPct'] * 2.0 / 100), 2)
+            if (not (cur_price < tp1 < tp2 < tp3)
+                    or (tp2 - tp1) / cur_price < 0.005
+                    or (tp3 - tp2) / cur_price < 0.005):
+                print(f"[AUTO-TRADE] [PLAN] {sym} TP siralama bozuk "
+                      f"(tp1={tp1:.2f}, tp2={tp2:.2f}, tp3={tp3:.2f}) → default formul")
+                tp1, tp2, tp3 = _tp_def_1, _tp_def_2, _tp_def_3
+
             trailing_sl = round(cur_price * (1 - cfg['trailingPct'] / 100), 2) if cfg['trailingStop'] else 0
 
             # Pozisyon buyuklugu
@@ -240,13 +263,17 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                 _log_decision(uid, sym, 'SKIP', 'score_unavailable', tf=tf, price=cur_price)
                 continue
 
-            # Telegram bildirimi veya direkt ac
+            # Telegram bildirimi veya direkt ac (fail-safe: TG aktifken gonderim
+            # basarisizsa pozisyon ACMA — kullanici onay bekliyordu).
             _tg_sent = False
             _already_pending = False
+            _tg_configured = False
             try:
                 from routes_telegram import send_trade_signal, _pending_signals, _pending_lock
                 import os as _os
-                if _os.environ.get('TELEGRAM_BOT_TOKEN') and _os.environ.get('TELEGRAM_CHAT_ID'):
+                _tg_configured = bool(_os.environ.get('TELEGRAM_BOT_TOKEN')
+                                      and _os.environ.get('TELEGRAM_CHAT_ID'))
+                if _tg_configured:
                     with _pending_lock:
                         _already_pending = any(
                             ps['symbol'] == sym and ps['uid'] == uid
@@ -266,6 +293,11 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
                 _log_decision(uid, sym, 'PENDING', 'telegram_approve',
                               detail=f"[PLAN] qty={quantity}, SL={stop_loss:.2f}, TP1={tp1:.2f}",
                               tf=tf, price=cur_price, score=plan_score, confidence=plan_conf)
+            elif _tg_configured:
+                _log_decision(uid, sym, 'SKIP', 'telegram_failed',
+                              detail='[PLAN] Telegram onay sinyali gonderilemedi; pozisyon acilmadi',
+                              tf=tf, price=cur_price, score=plan_score, confidence=plan_conf)
+                continue
             else:
                 pos_id = _auto_open_position(uid, sym, cur_price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl)
                 if pos_id:

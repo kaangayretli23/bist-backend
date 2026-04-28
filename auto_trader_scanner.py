@@ -33,6 +33,13 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
     _tf_map = {'daily': 'daily', 'swing': 'weekly', 'monthly': 'monthly'}
     _tf_now = _tf_map.get(cfg.get('tradeStyle', 'swing'), 'weekly')
 
+    # Piyasa rejim filtresi: neutral mod'da min_score'a +1 bonus (sadece A+ sinyaller)
+    try:
+        from auto_trader_regime import regime_score_threshold_bonus
+        _min_score_eff = float(cfg['minScore']) + regime_score_threshold_bonus()
+    except Exception:
+        _min_score_eff = float(cfg['minScore'])
+
     for s in stocks:
         sym = s.get('code', '')
         if not sym or sym in open_symbols:
@@ -48,6 +55,17 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         if _reject_cooldown_check(uid, sym):
             _log_decision(uid, sym, 'SKIP', 'reject_cooldown', tf=_tf_now)
             continue
+        # Sektor cap: ayni sektorden max N pozisyon (korelasyon riski)
+        try:
+            from auto_trader_sectors import sector_full
+            _full, _sec, _cur = sector_full(sym, open_positions, int(cfg.get('maxPerSector', 2)))
+            if _full:
+                _log_decision(uid, sym, 'SKIP', 'sector_cap',
+                              detail=f"{_sec} dolu ({_cur}/{int(cfg.get('maxPerSector', 2))})",
+                              tf=_tf_now)
+                continue
+        except Exception:
+            pass
         if not _signals_ok:
             continue
 
@@ -86,9 +104,9 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             print(f"[AUTO-TRADE] {sym} sinyal hesaplama hatasi: {_rec_err}")
             continue
 
-        if signal not in ('AL', 'GÜÇLÜ AL') or score < cfg['minScore'] or confidence < cfg['minConfidence']:
+        if signal not in ('AL', 'GÜÇLÜ AL') or score < _min_score_eff or confidence < cfg['minConfidence']:
             _log_decision(uid, sym, 'SKIP', 'score',
-                          detail=f"sig={signal}, sc={score:.1f}/{cfg['minScore']}, conf={confidence:.0f}/{cfg['minConfidence']}",
+                          detail=f"sig={signal}, sc={score:.1f}/{_min_score_eff:.1f}, conf={confidence:.0f}/{cfg['minConfidence']}",
                           tf=_tf_now, price=live_price, score=score, confidence=confidence)
             continue
 
@@ -105,7 +123,7 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         except Exception:
             pass
 
-        # Hacim filtresi
+        # Hacim filtresi (relatif: bugun ort20'nin %50'sinin altindaysa skip)
         if len(hist) >= 20:
             try:
                 vol_today = float(hist['Volume'].iloc[-1])
@@ -115,6 +133,21 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                                   detail=f"bugun={vol_today:.0f} < ort20*0.5={vol_avg20*0.5:.0f}",
                                   tf=_tf_now, price=live_price)
                     continue
+            except Exception:
+                pass
+
+        # Likidite filtresi (mutlak TL turnover: cok sig hisseyi filtrele)
+        # 20 gunluk ortalama (Close * Volume) cfg.minTurnoverTL altindaysa skip.
+        if len(hist) >= 20:
+            try:
+                _min_turn = float(cfg.get('minTurnoverTL', 1_000_000) or 0)
+                if _min_turn > 0:
+                    _turn20 = float((hist['Close'].iloc[-20:] * hist['Volume'].iloc[-20:]).mean())
+                    if _turn20 < _min_turn:
+                        _log_decision(uid, sym, 'SKIP', 'turnover',
+                                      detail=f"ort20_TL={_turn20:.0f} < esik={_min_turn:.0f}",
+                                      tf=_tf_now, price=live_price)
+                        continue
             except Exception:
                 pass
 
@@ -139,7 +172,12 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
 
     candidates.sort(key=lambda x: x['score'], reverse=True)
     slots = cfg['maxPositions'] - len(open_positions)
-    daily_remaining = cfg['maxDailyTrades'] - _auto_get_daily_trade_count(uid)
+    try:
+        from auto_trader_regime import regime_daily_trade_factor
+        _daily_cap_eff = max(1, int(cfg['maxDailyTrades'] * regime_daily_trade_factor()))
+    except Exception:
+        _daily_cap_eff = int(cfg['maxDailyTrades'])
+    daily_remaining = _daily_cap_eff - _auto_get_daily_trade_count(uid)
 
     for cand in candidates[:min(slots, daily_remaining)]:
         sym = cand['symbol']
@@ -182,6 +220,17 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             except Exception:
                 pass
 
+        # TP monotonik kontrol — kademeli kar alma icin tp1 < tp2 < tp3 sart.
+        # Plan override'ında targets esit/geri sirali gelmis olabilir; en az %0.5
+        # spread garanti etmek icin default formul fallback'i.
+        _tp_default_1 = round(price * (1 + cfg['takeProfitPct'] / 100), 2)
+        _tp_default_2 = round(price * (1 + cfg['takeProfitPct'] * 1.5 / 100), 2)
+        _tp_default_3 = round(price * (1 + cfg['takeProfitPct'] * 2 / 100), 2)
+        if not (price < tp1 < tp2 < tp3) or (tp2 - tp1) / price < 0.005 or (tp3 - tp2) / price < 0.005:
+            print(f"[AUTO-TRADE] {sym} TP siralama bozuk "
+                  f"(tp1={tp1:.2f}, tp2={tp2:.2f}, tp3={tp3:.2f}) → default formul")
+            tp1, tp2, tp3 = _tp_default_1, _tp_default_2, _tp_default_3
+
         risk_amount = cfg['capital'] * (cfg['riskPerTrade'] / 100)
         sl_distance = price - stop_loss
         if sl_distance <= 0:
@@ -209,10 +258,13 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
 
         _tg_sent = False
         _already_pending = False
+        _tg_configured = False
         try:
             from routes_telegram import send_trade_signal, _pending_signals, _pending_lock
             import os as _os
-            if _os.environ.get('TELEGRAM_BOT_TOKEN') and _os.environ.get('TELEGRAM_CHAT_ID'):
+            _tg_configured = bool(_os.environ.get('TELEGRAM_BOT_TOKEN')
+                                  and _os.environ.get('TELEGRAM_CHAT_ID'))
+            if _tg_configured:
                 with _pending_lock:
                     _already_pending = any(
                         ps['symbol'] == sym and ps['uid'] == uid
@@ -227,6 +279,11 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         except Exception as _tg_err:
             print(f"[AUTO-TRADE] Telegram sinyal hatası: {_tg_err}")
 
+        # Karar:
+        #  1) Pending var veya Telegram gonderildi → onay bekle (PENDING)
+        #  2) Telegram aktif ama gonderim basarisiz → fail-safe: pozisyon ACMA
+        #     (kullanicı Telegram bekliyordu ama uyarı gitmedi; sessiz acmak yanlis olur)
+        #  3) Telegram konfigure degil → eskisi gibi otomatik ac
         if _already_pending or _tg_sent:
             try:
                 from realtime_prices import subscribe as _rt_sub
@@ -237,6 +294,11 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             _log_decision(uid, sym, 'PENDING', 'telegram_approve',
                           detail=f"qty={quantity}, SL={stop_loss:.2f}, TP1={tp1:.2f}",
                           tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
+        elif _tg_configured:
+            _log_decision(uid, sym, 'SKIP', 'telegram_failed',
+                          detail='Telegram onay sinyali gonderilemedi; pozisyon acilmadi',
+                          tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
+            continue
         else:
             pos_id = _auto_open_position(uid, sym, price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl)
             if pos_id:
