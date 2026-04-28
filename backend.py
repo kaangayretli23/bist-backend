@@ -42,6 +42,7 @@ try:
     import auto_trader_routes  # noqa: F401
     import auto_trader_routes_positions  # noqa: F401
     import auto_trader_routes_analytics  # noqa: F401
+    import auto_trader_routes_dashboard  # noqa: F401
 except ImportError as e:
     print(f"[HATA] auto_trader.py import hatasi: {e}")
 
