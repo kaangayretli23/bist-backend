@@ -438,6 +438,11 @@ def _ensure_loader():
         if _loader_started:
             return
         _loader_started = True
+        # config modulundeki _loader_started'i de guncelle — `from config import
+        # _loader_started` ile baska modullerde stale binding kaliyordu, attribute
+        # olarak set edersek getattr(config, '_loader_started') taze deger doner.
+        import config as _cfg
+        _cfg._loader_started = True
     # Cold-start: DB snapshot'ından cache'i önceden doldur (kullanıcı anında veri görür)
     try:
         _get_db_load_snapshot()()
