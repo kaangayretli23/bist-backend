@@ -127,9 +127,13 @@ def system_diagnostic():
     """Live veri akisi teshisi: WebSocket stream, abone sayisi, son tick yaslari, cache tazeligi.
     Salt-okunur — hicbir cache'e yazmaz, hicbir disis cagri yapmaz."""
     now = time.time()
+    # _loader_started'i her seferinde config modulunden taze oku — module-level
+    # `from config import _loader_started` import zamanindaki False'a binding ediyor,
+    # sonra config._loader_started=True olunca buradaki binding guncellenmiyordu.
+    import config as _cfg
     out = {
         'time': datetime.now().isoformat(),
-        'loaderStarted': _loader_started,
+        'loaderStarted': bool(getattr(_cfg, '_loader_started', False)),
         'loaderPhase': _status.get('phase'),
     }
     # ── _stock_cache (loader baseline) ──
