@@ -84,7 +84,19 @@ def calc_market_regime():
         if n < 50:
             return {'regime': 'unknown', 'strength': 0, 'description': 'Yeterli veri yok'}
 
+        # cur: live XU100 önceliklidir — hist son barı piyasa açıkken Salı kapanışıdır.
+        # SMA20/50/200 kıyaslamaları "fiyat SMA üzerinde" gibi → live kullanmadan
+        # bugünkü hareket yansımaz, rejim hep dünden hesaplanır.
         cur = float(c[-1])
+        try:
+            from config import _cget as _cg, _index_cache as _ixc
+            xu_live = _cg(_ixc, 'XU100')
+            if xu_live and xu_live.get('value'):
+                live_val = float(xu_live['value'])
+                if live_val > 0:
+                    cur = live_val
+        except Exception:
+            pass
         sma20  = float(np.mean(c[-20:]))  if n >= 20  else cur
         sma50  = float(np.mean(c[-50:]))  if n >= 50  else sma20
         sma200 = float(np.mean(c[-200:])) if n >= 200 else sma50

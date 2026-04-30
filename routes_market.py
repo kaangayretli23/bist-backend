@@ -201,6 +201,30 @@ def stock_detail(symbol):
 
         cp = float(hist['Close'].iloc[-1])
         prev = float(hist['Close'].iloc[-2]) if len(hist) > 1 else cp
+        # Live override: piyasa acikken IS Yatirim hist endpoint'i bugunun barini
+        # henuz vermez (sadece kapanis sonrasi). _stock_cache live quote'tan price/change
+        # gun ici tazedir → fiyat/degisim icin onu kullan, OHLCV/indicator hesaplari hist'ten.
+        live_price = cp
+        live_change = cp - prev
+        live_pct = (cp - prev) / prev * 100 if prev else 0.0
+        live_volume = si(hist['Volume'].iloc[-1])
+        live_high = sf(hist['High'].iloc[-1])
+        live_low = sf(hist['Low'].iloc[-1])
+        live_open = sf(hist['Open'].iloc[-1])
+        try:
+            live_q = _cget(_stock_cache, symbol)
+            if live_q and live_q.get('price'):
+                live_price = float(live_q.get('price') or cp)
+                if 'change' in live_q: live_change = float(live_q.get('change') or 0)
+                if 'changePct' in live_q: live_pct = float(live_q.get('changePct') or 0)
+                if 'prevClose' in live_q and live_q.get('prevClose'): prev = float(live_q['prevClose'])
+                if live_q.get('volume'): live_volume = si(live_q['volume'])
+                if live_q.get('high'): live_high = sf(live_q['high'])
+                if live_q.get('low'): live_low = sf(live_q['low'])
+                if live_q.get('open'): live_open = sf(live_q['open'])
+        except Exception:
+            pass
+        cp = live_price
         w52 = calc_52w(hist)
         ind = calc_all_indicators(hist, cp)
         rec = calc_recommendation(hist, ind, symbol=symbol)
@@ -219,15 +243,18 @@ def stock_detail(symbol):
         return jsonify(safe_dict({
             'success': True, 'code': symbol,
             'name': BIST100_STOCKS.get(symbol, symbol),
-            'price': sf(cp), 'change': sf(cp - prev),
-            'changePercent': sf((cp - prev) / prev * 100 if prev else 0),
-            'volume': si(hist['Volume'].iloc[-1]),
-            'dayHigh': sf(hist['High'].iloc[-1]),
-            'dayLow': sf(hist['Low'].iloc[-1]),
-            'dayOpen': sf(hist['Open'].iloc[-1]),
+            'price': sf(cp), 'change': sf(live_change),
+            'changePercent': sf(live_pct),
+            'volume': live_volume,
+            'dayHigh': live_high,
+            'dayLow': live_low,
+            'dayOpen': live_open,
             'prevClose': sf(prev), 'currency': 'TRY',
             'period': period, 'dataPoints': len(hist),
             'week52': w52,
+            # NOT: marketValue = price * volume → bu islem hacmi (TL), market cap DEGIL.
+            # Market cap = price * shares_outstanding (bu veri Is Yatirim API'sinde yok).
+            # Frontend mevcut isim ile kullaniyor → degistirme riski var, sadece niyet aciklamasi.
             'marketValue': sf(cp * si(hist['Volume'].iloc[-1])),
             'indicators': ind,
             'chartData': prepare_chart_data(hist),

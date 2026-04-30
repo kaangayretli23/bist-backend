@@ -3,10 +3,15 @@ Ham Veri Çekme Fonksiyonları
 İş Yatırım, Yahoo Finance HTTP, borsapy kaynaklarından OHLCV çekme.
 data_fetcher.py'dan ayrıştırıldı (700 satır kuralı).
 """
+import os
 import time
 import json
 import urllib.request
 from datetime import datetime, timedelta
+
+# Log gurultusu kontrolu — VERBOSE_FETCH=1 yapinca her sembol icin satir-satir log basar.
+# Default kapali (sadece OK + HATA satirlari kalir). 100+ sembol cycle'da tasiyiciydi.
+VERBOSE_FETCH = os.environ.get('VERBOSE_FETCH', '0') in ('1', 'true', 'True')
 
 try:
     import numpy as np
@@ -49,7 +54,8 @@ def _fetch_isyatirim_df(symbol, days=365):
         ed = end_date.strftime('%d-%m-%Y')
         url = f"{IS_YATIRIM_BASE}?hisse={symbol}&startdate={sd}&enddate={ed}"
 
-        print(f"  [ISYATIRIM] {symbol} {days}d cekiliyor...")
+        if VERBOSE_FETCH:
+            print(f"  [ISYATIRIM] {symbol} {days}d cekiliyor...")
         resp = None
         last_err = None
         for http_attempt in range(2):
@@ -84,8 +90,8 @@ def _fetch_isyatirim_df(symbol, days=365):
             print(f"  [ISYATIRIM] {symbol}: bos veri ({len(rows) if rows else 0} satir), response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
             return None
 
-        # Ilk satirdaki TUM kolonlari logla
-        if len(rows) > 0:
+        # Ilk satirdaki TUM kolonlari logla (sadece debug)
+        if VERBOSE_FETCH and len(rows) > 0:
             cols = list(rows[0].keys())
             print(f"  [ISYATIRIM] {symbol}: {len(rows)} satir, kolonlar: {cols}")
 
@@ -144,7 +150,8 @@ def _fetch_isyatirim_df(symbol, days=365):
                 print(f"  [ISYATIRIM] {symbol}: Close kolonu bulunamadi, kolonlar: {list(df_raw.columns)}")
                 return None
 
-        print(f"  [ISYATIRIM] {symbol} mapping: {col_map}")
+        if VERBOSE_FETCH:
+            print(f"  [ISYATIRIM] {symbol} mapping: {col_map}")
 
         # DataFrame build
         df = pd.DataFrame(index=pd.DatetimeIndex(pd.to_datetime(df_raw[date_col])))
@@ -175,7 +182,8 @@ def _fetch_isyatirim_df(symbol, days=365):
         if last_close <= 0:
             print(f"  [ISYATIRIM] {symbol} UYARI: Son kapanis fiyati 0 veya negatif: {last_close}")
 
-        print(f"  [ISYATIRIM] {symbol} OK: {len(df)} bar, {df.index[0].strftime('%Y-%m-%d')} -> {df.index[-1].strftime('%Y-%m-%d')}, son fiyat: {last_close}")
+        if VERBOSE_FETCH:
+            print(f"  [ISYATIRIM] {symbol} OK: {len(df)} bar, {df.index[0].strftime('%Y-%m-%d')} -> {df.index[-1].strftime('%Y-%m-%d')}, son fiyat: {last_close}")
         return df
 
     except Exception as e:
@@ -268,12 +276,14 @@ def _fetch_yahoo_http_df(symbol, period1_days=365):
         if not timestamps or not quote.get('close'): return None
 
         dates = [datetime.fromtimestamp(ts) for ts in timestamps]
+        # `if v is not None` — v=0 truthy check (`if v`) ile NaN yapilirdi; pratikte
+        # OHLC=0 fiyat olamaz ama defensive olalım, gercekten None'i ayirt edelim.
         df = pd.DataFrame({
-            'Open': [float(v) if v else np.nan for v in quote.get('open', [])],
-            'High': [float(v) if v else np.nan for v in quote.get('high', [])],
-            'Low': [float(v) if v else np.nan for v in quote.get('low', [])],
-            'Close': [float(v) if v else np.nan for v in quote.get('close', [])],
-            'Volume': [int(v) if v else 0 for v in quote.get('volume', [])],
+            'Open': [float(v) if v is not None else np.nan for v in quote.get('open', [])],
+            'High': [float(v) if v is not None else np.nan for v in quote.get('high', [])],
+            'Low':  [float(v) if v is not None else np.nan for v in quote.get('low', [])],
+            'Close':[float(v) if v is not None else np.nan for v in quote.get('close', [])],
+            'Volume':[int(v) if v is not None else 0 for v in quote.get('volume', [])],
         }, index=pd.DatetimeIndex(dates))
         df = df.dropna(subset=['Close'])
 
@@ -296,7 +306,9 @@ except ImportError:
 
 
 def _fetch_borsapy_quick(sym):
-    """borsapy ile anlık fiyat verisi"""
+    """borsapy ile anlık fiyat verisi.
+    NOT: prev_close=None ise None doneriz — eskiden 'prev=cur' fallback yapiyordu,
+    bu da changePct=0 yaratiyordu (sahte 'hareketsiz hisse'). Fallback Is Yatirim/Yahoo'ya gecsin."""
     if not BP_OK:
         return None
     try:
@@ -306,8 +318,11 @@ def _fetch_borsapy_quick(sym):
         prev = fi.previous_close
         if cur is None or cur <= 0:
             return None
+        if prev is None or prev <= 0:
+            print(f"  [BORSAPY] {sym}: previous_close yok → fallback'e devret (changePct=0 sahteliğini önle)")
+            return None
         cur = float(cur)
-        prev = float(prev) if prev is not None else cur
+        prev = float(prev)
         # Piyasa kapali oldugunda intraday degerler None olabilir
         open_ = float(fi.open) if fi.open is not None else cur
         high_ = float(fi.day_high) if fi.day_high is not None else cur

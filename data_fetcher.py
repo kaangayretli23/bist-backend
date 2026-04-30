@@ -195,7 +195,9 @@ def _fetch_stocks_parallel(symbols, label="STOCKS", retry_count=2):
                 ok_count += 1
             else:
                 fail_list.append(sym)
-                _ctouch(_stock_cache, sym)  # Keep stale data alive
+                # NOT: _ctouch ile TS guncellemiyoruz — fetch fail olunca eski TS
+                # ile 30 dk (CACHE_STALE_TTL) stale serve edilir, sonra dusurulur.
+                # _ctouch eskiden "stale → taze gibi gorunsun" yaratiyordu (yaniltici).
             _status['loaded'] = _status.get('loaded', 0) + 1
             if done_count % 20 == 0 or done_count == total:
                 print(f"  [{label}] {done_count}/{total}, cache={len(_stock_cache)}, fail={len(fail_list)}")
@@ -271,6 +273,20 @@ def _background_loop():
             _save_fn = _get_db_save_snapshot()
             if _save_fn:
                 threading.Thread(target=_save_fn, daemon=True).start()
+
+            # === FAZE 5c: TradingView WebSocket — BIST100 tum hisselere abone (live tick) ===
+            # Loader'in doldurdugu prevClose baseline ustune TV tick'leri _stock_cache'i
+            # gercek-zamanli gunceller (realtime_prices._on_price_update bridge'i).
+            try:
+                def _tv_sync():
+                    try:
+                        from realtime_prices import sync_subscriptions
+                        sync_subscriptions(list(BIST100_STOCKS.keys()), throttle_sec=0.05)
+                    except Exception as tve:
+                        print(f"[RT-PRICES] BIST100 sync hatasi: {tve}")
+                threading.Thread(target=_tv_sync, daemon=True).start()
+            except Exception as e:
+                print(f"[RT-PRICES] sync thread baslatilamadi: {e}")
 
             # === FAZE 6: Otomatik alert kontrolu (cooldown destekli) ===
             _auto_check_all_alerts()
@@ -412,10 +428,16 @@ def _preload_hist_data_inner():
     elapsed = round(time.time() - t0, 1)
     print(f"[HIST-PRELOAD] Tamamlandi: {ok}/{len(to_fetch)} ({elapsed}s)\n")
 
+_loader_init_lock = threading.Lock()
+
 def _ensure_loader():
     global _loader_started
-    if _loader_started: return
-    _loader_started = True
+    # Atomik check-and-set: iki request ayni anda before_request'i tetiklerse
+    # iki loader thread baslamasini onle (cache concurrent write race olur).
+    with _loader_init_lock:
+        if _loader_started:
+            return
+        _loader_started = True
     # Cold-start: DB snapshot'ından cache'i önceden doldur (kullanıcı anında veri görür)
     try:
         _get_db_load_snapshot()()
@@ -435,24 +457,26 @@ def before_req():
 
 
 def _fetch_index_data(key, tsym, name):
-    """Endeks verisi cek"""
-    # Endeksler icin Is Yatirim: XU100 = BIST100 endeksi
+    """Endeks verisi cek.
+    SIRA: Yahoo HTTP (intraday tick) → Is Yatirim daily → yfinance.
+    Yahoo onceliklidir cunku Is Yatirim daily endpoint piyasa acikken bugunun barini
+    dondurmuyor → 'cur=Salı close, prev=Pazartesi close' yaniltici."""
+    # 1. Yahoo HTTP (intraday — piyasa acikken bugunun barini icerir)
+    data = _fetch_yahoo_http(tsym)
+    if data:
+        print(f"  [YAHOO-IDX] {key} OK: {data['close']}")
+        return data
+
+    # 2. Is Yatirim daily (fallback — piyasa kapaliyken Salı kapanışı doğru)
     isyatirim_map = {'XU100':'XU100','XU030':'XU030','XBANK':'XBANK'}
     is_sym = isyatirim_map.get(key)
-
     if is_sym:
         data = _fetch_isyatirim_quick(is_sym)
         if data:
             print(f"  [ISYATIRIM-IDX] {key} OK: {data['close']}")
             return data
 
-    # Yahoo HTTP fallback
-    data = _fetch_yahoo_http(tsym)
-    if data:
-        print(f"  [YAHOO-IDX] {key} OK: {data['close']}")
-        return data
-
-    # yfinance fallback
+    # 3. yfinance son care
     if YF_OK:
         try:
             h = yf.Ticker(tsym).history(period="5d", timeout=10)

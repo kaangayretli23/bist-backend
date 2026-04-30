@@ -241,6 +241,12 @@ def _auto_close_position(position_id, close_price, reason):
             _sync_portfolio_sell(row['user_id'], row['symbol'], qty)
         except Exception as _ps_err:
             print(f"[AUTO-TRADE] Portfoy SELL sync hatasi: {_ps_err}")
+        # Alert state cleanup (RAM+DB) — her durumda yapılır (kullanıcı bazlı)
+        try:
+            from realtime_prices import clear_alert_state as _rt_clear
+            _rt_clear(row['symbol'], row['user_id'], position_id)
+        except Exception:
+            pass
         # Realtime takibi durdur — başka açık pozisyon yoksa
         try:
             from realtime_prices import unsubscribe as _rt_unsub

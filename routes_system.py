@@ -122,6 +122,78 @@ def debug():
     })
 
 
+@system_bp.route('/api/system/diagnostic')
+def system_diagnostic():
+    """Live veri akisi teshisi: WebSocket stream, abone sayisi, son tick yaslari, cache tazeligi.
+    Salt-okunur — hicbir cache'e yazmaz, hicbir disis cagri yapmaz."""
+    now = time.time()
+    out = {
+        'time': datetime.now().isoformat(),
+        'loaderStarted': _loader_started,
+        'loaderPhase': _status.get('phase'),
+    }
+    # ── _stock_cache (loader baseline) ──
+    with _lock:
+        sc_fresh, sc_stale, sc_expired = 0, 0, 0
+        zero_change = 0
+        for k, v in _stock_cache.items():
+            age = now - v['ts']
+            if age < CACHE_TTL: sc_fresh += 1
+            elif age < CACHE_STALE_TTL: sc_stale += 1
+            else: sc_expired += 1
+            try:
+                if abs(float(v['data'].get('changePct') or 0)) < 0.01:
+                    zero_change += 1
+            except Exception:
+                pass
+        out['stockCache'] = {
+            'total': len(_stock_cache),
+            'fresh': sc_fresh, 'stale': sc_stale, 'expired': sc_expired,
+            'zeroChange': zero_change,
+        }
+    # ── realtime_prices state (lazy import — modul yuklu degilse zarif gec) ──
+    try:
+        import realtime_prices as rt
+        with rt._rt_lock:
+            rt_total = len(rt._rt_cache)
+            rt_fresh = sum(1 for v in rt._rt_cache.values()
+                           if (now - v['ts']) < rt._RT_STALE_SEC)
+            recent = sorted(rt._rt_cache.items(),
+                            key=lambda kv: kv[1]['ts'], reverse=True)[:5]
+            recent_ticks = [{
+                'symbol': sym,
+                'price': v['price'],
+                'changePct': round(v.get('change_pct', 0), 2),
+                'ageSec': round(now - v['ts'], 1),
+                'source': v.get('source'),
+            } for sym, v in recent]
+            subscribed_count = len(rt._subscribed)
+        out['websocket'] = {
+            'streamConnected': bool(rt._stream_ok),
+            'subscribedCount': subscribed_count,
+            'useTvLive': bool(getattr(rt, 'USE_TV_LIVE', False)),
+        }
+        out['rtCache'] = {
+            'total': rt_total,
+            'fresh': rt_fresh,
+            'staleSec': rt._RT_STALE_SEC,
+            'recentTicks': recent_ticks,
+        }
+    except Exception as e:
+        out['websocket'] = {'error': str(e)}
+    # ── auto trader regime (cache, bilgi amacli) ──
+    try:
+        from auto_trader_regime import _REGIME_CACHE
+        out['regime'] = {
+            'mode': _REGIME_CACHE.get('mode'),
+            'detail': _REGIME_CACHE.get('detail'),
+            'ageSec': round(now - _REGIME_CACHE.get('ts', 0), 1) if _REGIME_CACHE.get('ts') else None,
+        }
+    except Exception as e:
+        out['regime'] = {'error': str(e)}
+    return jsonify(out)
+
+
 @system_bp.route('/api/test-fetch/<symbol>')
 def test_fetch(symbol):
     """Veri cekme pipeline'ini test et - debug icin"""
@@ -222,7 +294,7 @@ def index():
 @system_bp.route('/api/docs')
 def docs():
     return jsonify({'name': 'BIST Pro v7.1.0', 'endpoints': [
-        '/api/health', '/api/debug', '/api/dashboard', '/api/indices',
+        '/api/health', '/api/debug', '/api/system/diagnostic', '/api/dashboard', '/api/indices',
         '/api/bist100', '/api/bist30', '/api/stock/<sym>', '/api/stock/<sym>/kap',
         '/api/stock/<sym>/backtest-signals', '/api/stock/<sym>/fundamentals',
         '/api/commodity/<sym>', '/api/compare', '/api/screener', '/api/heatmap', '/api/report',

@@ -15,6 +15,10 @@ TV_SESSION_SIGN = os.environ.get('TV_SESSION_SIGN', '')
 TV_USERNAME     = os.environ.get('TV_USERNAME', '')
 TV_PASSWORD     = os.environ.get('TV_PASSWORD', '')
 
+# TradingView tick'lerini _stock_cache'e koprule (mevcut endpoint'ler taze veri gorur).
+# Sorun cikarsa USE_TV_LIVE=0 ile devre disi birakilir → eski Is Yatirim akisina doner.
+USE_TV_LIVE = os.environ.get('USE_TV_LIVE', '1') not in ('0', 'false', 'False', '')
+
 # ── Fiyat cache ──
 # {symbol: {'price': float, 'ts': float, 'source': 'ws'|'yf'}}
 _rt_cache: dict = {}
@@ -39,25 +43,95 @@ _YF_TIMEOUT  = 8   # saniye — bu sürede cevap gelmezse eski fiyatı kullan
 
 def _on_price_update(symbol: str, quote: dict) -> None:
     price = quote.get('last') or quote.get('lp') or quote.get('close')
-    if price:
-        try:
-            p = float(price)
-            if p > 0:
-                with _rt_lock:
-                    _rt_cache[symbol] = {
-                        'price': p,
-                        'change_pct': float(quote.get('chp') or quote.get('ch') or 0),
-                        'ts': time.time(),
-                        'source': 'ws',
-                    }
-        except Exception:
-            pass
+    if not price:
+        return
+    try:
+        p = float(price)
+        if p <= 0:
+            return
+    except Exception:
+        return
+    # borsapy quote keys: 'last', 'change', 'change_percent', 'open', 'high', 'low'
+    # (alternatifler: TradingView ham → 'lp', 'ch', 'chp')
+    tv_ch_raw = quote.get('change')
+    if tv_ch_raw is None:
+        tv_ch_raw = quote.get('ch')
+    tv_chp_raw = quote.get('change_percent')
+    if tv_chp_raw is None:
+        tv_chp_raw = quote.get('chp')
+    try:
+        tv_ch = float(tv_ch_raw) if tv_ch_raw is not None else None
+    except Exception:
+        tv_ch = None
+    try:
+        tv_chp = float(tv_chp_raw) if tv_chp_raw is not None else None
+    except Exception:
+        tv_chp = None
+    tv_open = quote.get('open')
+    tv_high = quote.get('high')
+    tv_low = quote.get('low')
+    # change_pct: tv_chp oncelikli (zaten yuzde), yoksa tv_ch (mutlak deger — yuzde degil
+    # ama yaklaşık olarak yon bilgisi olur), o da yoksa 0. `or` yerine `is not None` —
+    # tv_chp=0.0 (gercek hareketsiz hisse) durumunda fallback'e dusmesin.
+    if tv_chp is not None:
+        rt_change_pct = tv_chp
+    elif tv_ch is not None:
+        rt_change_pct = tv_ch
+    else:
+        rt_change_pct = 0.0
+    with _rt_lock:
+        _rt_cache[symbol] = {
+            'price': p,
+            'change_pct': float(rt_change_pct),
+            'ts': time.time(),
+            'source': 'ws',
+        }
+    # ── Koprule: _stock_cache'i de live fiyatla guncelle (USE_TV_LIVE=1 ise) ──
+    if not USE_TV_LIVE:
+        return
+    try:
+        from config import _stock_cache, _cset, sf, si
+        cur_item = _stock_cache.get(symbol)
+        existing = (cur_item or {}).get('data', {}) if cur_item else {}
+        prev_close = existing.get('prevClose')
+        if not prev_close or float(prev_close) <= 0:
+            return  # Loader baseline'i henuz dolmadi → atla
+        prev_close = float(prev_close)
+        chg_abs = tv_ch if tv_ch is not None else (p - prev_close)
+        chg_pct = tv_chp if tv_chp is not None else (chg_abs / prev_close * 100)
+        # OHLC: TradingView quote'undan tercih et, yoksa loader baseline'inden + extend
+        try: new_open = float(tv_open) if tv_open is not None else float(existing.get('open') or p)
+        except Exception: new_open = float(existing.get('open') or p)
+        try: tv_hi = float(tv_high) if tv_high is not None else None
+        except Exception: tv_hi = None
+        try: tv_lo = float(tv_low) if tv_low is not None else None
+        except Exception: tv_lo = None
+        old_hi = float(existing.get('high') or p)
+        old_lo = float(existing.get('low') or p)
+        new_hi = max(old_hi, p, tv_hi or p)
+        candidates_lo = [v for v in (old_lo, p, tv_lo) if v and v > 0]
+        new_lo = min(candidates_lo) if candidates_lo else p
+        merged = dict(existing)
+        merged.update({
+            'price': sf(p),
+            'change': sf(chg_abs),
+            'changePct': sf(chg_pct),
+            'open': sf(new_open),
+            'high': sf(new_hi),
+            'low': sf(new_lo),
+        })
+        _cset(_stock_cache, symbol, merged)
+    except Exception:
+        pass  # Bridge basarisiz olsa _rt_cache hala calisiyor — sessiz gec
 
 
 def _get_stream():
     global _stream, _stream_ok
     with _stream_lock:
-        if _stream is not None and getattr(_stream, 'is_connected', False):
+        # is_connected default=True: borsapy versiyonu attribute saglamiyorsa
+        # mevcut stream'i kabul et (False olsa her cagride yeni stream → leak).
+        # Reconnect logic'i _loop icinde ayrica calisir (line 656).
+        if _stream is not None and getattr(_stream, 'is_connected', True):
             return _stream
         try:
             from borsapy import TradingViewStream, set_tradingview_auth
@@ -85,19 +159,25 @@ def _get_stream():
 
 
 def subscribe(symbol: str) -> bool:
-    if symbol in _subscribed:
-        return True
+    # Atomik check-and-add: iki thread ayni anda subscribe(SAME) cagirsa,
+    # ikinci thread False return alsin. on_quote çift kayıt → cift tick callback'i onlenir.
+    with _rt_lock:
+        if symbol in _subscribed:
+            return True
+        _subscribed.add(symbol)  # placeholder claim — ileride fail olursa rollback
     try:
         stream = _get_stream()
         if stream is None:
+            with _rt_lock:
+                _subscribed.discard(symbol)  # rollback
             return False
         stream.subscribe(symbol)
         stream.on_quote(symbol, lambda s, q: _on_price_update(s, q))
-        with _rt_lock:
-            _subscribed.add(symbol)
         print(f"[RT-PRICES] {symbol} abone olundu")
         return True
     except Exception as e:
+        with _rt_lock:
+            _subscribed.discard(symbol)  # rollback — sonraki retry icin
         print(f"[RT-PRICES] {symbol} abone hatası: {e}")
         return False
 
@@ -117,14 +197,23 @@ def unsubscribe(symbol: str) -> None:
         pass
 
 
-def sync_subscriptions(symbols: list) -> None:
+def sync_subscriptions(symbols: list, throttle_sec: float = 0.05) -> None:
+    """Hedef sembol kumesine senkronize et. Aralarda ufak gecikme = TV rate-limit guvenligi."""
     target = set(symbols)
     with _rt_lock:
         current = set(_subscribed)
-    for s in target - current:
+    to_add = list(target - current)
+    to_remove = list(current - target)
+    if to_add:
+        print(f"[RT-PRICES] sync: {len(to_add)} yeni abonelik ekleniyor...")
+    for i, s in enumerate(to_add):
         subscribe(s)
-    for s in current - target:
+        if throttle_sec and i < len(to_add) - 1:
+            time.sleep(throttle_sec)
+    for s in to_remove:
         unsubscribe(s)
+    if to_add:
+        print(f"[RT-PRICES] sync: tamamlandi (toplam abone={len(_subscribed)})")
 
 
 # =====================================================================
@@ -179,25 +268,36 @@ def _yf_price_safe(symbol: str) -> float | None:
 
 
 def _yf_poll_batch(symbols: list) -> None:
-    """Sembol listesini paralel olarak yfinance'tan çek."""
+    """Sembol listesini paralel olarak yfinance'tan çek.
+    `as_completed` ile bitenler sirayla islenir — eskiden `futures.items()` iteration
+    order'a gore bekliyordu, ilk yavas future digerlerini bloke ediyordu."""
     if not symbols:
         return
+    from concurrent.futures import as_completed
     futures = {_yf_executor.submit(_yf_fetch_one, sym): sym for sym in symbols}
-    for future, sym in futures.items():
-        try:
-            price = future.result(timeout=_YF_TIMEOUT)
-            if price and price > 0:
-                with _rt_lock:
-                    _rt_cache[sym] = {
-                        'price': price,
-                        'change_pct': 0.0,
-                        'ts': time.time(),
-                        'source': 'yf',
-                    }
-        except FuturesTimeout:
-            print(f"[RT-PRICES] {sym} poll timeout — atlandı")
-        except Exception:
-            pass
+    # Toplam timeout: tek timeout × 2 (paralel oldugu icin generally cok daha hizli biter)
+    try:
+        for future in as_completed(futures, timeout=_YF_TIMEOUT * 2):
+            sym = futures[future]
+            try:
+                price = future.result(timeout=0.1)  # zaten tamamlandi, hizli al
+                if price and price > 0:
+                    with _rt_lock:
+                        _rt_cache[sym] = {
+                            'price': price,
+                            'change_pct': 0.0,
+                            'ts': time.time(),
+                            'source': 'yf',
+                        }
+            except FuturesTimeout:
+                print(f"[RT-PRICES] {sym} poll timeout — atlandı")
+            except Exception:
+                pass
+    except FuturesTimeout:
+        # Toplam timeout — geri kalan future'lar yarida kalir
+        unfinished = [futures[f] for f in futures if not f.done()]
+        if unfinished:
+            print(f"[RT-PRICES] _yf_poll_batch toplam timeout — bitmeyen: {len(unfinished)}")
 
 
 # =====================================================================
@@ -344,12 +444,20 @@ def _check_positions_once():
             if cur <= sl:
                 state['sl_confirm'] = state['sl_confirm'] + 1
                 if not state['sl_hit']:
-                    msgs.append(
-                        f"🚨 <b>STOP-LOSS — {sym}</b>\n"
-                        f"Fiyat: {cur:.2f} ≤ SL: {sl:.2f}\n"
-                        f"📉 Zarar: %{pnl_pct:.1f}\n"
-                        f"⚠️ <b>SATIŞ YAPINIZ</b>"
-                    )
+                    if auto_exec:
+                        msgs.append(
+                            f"🤖 <b>STOP-LOSS — {sym}</b>\n"
+                            f"Fiyat: {cur:.2f} ≤ SL: {sl:.2f}\n"
+                            f"📉 Zarar: %{pnl_pct:.1f}\n"
+                            f"⏳ Bot otomatik kapatıyor (1 tick onay daha)..."
+                        )
+                    else:
+                        msgs.append(
+                            f"🚨 <b>STOP-LOSS — {sym}</b>\n"
+                            f"Fiyat: {cur:.2f} ≤ SL: {sl:.2f}\n"
+                            f"📉 Zarar: %{pnl_pct:.1f}\n"
+                            f"⚠️ <b>SATIŞ YAPINIZ</b>"
+                        )
                     state['sl_hit'] = True
                 # Auto-execute: 2 ardışık tick + cfg.enabled
                 if (auto_exec and not state['sl_executed']
@@ -372,7 +480,9 @@ def _check_positions_once():
                             _db_delete_alert_state(uid, sym, pid)
                         except Exception:
                             pass
-                        unsubscribe(sym)
+                        # NOT: unsubscribe burada YAPILMAZ — _auto_close_position icinde zaten
+                        # "baska acik pozisyon yoksa" kontroluyle yapiliyor. Buradan ek cagri
+                        # cift unsubscribe yaratir + BIST100 sync zaten yine abone yapacaktir.
                         # Telegram'a son haber
                         if send_telegram and msgs:
                             for m in msgs:
@@ -397,11 +507,19 @@ def _check_positions_once():
         if tp3 > 0 and cur >= tp3:
             state['tp3_confirm'] = state['tp3_confirm'] + 1
             if not state['tp3_hit']:
-                msgs.append(
-                    f"🎯 <b>TP3 HEDEFİ — {sym}</b>\n"
-                    f"Fiyat: {cur:.2f} ≥ TP3: {tp3:.2f}\n"
-                    f"📈 Kâr: %{pnl_pct:.1f} — <b>SATIŞ ÖNERİLİR</b>"
-                )
+                if auto_exec:
+                    msgs.append(
+                        f"🤖 <b>TP3 HEDEFİ — {sym}</b>\n"
+                        f"Fiyat: {cur:.2f} ≥ TP3: {tp3:.2f}\n"
+                        f"📈 Kâr: %{pnl_pct:.1f}\n"
+                        f"⏳ Bot otomatik kapatıyor (1 tick onay daha)..."
+                    )
+                else:
+                    msgs.append(
+                        f"🎯 <b>TP3 HEDEFİ — {sym}</b>\n"
+                        f"Fiyat: {cur:.2f} ≥ TP3: {tp3:.2f}\n"
+                        f"📈 Kâr: %{pnl_pct:.1f} — <b>SATIŞ ÖNERİLİR</b>"
+                    )
                 state['tp3_hit'] = True
             if (auto_exec and not state['tp3_executed']
                     and state['tp3_confirm'] >= _RT_CONFIRM_TICKS):
@@ -421,7 +539,7 @@ def _check_positions_once():
                         _db_delete_alert_state(uid, sym, pid)
                     except Exception:
                         pass
-                    unsubscribe(sym)
+                    # NOT: unsubscribe burada degil — _auto_close_position halletti.
                     if send_telegram and msgs:
                         for m in msgs:
                             try: send_telegram(m)
@@ -433,11 +551,19 @@ def _check_positions_once():
         elif tp2 > 0 and cur >= tp2:
             state['tp2_confirm'] = state['tp2_confirm'] + 1
             if not state['tp2_hit']:
-                msgs.append(
-                    f"🎯 <b>TP2 HEDEFİ — {sym}</b>\n"
-                    f"Fiyat: {cur:.2f} ≥ TP2: {tp2:.2f}\n"
-                    f"📈 Kâr: %{pnl_pct:.1f} — <b>SATIŞ ÖNERİLİR</b>"
-                )
+                if auto_exec:
+                    msgs.append(
+                        f"🤖 <b>TP2 HEDEFİ — {sym}</b>\n"
+                        f"Fiyat: {cur:.2f} ≥ TP2: {tp2:.2f}\n"
+                        f"📈 Kâr: %{pnl_pct:.1f}\n"
+                        f"⏳ Bot %50 partial close yapıyor..."
+                    )
+                else:
+                    msgs.append(
+                        f"🎯 <b>TP2 HEDEFİ — {sym}</b>\n"
+                        f"Fiyat: {cur:.2f} ≥ TP2: {tp2:.2f}\n"
+                        f"📈 Kâr: %{pnl_pct:.1f} — <b>SATIŞ ÖNERİLİR</b>"
+                    )
                 state['tp2_hit'] = True
                 state['tp2_warned'] = True
             if (auto_exec and not state['tp2_executed']
@@ -456,11 +582,19 @@ def _check_positions_once():
         elif tp1 > 0 and cur >= tp1:
             state['tp1_confirm'] = state['tp1_confirm'] + 1
             if not state['tp1_hit']:
-                msgs.append(
-                    f"🎯 <b>TP1 HEDEFİ — {sym}</b>\n"
-                    f"Fiyat: {cur:.2f} ≥ TP1: {tp1:.2f}\n"
-                    f"📈 Kâr: %{pnl_pct:.1f}"
-                )
+                if auto_exec:
+                    msgs.append(
+                        f"🤖 <b>TP1 HEDEFİ — {sym}</b>\n"
+                        f"Fiyat: {cur:.2f} ≥ TP1: {tp1:.2f}\n"
+                        f"📈 Kâr: %{pnl_pct:.1f}\n"
+                        f"⏳ Bot %50 partial close yapıyor..."
+                    )
+                else:
+                    msgs.append(
+                        f"🎯 <b>TP1 HEDEFİ — {sym}</b>\n"
+                        f"Fiyat: {cur:.2f} ≥ TP1: {tp1:.2f}\n"
+                        f"📈 Kâr: %{pnl_pct:.1f}"
+                    )
                 state['tp1_hit'] = True
             if (auto_exec and not state['tp1_executed']
                     and state['tp1_confirm'] >= _RT_CONFIRM_TICKS):
@@ -512,7 +646,16 @@ def _check_positions_once():
 
 
 def reset_position_alerts(symbol: str, user_id: str, position_id: int | None = None) -> None:
-    """Pozisyon kapanınca uyarı state'ini temizle (RAM+DB) ve aboneliği iptal et."""
+    """Pozisyon kapanınca uyarı state'ini temizle (RAM+DB) ve aboneliği iptal et.
+    DIKKAT: Bu unsubscribe yapar — sembol baska kullanicinin acik pozisyonunda da varsa
+    onun da takibi durur. Sadece tum pozisyonlar kapaliysa cagir, yoksa clear_alert_state kullan."""
+    clear_alert_state(symbol, user_id, position_id)
+    unsubscribe(symbol)
+
+
+def clear_alert_state(symbol: str, user_id: str, position_id: int | None = None) -> None:
+    """Sadece alert state cleanup (RAM+DB). Unsubscribe yapmaz.
+    Manuel/otomatik kapatma sonrası RAM leak'i onler."""
     with _alert_lock:
         _alert_state.pop(f"{user_id}_{symbol}", None)
     if position_id is not None:
@@ -521,7 +664,6 @@ def reset_position_alerts(symbol: str, user_id: str, position_id: int | None = N
             _db_delete_alert_state(user_id, symbol, position_id)
         except Exception:
             pass
-    unsubscribe(symbol)
 
 
 # =====================================================================
@@ -543,6 +685,8 @@ def start_realtime_monitor():
     _load_persisted_alert_state()
 
     def _loop():
+        # global deklarasyonu fonksiyon basinda olmali — asagida _subscribed = set() atamasi var
+        global _stream, _stream_ok, _subscribed
         # Başlangıçta stream'i bağla
         time.sleep(8)
         _get_stream()
@@ -553,9 +697,13 @@ def start_realtime_monitor():
                 positions = _get_open_positions()
                 syms = list({p['symbol'] for p in positions})
 
-                # WebSocket aboneliğini senkronize et
-                if syms:
-                    sync_subscriptions(syms)
+                # WebSocket aboneliğini SADECE EKLE — sync yapma!
+                # sync_subscriptions, syms'de olmayanlari unsubscribe eder; bu da BIST100
+                # genel aboneligimizi (backend startup + loader FAZE 5c) ezerdi.
+                # Acik pozisyonlar zaten BIST100'un alt kumesi, abone ol yeterli.
+                for s in syms:
+                    if s not in _subscribed:
+                        subscribe(s)
 
                 # WebSocket cache'i stale olan sembolleri yfinance ile tazele
                 stale = []
@@ -578,8 +726,10 @@ def start_realtime_monitor():
                     stream = _get_stream()
                     if stream and not getattr(stream, 'is_connected', True):
                         print("[RT-PRICES] Stream koptu, yeniden bağlanıyor...")
+                        # ÖNCE: eski abonelik listesini sakla (reconnect sonrasi geri al)
+                        with _rt_lock:
+                            previously_subscribed = set(_subscribed)
                         with _stream_lock:
-                            global _stream, _stream_ok, _subscribed
                             # Eski stream'i kapat (callback'lerin çift tetiklenmesini önler)
                             old_stream = _stream
                             _stream = None
@@ -596,6 +746,13 @@ def start_realtime_monitor():
                                         pass
                         # Tek seferde yeniden bağlan ki arada subscribe/unsubscribe yarış koşuluna girmesin
                         _get_stream()
+                        # Eski abonelikleri geri yukle (BIST100 cache canli kalsin)
+                        if previously_subscribed:
+                            print(f"[RT-PRICES] Reconnect: {len(previously_subscribed)} sembol yeniden abone olunacak")
+                            for sym in previously_subscribed:
+                                subscribe(sym)
+                                time.sleep(0.05)  # rate-limit guvenligi
+                            print(f"[RT-PRICES] Reconnect: aboneler geri yuklendi (toplam={len(_subscribed)})")
 
             except Exception as e:
                 print(f"[RT-MONITOR] Loop hatası: {e}")

@@ -194,6 +194,28 @@ def _startup_selfcheck():
 
 _startup_selfcheck()
 
+# Loader thread'i hemen baslat — eskiden ilk HTTP request'i bekliyordu, ama
+# UI baglanmadan auto-trader, KAP, regime gibi background gorevleri canli veriye ihtiyac duyuyor.
+try:
+    from data_fetcher import _ensure_loader
+    _ensure_loader()
+except Exception as e:
+    print(f"[UYARI] Loader baslatilamadi: {e}")
+
+# TradingView WebSocket: BIST100 tum hisselere abone ol — loader'i beklemeden.
+# Bu sayede borsapy quick fetch'leri 429 alsa bile WebSocket tick'leri _stock_cache'i
+# canli tutar (realtime_prices._on_price_update bridge'i).
+def _bist100_tv_sync_startup():
+    try:
+        time.sleep(3)  # WebSocket baglantisi otursun
+        from realtime_prices import sync_subscriptions
+        from config import BIST100_STOCKS
+        sync_subscriptions(list(BIST100_STOCKS.keys()), throttle_sec=0.1)
+    except Exception as e:
+        print(f"[RT-PRICES] Startup TV sync hatasi: {e}")
+
+threading.Thread(target=_bist100_tv_sync_startup, daemon=True).start()
+
 print("[STARTUP] BIST Pro v7.1.0 ready - batch loader + SQLite + uyelik + advanced analytics + BES + KAP/Haber/Temel")
 
 if __name__ == '__main__':
