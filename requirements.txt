@@ -9,7 +9,7 @@ psycopg2-binary
 python-dotenv
 urllib3
 
-# Opsiyonel - borsapy birincil veri kaynagi olarak kullaniliyor (try/except ile sarmali,
-# yoksa yfinance/Yahoo HTTP fallback'e dusuyor). Pip'te yoksa veya kurulum sorun cikariyorsa
-# yorum satiri olarak birakilabilir.
-# borsapy
+# borsapy: hem TradingView WebSocket live tick (realtime_prices.py) hem _fetch_borsapy_quick/_hist
+# için kritik. Try/except ile sarmali — kurulum başarısızsa yfinance/Yahoo HTTP fallback'e düşer
+# ama TV WebSocket tamamen devre dışı kalır (live tick akışı durur, regime/auto-trader 5 dk hist baseline'a dönüş).
+borsapy

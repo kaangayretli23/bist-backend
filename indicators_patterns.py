@@ -25,8 +25,11 @@ def _rsi_series(closes, period=14):
     for i in range(period, len(delta)):
         avg_g[i] = (avg_g[i-1] * (period-1) + gains[i])  / period
         avg_l[i] = (avg_l[i-1] * (period-1) + losses[i]) / period
-    rs  = np.where(avg_l == 0, np.inf, avg_g / avg_l)
-    rsi = np.where(avg_l == 0, 100.0, 100 - 100 / (1 + rs))
+    # `np.errstate` — avg_l[i]==0 durumunda avg_g/avg_l 0/0 veya x/0 → numpy uyari basar.
+    # Sonuc np.where ile zaten temizleniyor, uyari sadece log gurultusu yaratiyordu.
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rs  = np.where(avg_l == 0, np.inf, avg_g / avg_l)
+        rsi = np.where(avg_l == 0, 100.0, 100 - 100 / (1 + rs))
     result = np.full(len(c), np.nan)
     result[period:] = rsi[period - 1:]
     return result

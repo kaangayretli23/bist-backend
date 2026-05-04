@@ -9,6 +9,17 @@ import gzip, io, json, traceback, threading, time, logging
 logging.getLogger('engineio').setLevel(logging.ERROR)
 logging.getLogger('socketio').setLevel(logging.ERROR)
 
+# borsapy TradingView WebSocket heartbeat parse warning'lerini sustur
+# ('Failed to parse packet: ~h~N' — ~h~ TradingView heartbeat ping'i, parse edilememesi zararsiz).
+# Sadece bu spesifik mesaji filtrele, diger warning'ler gecsin.
+class _BorsapyHeartbeatFilter(logging.Filter):
+    def filter(self, record):
+        try:
+            return 'Failed to parse packet: ~h~' not in record.getMessage()
+        except Exception:
+            return True
+logging.getLogger('borsapy.stream').addFilter(_BorsapyHeartbeatFilter())
+
 from flask import request, make_response
 
 # Foundation
