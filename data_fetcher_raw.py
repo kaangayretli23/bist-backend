@@ -153,8 +153,11 @@ def _fetch_isyatirim_df(symbol, days=365):
         if VERBOSE_FETCH:
             print(f"  [ISYATIRIM] {symbol} mapping: {col_map}")
 
-        # DataFrame build
-        df = pd.DataFrame(index=pd.DatetimeIndex(pd.to_datetime(df_raw[date_col])))
+        # DataFrame build — Is Yatirim'in '%d-%m-%Y' formatini explicit belirt
+        # (eskiden dayfirst=False default, pandas guess yapiyordu, UserWarning basiyordu).
+        df = pd.DataFrame(index=pd.DatetimeIndex(
+            pd.to_datetime(df_raw[date_col], format='%d-%m-%Y', errors='coerce')
+        ))
         df['Close'] = pd.to_numeric(df_raw[col_map['Close']].values, errors='coerce')
         df['Open'] = pd.to_numeric(df_raw[col_map.get('Open', col_map['Close'])].values, errors='coerce')
         df['High'] = pd.to_numeric(df_raw[col_map.get('High', col_map['Close'])].values, errors='coerce')
@@ -319,7 +322,8 @@ def _fetch_borsapy_quick(sym):
         if cur is None or cur <= 0:
             return None
         if prev is None or prev <= 0:
-            print(f"  [BORSAPY] {sym}: previous_close yok → fallback'e devret (changePct=0 sahteliğini önle)")
+            if VERBOSE_FETCH:
+                print(f"  [BORSAPY] {sym}: previous_close yok → fallback")
             return None
         cur = float(cur)
         prev = float(prev)
@@ -328,13 +332,19 @@ def _fetch_borsapy_quick(sym):
         high_ = float(fi.day_high) if fi.day_high is not None else cur
         low_  = float(fi.day_low)  if fi.day_low  is not None else cur
         vol_  = int(fi.volume)     if fi.volume   is not None else 0
-        print(f"  [BORSAPY] {sym} OK: {cur}")
+        if VERBOSE_FETCH:
+            print(f"  [BORSAPY] {sym} OK: {cur}")
         return {
             'close': cur, 'prev': prev,
             'open': open_, 'high': high_, 'low': low_, 'volume': vol_,
         }
     except Exception as e:
-        print(f"  [BORSAPY] {sym}: {e}")
+        # 429 ve uzun HTML mesajlarini kisalt — ilk 80 karakter yeterli
+        msg = str(e)
+        if len(msg) > 80:
+            msg = msg[:80] + '...'
+        if VERBOSE_FETCH or '429' not in msg:
+            print(f"  [BORSAPY] {sym}: {msg}")
         return None
 
 

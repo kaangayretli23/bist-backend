@@ -73,9 +73,38 @@ import requests as req_lib
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# ---- DEAD-SYMBOL COOLDOWN ----
+# 4 kaynak da fail eden semboller (delisted/sembol degisikligi) icin 30 dk cooldown.
+# Aksi halde her loader cycle 6 retry attempt yapiyoruz (KOZAL/IPEKE gibi).
+_dead_symbol_cooldown: dict = {}  # {sym: (fail_count, retry_after_ts)}
+_DEAD_SYMBOL_THRESHOLD = 3        # 3 ardisik fail sonrasi cooldown
+_DEAD_SYMBOL_COOLDOWN_SEC = 1800  # 30 dk
+
+def _is_in_cooldown(sym):
+    entry = _dead_symbol_cooldown.get(sym)
+    if not entry:
+        return False
+    _, retry_after = entry
+    return time.time() < retry_after
+
+def _record_fetch_result(sym, success):
+    if success:
+        _dead_symbol_cooldown.pop(sym, None)
+        return
+    entry = _dead_symbol_cooldown.get(sym, (0, 0))
+    fail_count = entry[0] + 1
+    if fail_count >= _DEAD_SYMBOL_THRESHOLD:
+        retry_after = time.time() + _DEAD_SYMBOL_COOLDOWN_SEC
+        _dead_symbol_cooldown[sym] = (fail_count, retry_after)
+        print(f"  [DEAD-SYMBOL] {sym} {fail_count}x fail → 30 dk cooldown")
+    else:
+        _dead_symbol_cooldown[sym] = (fail_count, 0)
+
 # ---- BIRLESIK FETCHER (4 katmanli fallback) ----
 def _fetch_stock_data(sym, retry_count=2):
     """Hisse verisi cek: 1.borsapy -> 2.IsYatirim -> 3.Yahoo HTTP -> 4.yfinance"""
+    if _is_in_cooldown(sym):
+        return None  # cooldown'da, fetch denenmedi
     for attempt in range(1, retry_count + 1):
         # 1. borsapy (birincil - en guncel)
         data = _fetch_borsapy_quick(sym)
@@ -165,6 +194,7 @@ def _process_stock(sym, retry_count=2):
             cur, prev = sf(data['close']), sf(data['prev'])
             if prev > 0:
                 ch = sf(cur - prev); o = sf(data.get('open', cur))
+                _record_fetch_result(sym, True)  # cooldown sayaclarini sifirla
                 return sym, {
                     'code': sym, 'name': BIST100_STOCKS.get(sym, sym),
                     'price': cur, 'prevClose': prev,
@@ -176,6 +206,7 @@ def _process_stock(sym, retry_count=2):
                 }
     except Exception as e:
         print(f"  [WORKER] {sym} hata: {e}")
+    _record_fetch_result(sym, False)  # fail counter++; 3x sonra 30 dk cooldown
     return sym, None
 
 def _fetch_stocks_parallel(symbols, label="STOCKS", retry_count=2):
