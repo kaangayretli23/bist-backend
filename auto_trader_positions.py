@@ -44,6 +44,42 @@ def _step1_manage_positions(uid, cfg, positions):
             print(f"[AUTO-TRADE] {sym} fiyat alinamadi, SL/TP kontrolu atlandi")
             continue
 
+        # A2: Time-based exit — 5 islem gunu boyunca ±%2 araligininda kalan
+        # pozisyonu kapat (sermaye kilitli, yeni firsatlari kaciriyor).
+        # 'auto_config.time_exit_enabled' var ise kullan, default ON.
+        try:
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            opened_at_str = pos.get('openedAt') or pos.get('opened_at')
+            entry = float(pos['entryPrice'])
+            if opened_at_str and entry > 0:
+                # SQLite/Postgres ISO format — tz-naive parse
+                try:
+                    if 'T' in opened_at_str:
+                        _opened_dt = _dt.fromisoformat(opened_at_str.replace('Z', '+00:00'))
+                    else:
+                        _opened_dt = _dt.strptime(opened_at_str[:19], '%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    _opened_dt = None
+                if _opened_dt:
+                    if _opened_dt.tzinfo is None:
+                        _opened_dt = _opened_dt.replace(tzinfo=_tz(_td(hours=3)))
+                    _now_tr = _dt.now(_tz(_td(hours=3)))
+                    # İşlem günü hesabı: takvim günü (hafta sonu sayılmaz, basit yaklaşım — calendar days)
+                    _days_held = (_now_tr - _opened_dt).total_seconds() / 86400.0
+                    _move_pct = abs(cur_price - entry) / entry * 100 if entry > 0 else 0
+                    if _days_held >= 7 and _move_pct < 2.0:
+                        # 7 takvim günü (~5 işlem günü) hareketsizlik → çık
+                        _reason = (f"Time-based exit: {_days_held:.1f}gün ±%2 ({entry:.2f}→{cur_price:.2f}, "
+                                   f"hareket %{_move_pct:.2f}), sermaye kilidi")
+                        _auto_close_position(pos['id'], cur_price, _reason)
+                        _auto_log_trade(uid, sym, 'SELL_TIME', cur_price, pos['quantity'],
+                                        _reason, 0, 0, pos['id'])
+                        _panic_clear(pos['id'])
+                        print(f"[AUTO-TRADE] {sym} time-based exit @ {cur_price:.2f} ({_days_held:.1f}gün)")
+                        continue
+        except Exception as _te_err:
+            print(f"[AUTO-TRADE] {sym} time-exit kontrol hatasi: {_te_err}")
+
         # Stop-Loss kontrolu
         sl = pos['stopLoss']
         if sl > 0 and cur_price <= sl:

@@ -110,6 +110,56 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                           tf=_tf_now, price=live_price, score=score, confidence=confidence)
             continue
 
+        # B1: Multi-timeframe alignment guard
+        # Sinyal tek timeframe AL diyebilir ama digerleri SAT/NOTR ise — yanlis sinyal riski.
+        # En az 2 timeframe AL veya AL ailesi (TUTUN/AL) olmali.
+        try:
+            _al_actions = ('AL', 'GÜÇLÜ AL', 'TUTUN/AL')
+            _aligned_count = sum(1 for _tf in ('weekly', 'monthly', 'yearly')
+                                 if (recs.get(_tf) or {}).get('action') in _al_actions)
+            if _aligned_count < 2:
+                _log_decision(uid, sym, 'SKIP', 'mtf_misalign',
+                              detail=f"AL/TUTUN={_aligned_count}/3 (W={recs.get('weekly',{}).get('action','?')} "
+                                     f"M={recs.get('monthly',{}).get('action','?')} Y={recs.get('yearly',{}).get('action','?')})",
+                              tf=_tf_now, price=live_price, score=score, confidence=confidence)
+                continue
+        except Exception:
+            pass
+
+        # A4: Anti-FOMO — bugun ATR'nin 1.5x'i kadar zaten yukselmisse, gec kaldik (tepe alimi riski).
+        try:
+            from indicators_basic import calc_atr
+            _h_arr = hist['High'].values.astype(float)
+            _l_arr = hist['Low'].values.astype(float)
+            _c_arr = hist['Close'].values.astype(float)
+            _atr_data = calc_atr(_h_arr, _l_arr, _c_arr)
+            _atr_val = float(_atr_data.get('value', 0))
+            if _atr_val > 0 and len(hist) >= 2:
+                _today_open = float(hist['Open'].iloc[-1])
+                _open_to_now = live_price - _today_open
+                # Acılıstan simdiye 1.5 ATR uzeri yuksellis = tepe alimi
+                if _open_to_now > _atr_val * 1.5:
+                    _log_decision(uid, sym, 'SKIP', 'fomo',
+                                  detail=f"open→now={_open_to_now:.2f} > 1.5×ATR={_atr_val*1.5:.2f}",
+                                  tf=_tf_now, price=live_price, score=score, confidence=confidence)
+                    continue
+        except Exception:
+            pass
+
+        # A5: Volume confirm (sıkılaştırılmış) — 20-bar ortalama hacmin %80 altıysa zayıf onay.
+        # Mevcut %50 hard-skip duruyor, bu ek filtre soft-skip (sinyal güçlü olsa bile).
+        if len(hist) >= 20:
+            try:
+                _vol_today = float(hist['Volume'].iloc[-1])
+                _vol_avg20 = float(hist['Volume'].iloc[-20:].mean())
+                if _vol_avg20 > 0 and _vol_today < _vol_avg20 * 0.8:
+                    _log_decision(uid, sym, 'SKIP', 'volume_weak',
+                                  detail=f"bugun={_vol_today:.0f} < ort20*0.8={_vol_avg20*0.8:.0f}",
+                                  tf=_tf_now, price=live_price, score=score, confidence=confidence)
+                    continue
+            except Exception:
+                pass
+
         # Piyasa rejimi: güçlü ayı piyasasında yeni alım yapma
         try:
             from signals import calc_market_regime as _cmr
@@ -185,7 +235,30 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         if price <= 0:
             continue
 
-        stop_loss = round(price * (1 - cfg['stopLossPct'] / 100), 2)
+        # A1: ATR-based dinamik SL — sabit %3 yerine volatiliteye gore.
+        # Volatil hisselerde geniş SL (eskiden anında tetikleniyordu),
+        # sakin hisselerde dar SL (eskiden gereksiz büyük zarar).
+        # Formul: SL = price - 1.5 × ATR. Cap: cfg.stopLossPct*1.5 (asiri genis olmasin),
+        #         floor: cfg.stopLossPct*0.5 (cok dar olmasin).
+        stop_loss = round(price * (1 - cfg['stopLossPct'] / 100), 2)  # default fallback
+        try:
+            from indicators_basic import calc_atr as _calc_atr_sl
+            _atr_data = _calc_atr_sl(
+                hist['High'].values.astype(float),
+                hist['Low'].values.astype(float),
+                hist['Close'].values.astype(float),
+            )
+            _atr_v = float(_atr_data.get('value', 0))
+            if _atr_v > 0:
+                _atr_sl_distance = _atr_v * 1.5
+                _max_distance = price * (cfg['stopLossPct'] * 1.5 / 100)  # cap
+                _min_distance = price * (cfg['stopLossPct'] * 0.5 / 100)  # floor
+                _atr_sl_distance = max(_min_distance, min(_max_distance, _atr_sl_distance))
+                stop_loss = round(price - _atr_sl_distance, 2)
+                print(f"[AUTO-TRADE] {sym} ATR-SL: ATR={_atr_v:.3f}, SL distance={_atr_sl_distance:.3f} ({_atr_sl_distance/price*100:.2f}%)")
+        except Exception as _atr_sl_err:
+            print(f"[AUTO-TRADE] {sym} ATR-SL hesap hatasi (sabit %SL kullanildi): {_atr_sl_err}")
+
         tp1 = round(price * (1 + cfg['takeProfitPct'] / 100), 2)
         tp2 = round(price * (1 + cfg['takeProfitPct'] * 1.5 / 100), 2)
         tp3 = round(price * (1 + cfg['takeProfitPct'] * 2 / 100), 2)
