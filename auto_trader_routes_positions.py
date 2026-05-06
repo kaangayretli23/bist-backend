@@ -118,6 +118,204 @@ def auto_trade_manual_close():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/auto-trade/performance', methods=['GET'])
+@require_user
+def auto_trade_performance():
+    """C3 — Performans dashboard backend: kullanıcının kapanmış pozisyonlarının istatistikleri.
+    Query: userId, days (default 30, max 365)
+    Returns: winRate, avgWin, avgLoss, profitFactor, sharpeRatio (basit),
+             totalPnL, totalTrades, bestTrade, worstTrade, avgHoldDays,
+             distByReason (SL/TP1/TP2/TP3/MANUAL/TIME/PANIC sayilari).
+    """
+    try:
+        uid = request.args.get('userId', '')
+        days = max(1, min(365, int(request.args.get('days', 30))))
+        if not uid:
+            return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+
+        from datetime import datetime as _dt, timedelta as _td
+        cutoff = (_dt.now() - _td(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+
+        db = get_db()
+        rows = db.execute(
+            "SELECT id, symbol, entry_price, close_price, quantity, pnl, pnl_pct, "
+            "       opened_at, closed_at, close_reason "
+            "FROM auto_positions "
+            "WHERE user_id=? AND status='closed' AND closed_at>=? "
+            "ORDER BY closed_at DESC",
+            (uid, cutoff)
+        ).fetchall()
+        db.close()
+
+        if not rows:
+            return jsonify({
+                'success': True,
+                'days': days,
+                'totalTrades': 0,
+                'message': f'Son {days} günde kapanmış pozisyon yok'
+            })
+
+        wins = [r for r in rows if float(r['pnl'] or 0) > 0]
+        losses = [r for r in rows if float(r['pnl'] or 0) < 0]
+        total_pnl = sum(float(r['pnl'] or 0) for r in rows)
+        gross_win = sum(float(r['pnl'] or 0) for r in wins)
+        gross_loss = abs(sum(float(r['pnl'] or 0) for r in losses))
+        win_rate = (len(wins) / len(rows) * 100) if rows else 0
+        avg_win = (gross_win / len(wins)) if wins else 0
+        avg_loss = (gross_loss / len(losses)) if losses else 0
+        profit_factor = (gross_win / gross_loss) if gross_loss > 0 else (gross_win if gross_win > 0 else 0)
+
+        # PnL% bazli Sharpe (basit, gunluk ret yok — trade-bazli)
+        pnl_pcts = [float(r['pnl_pct'] or 0) for r in rows]
+        avg_pnl_pct = sum(pnl_pcts) / len(pnl_pcts) if pnl_pcts else 0
+        try:
+            import statistics as _stat
+            std_pnl = _stat.stdev(pnl_pcts) if len(pnl_pcts) > 1 else 0
+        except Exception:
+            std_pnl = 0
+        sharpe = (avg_pnl_pct / std_pnl) if std_pnl > 0 else 0
+
+        # Hold sure (gun)
+        hold_days = []
+        for r in rows:
+            try:
+                _o = _dt.strptime((r['opened_at'] or '')[:19], '%Y-%m-%d %H:%M:%S')
+                _c = _dt.strptime((r['closed_at'] or '')[:19], '%Y-%m-%d %H:%M:%S')
+                hold_days.append((_c - _o).total_seconds() / 86400)
+            except Exception:
+                pass
+        avg_hold = (sum(hold_days) / len(hold_days)) if hold_days else 0
+
+        best = max(rows, key=lambda r: float(r['pnl'] or 0)) if rows else None
+        worst = min(rows, key=lambda r: float(r['pnl'] or 0)) if rows else None
+
+        # Sebep dagilimi
+        dist = {}
+        for r in rows:
+            reason = (r['close_reason'] or 'unknown').lower()
+            key = 'manual'
+            if 'stop-loss' in reason or 'sl' in reason and 'tp' not in reason: key = 'sl'
+            elif 'tp3' in reason: key = 'tp3'
+            elif 'tp2' in reason: key = 'tp2'
+            elif 'tp1' in reason: key = 'tp1'
+            elif 'trailing' in reason: key = 'trailing'
+            elif 'panic' in reason: key = 'panic'
+            elif 'time' in reason: key = 'time_exit'
+            elif 'manuel' in reason or 'manual' in reason: key = 'manual'
+            dist[key] = dist.get(key, 0) + 1
+
+        return jsonify(safe_dict({
+            'success': True,
+            'days': days,
+            'totalTrades': len(rows),
+            'wins': len(wins),
+            'losses': len(losses),
+            'winRate': round(win_rate, 2),
+            'totalPnL': round(total_pnl, 2),
+            'avgWin': round(avg_win, 2),
+            'avgLoss': round(avg_loss, 2),
+            'profitFactor': round(profit_factor, 2),
+            'avgPnLPct': round(avg_pnl_pct, 2),
+            'sharpeRatio': round(sharpe, 2),
+            'avgHoldDays': round(avg_hold, 1),
+            'bestTrade': {
+                'symbol': best['symbol'], 'pnl': round(float(best['pnl'] or 0), 2),
+                'pnlPct': round(float(best['pnl_pct'] or 0), 2),
+                'closedAt': best['closed_at']
+            } if best else None,
+            'worstTrade': {
+                'symbol': worst['symbol'], 'pnl': round(float(worst['pnl'] or 0), 2),
+                'pnlPct': round(float(worst['pnl_pct'] or 0), 2),
+                'closedAt': worst['closed_at']
+            } if worst else None,
+            'distByReason': dist,
+        }))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/auto-trade/close-all', methods=['POST'])
+@require_user
+def auto_trade_close_all():
+    """C2 — Acil çıkış: kullanıcının tüm açık pozisyonlarını piyasa fiyatından kapat.
+    Body: { userId, reason?: str (default 'Acil çıkış') }
+    Gerçek emir Midas'tan elle yapılacak, bu sadece DB temizliği + tracking yapar.
+    """
+    try:
+        data = request.json or {}
+        uid = data.get('userId') or request.args.get('userId', '')
+        if not uid:
+            return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+        reason = data.get('reason') or 'Acil çıkış (close-all)'
+
+        db = get_db()
+        rows = db.execute(
+            "SELECT id, symbol, quantity, entry_price FROM auto_positions "
+            "WHERE user_id=? AND status='open'",
+            (uid,)
+        ).fetchall()
+        db.close()
+
+        if not rows:
+            return jsonify({'success': True, 'message': 'Açık pozisyon yok', 'closed': 0})
+
+        closed = []
+        failed = []
+        for r in rows:
+            sym = r['symbol']
+            pid = r['id']
+            qty = float(r['quantity'])
+            # Anlik fiyat al
+            cp = 0.0
+            try:
+                from realtime_prices import get_price as _rt_get
+                _rp = _rt_get(sym)
+                if _rp and _rp > 0:
+                    cp = float(_rp)
+            except Exception:
+                pass
+            if cp <= 0:
+                from config import _cget, _stock_cache
+                _stk = _cget(_stock_cache, sym)
+                cp = float(_stk.get('price', 0)) if _stk else 0
+            if cp <= 0:
+                failed.append({'symbol': sym, 'reason': 'fiyat alinamadi'})
+                continue
+            try:
+                _auto_close_position(pid, cp, reason)
+                _auto_log_trade(uid, sym, 'SELL_MANUAL', cp, qty,
+                                f"Close-All: {reason}", 0, 0, pid)
+                closed.append({'symbol': sym, 'qty': qty, 'price': cp})
+            except Exception as ce:
+                failed.append({'symbol': sym, 'reason': str(ce)})
+
+        # Telegram ozet
+        try:
+            from routes_telegram import send_telegram
+            _msg_lines = [f"🚨 <b>ACİL ÇIKIŞ — {len(closed)} pozisyon kapandı</b>"]
+            for c in closed:
+                _msg_lines.append(f"  {c['symbol']}: {c['qty']:.0f} adet @ {c['price']:.2f}")
+            if failed:
+                _msg_lines.append(f"\n⚠️ {len(failed)} pozisyon kapatılamadı:")
+                for f in failed:
+                    _msg_lines.append(f"  {f['symbol']}: {f['reason']}")
+            _msg_lines.append(f"\nSebep: {reason}")
+            _msg_lines.append("⚠️ Gerçek emirlerini Midas'tan kontrol et!")
+            send_telegram('\n'.join(_msg_lines))
+        except Exception:
+            pass
+
+        return jsonify({
+            'success': True,
+            'closed': len(closed),
+            'closedDetails': closed,
+            'failed': failed,
+            'message': f"{len(closed)} pozisyon kapatıldı, {len(failed)} başarısız"
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/auto-trade/position/add', methods=['POST'])
 @require_user
 def auto_trade_add_position():

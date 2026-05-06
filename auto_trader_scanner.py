@@ -110,6 +110,52 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                           tf=_tf_now, price=live_price, score=score, confidence=confidence)
             continue
 
+        # B3+B4: KAP haber/duyuru filtresi — son haberlerde negatif sentiment varsa
+        # veya yuksek skorlu 'important' duyuru (temettu/sermaye/SPK) varsa pozisyon acma.
+        # Bilgilendirme/temettu aciklama gunu volatilite zıplamasını önler.
+        try:
+            from kap_scraper import get_stock_sentiment
+            _sent = get_stock_sentiment(sym)
+            _sent_label = _sent.get('label', 'nötr')
+            _sent_score = int(_sent.get('score', 0) or 0)
+            _imp_cnt = int(_sent.get('important_count', 0) or 0)
+            if _sent_label == 'negatif':
+                _log_decision(uid, sym, 'SKIP', 'kap_negative',
+                              detail=f"sentiment={_sent_label}, sc={_sent_score}, imp={_imp_cnt}",
+                              tf=_tf_now, price=live_price, score=score, confidence=confidence)
+                continue
+            # Aciklama gunu: 2+ onemli haber + nötr/negatif sentiment → riski azalt
+            if _imp_cnt >= 2 and _sent_label != 'pozitif':
+                _log_decision(uid, sym, 'SKIP', 'kap_announcement',
+                              detail=f"important={_imp_cnt}, sentiment={_sent_label}",
+                              tf=_tf_now, price=live_price, score=score, confidence=confidence)
+                continue
+        except Exception:
+            pass
+
+        # B2: Sektor momentum filtresi — hisse AL diyor ama sektor son 1 ay
+        # ortalama ≤ -%3 ise (rotasyon dışı, defansif düşüş) reddet.
+        try:
+            from config import SECTOR_MAP
+            from signals_market import calc_sector_relative_strength
+            _sym_sector = None
+            for _sec_name, _sec_syms in SECTOR_MAP.items():
+                if sym in _sec_syms:
+                    _sym_sector = _sec_name
+                    break
+            if _sym_sector:
+                _rs = calc_sector_relative_strength()
+                _sec_data = next((x for x in _rs.get('sectors', []) if x.get('name') == _sym_sector), None)
+                if _sec_data:
+                    _avg_1m = float(_sec_data.get('avgChange1m', 0) or 0)
+                    if _avg_1m <= -3.0:
+                        _log_decision(uid, sym, 'SKIP', 'sector_momentum',
+                                      detail=f"sec={_sym_sector} 1m={_avg_1m:.2f}% (≤-3%)",
+                                      tf=_tf_now, price=live_price, score=score, confidence=confidence)
+                        continue
+        except Exception:
+            pass
+
         # B1: Multi-timeframe alignment guard
         # Sinyal tek timeframe AL diyebilir ama digerleri SAT/NOTR ise — yanlis sinyal riski.
         # En az 2 timeframe AL veya AL ailesi (TUTUN/AL) olmali.

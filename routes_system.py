@@ -183,6 +183,25 @@ def system_diagnostic():
             'staleSec': rt._RT_STALE_SEC,
             'recentTicks': recent_ticks,
         }
+        # D3: Operasyonel istatistikler
+        try:
+            with rt._stats_lock:
+                _s = dict(rt._stats)
+            uptime = now - _s.get('started_at', now)
+            tick_age = (now - _s['tick_last_ts']) if _s.get('tick_last_ts') else None
+            tick_per_min = (_s['tick_count'] / max(uptime / 60, 1)) if _s.get('tick_count') else 0
+            out['stats'] = {
+                'uptimeSec': round(uptime, 1),
+                'tickCount': _s['tick_count'],
+                'tickPerMin': round(tick_per_min, 1),
+                'lastTickAgeSec': round(tick_age, 1) if tick_age is not None else None,
+                'subscribeOK': _s['subscribe_count'],
+                'subscribeFail': _s['subscribe_fail_count'],
+                'reconnectCount': _s['reconnect_count'],
+                'lastReconnectAgeSec': round(now - _s['reconnect_last_ts'], 1) if _s.get('reconnect_last_ts') else None,
+            }
+        except Exception as _se:
+            out['stats'] = {'error': str(_se)}
     except Exception as e:
         out['websocket'] = {'error': str(e)}
     # ── auto trader regime (cache, bilgi amacli) ──

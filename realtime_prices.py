@@ -19,6 +19,19 @@ TV_PASSWORD     = os.environ.get('TV_PASSWORD', '')
 # Sorun cikarsa USE_TV_LIVE=0 ile devre disi birakilir → eski Is Yatirim akisina doner.
 USE_TV_LIVE = os.environ.get('USE_TV_LIVE', '1') not in ('0', 'false', 'False', '')
 
+# D3: Operasyonel istatistik sayaclari — /api/system/diagnostic ile gosterilir.
+_stats = {
+    'tick_count': 0,           # toplam tick alindi
+    'tick_first_ts': 0.0,      # ilk tick zamani (uptime hesabi)
+    'tick_last_ts': 0.0,       # son tick zamani
+    'reconnect_count': 0,      # WebSocket reconnect sayisi
+    'reconnect_last_ts': 0.0,  # son reconnect zamani
+    'subscribe_count': 0,      # toplam subscribe yapildi
+    'subscribe_fail_count': 0, # subscribe basarisiz
+    'started_at': time.time(), # modul yuklendigi zaman
+}
+_stats_lock = threading.Lock()
+
 # ── Fiyat cache ──
 # {symbol: {'price': float, 'ts': float, 'source': 'ws'|'yf'}}
 _rt_cache: dict = {}
@@ -79,13 +92,19 @@ def _on_price_update(symbol: str, quote: dict) -> None:
         rt_change_pct = tv_ch
     else:
         rt_change_pct = 0.0
+    _now_ts = time.time()
     with _rt_lock:
         _rt_cache[symbol] = {
             'price': p,
             'change_pct': float(rt_change_pct),
-            'ts': time.time(),
+            'ts': _now_ts,
             'source': 'ws',
         }
+    with _stats_lock:
+        _stats['tick_count'] += 1
+        _stats['tick_last_ts'] = _now_ts
+        if _stats['tick_first_ts'] == 0.0:
+            _stats['tick_first_ts'] = _now_ts
     # ── Koprule: _stock_cache'i de live fiyatla guncelle (USE_TV_LIVE=1 ise) ──
     if not USE_TV_LIVE:
         return
@@ -173,11 +192,15 @@ def subscribe(symbol: str) -> bool:
             return False
         stream.subscribe(symbol)
         stream.on_quote(symbol, lambda s, q: _on_price_update(s, q))
+        with _stats_lock:
+            _stats['subscribe_count'] += 1
         print(f"[RT-PRICES] {symbol} abone olundu")
         return True
     except Exception as e:
         with _rt_lock:
             _subscribed.discard(symbol)  # rollback — sonraki retry icin
+        with _stats_lock:
+            _stats['subscribe_fail_count'] += 1
         print(f"[RT-PRICES] {symbol} abone hatası: {e}")
         return False
 
@@ -767,6 +790,19 @@ def start_realtime_monitor():
                     stream = _get_stream()
                     if stream and not getattr(stream, 'is_connected', True):
                         print("[RT-PRICES] Stream koptu, yeniden bağlanıyor...")
+                        with _stats_lock:
+                            _stats['reconnect_count'] += 1
+                            _stats['reconnect_last_ts'] = time.time()
+                        # D1: Telegram'a kopuş bildirimi (sadece ilk kopuşta)
+                        try:
+                            from routes_telegram import send_telegram
+                            send_telegram(
+                                "🔌 <b>TV WebSocket koptu</b>\n"
+                                "Sistem otomatik yeniden bağlanmaya çalışıyor.\n"
+                                "Live fiyat akışı geçici olarak durdu — birkaç saniye içinde geri dönmeli."
+                            )
+                        except Exception:
+                            pass
                         # ÖNCE: eski abonelik listesini sakla (reconnect sonrasi geri al)
                         with _rt_lock:
                             previously_subscribed = set(_subscribed)
@@ -794,6 +830,16 @@ def start_realtime_monitor():
                                 subscribe(sym)
                                 time.sleep(0.05)  # rate-limit guvenligi
                             print(f"[RT-PRICES] Reconnect: aboneler geri yuklendi (toplam={len(_subscribed)})")
+                        # D1: Reconnect başarılıysa Telegram'a bildir
+                        try:
+                            if _stream_ok:
+                                from routes_telegram import send_telegram
+                                send_telegram(
+                                    f"✅ <b>TV WebSocket tekrar bağlı</b>\n"
+                                    f"{len(_subscribed)} sembol yeniden abone, live akış aktif."
+                                )
+                        except Exception:
+                            pass
 
             except Exception as e:
                 print(f"[RT-MONITOR] Loop hatası: {e}")
