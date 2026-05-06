@@ -229,6 +229,7 @@ def init_db():
                 allowed_symbols TEXT DEFAULT '',
                 blocked_symbols TEXT DEFAULT '',
                 max_daily_trades INTEGER DEFAULT 3,
+                tp_strategy TEXT DEFAULT 'auto',
                 updated_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );
@@ -245,6 +246,7 @@ def init_db():
                 take_profit3 REAL,
                 trailing_stop REAL,
                 highest_price REAL,
+                tp_strategy TEXT,
                 status TEXT DEFAULT 'open',
                 opened_at TEXT DEFAULT (datetime('now')),
                 closed_at TEXT,
@@ -325,6 +327,14 @@ def init_db():
         # Likidite filtresi: 20 gunluk ortalama TL turnover (Close*Volume) esigi.
         # Cok sig hisseler (1M TL altinda gunluk islem hacmi) filtrelenir.
         ("ALTER TABLE auto_config ADD COLUMN min_turnover_tl REAL DEFAULT 1000000", True),
+        # TP strategy: 'auto' (sistem skor/ADX/volatilite/RR'a gore secer),
+        #              'staged' (50/25/25 - klasik kademeli),
+        #              'all_at_tp1' (TP1'de tamamini sat).
+        # Default 'auto' — yeni acilan pozisyonlar icin sistem karar verir.
+        ("ALTER TABLE auto_config ADD COLUMN tp_strategy TEXT DEFAULT 'auto'", True),
+        # Per-position override: NULL ise auto_config'ten alinir.
+        # Pozisyon acilirken _decide_tp_strategy ile karar verilir ve buraya yazilir.
+        ("ALTER TABLE auto_positions ADD COLUMN tp_strategy TEXT", True),
         # min_score default 8→5 bumpup (yalnız 8.0 bırakılmış default kayıtlar)
         ("UPDATE auto_config SET min_score=5.0 WHERE min_score=8.0", False),
         # SL cooldown persistence (restart sonrası kaybolmasın)

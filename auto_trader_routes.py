@@ -38,6 +38,11 @@ def auto_trade_config():
         if existing:
             # NOT: capital UPDATE'ten cikarildi — bakiye sadece /capital/adjust ile
             # degisir. Boylece "Kaydet" butonu yanlislikla bakiyeyi sifirlamaz.
+            # tp_strategy whitelist kontrolu — invalid degeri reddet
+            _allowed_tp = ('auto', 'staged', 'all_at_tp1')
+            _new_tp = data.get('tpStrategy', _row_get(existing, 'tp_strategy', 'auto') or 'auto')
+            if _new_tp not in _allowed_tp:
+                _new_tp = 'auto'
             db.execute("""UPDATE auto_config SET
                 enabled=?, max_positions=?, risk_per_trade=?,
                 min_score=?, min_confidence=?, trade_style=?,
@@ -45,7 +50,7 @@ def auto_trade_config():
                 allowed_symbols=?, blocked_symbols=?, max_daily_trades=?,
                 panic_sell_enabled=?, panic_drop_pct=?, panic_window_min=?,
                 commission_pct=?, bsmv_pct=?, tight_trailing_pct=?, max_per_sector=?,
-                min_turnover_tl=?
+                min_turnover_tl=?, tp_strategy=?
                 WHERE user_id=?""",
                 (int(data.get('enabled', existing['enabled'])),
                  int(data.get('maxPositions', existing['max_positions'])),
@@ -68,8 +73,13 @@ def auto_trade_config():
                  float(data.get('tightTrailingPct', _row_get(existing, 'tight_trailing_pct', 1.0) or 1.0)),
                  int(data.get('maxPerSector', _row_get(existing, 'max_per_sector', 2) or 2)),
                  float(data.get('minTurnoverTL', _row_get(existing, 'min_turnover_tl', 1_000_000) or 1_000_000)),
+                 _new_tp,
                  uid))
         else:
+            _allowed_tp = ('auto', 'staged', 'all_at_tp1')
+            _new_tp = data.get('tpStrategy', 'auto')
+            if _new_tp not in _allowed_tp:
+                _new_tp = 'auto'
             db.execute("""INSERT INTO auto_config
                 (user_id, enabled, capital, max_positions, risk_per_trade,
                  min_score, min_confidence, trade_style,
@@ -77,8 +87,8 @@ def auto_trade_config():
                  allowed_symbols, blocked_symbols, max_daily_trades,
                  panic_sell_enabled, panic_drop_pct, panic_window_min,
                  commission_pct, bsmv_pct, tight_trailing_pct, max_per_sector,
-                 min_turnover_tl)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 min_turnover_tl, tp_strategy)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (uid,
                  int(data.get('enabled', 0)),
                  float(data.get('capital', 100000)),
@@ -101,7 +111,8 @@ def auto_trade_config():
                  float(data.get('bsmvPct', 5)),
                  float(data.get('tightTrailingPct', 1.0)),
                  int(data.get('maxPerSector', 2)),
-                 float(data.get('minTurnoverTL', 1_000_000))))
+                 float(data.get('minTurnoverTL', 1_000_000)),
+                 _new_tp))
         db.commit()
         db.close()
         return jsonify({'success': True, 'message': 'Konfigürasyon kaydedildi'})

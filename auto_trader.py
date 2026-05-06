@@ -75,6 +75,7 @@ def _auto_get_config(user_id):
                 'tightTrailingPct': float(_row_get(row, 'tight_trailing_pct', 1.0) or 1.0),
                 'maxPerSector': int(_row_get(row, 'max_per_sector', 2) or 2),
                 'minTurnoverTL': float(_row_get(row, 'min_turnover_tl', 1_000_000) or 1_000_000),
+                'tpStrategy': str(_row_get(row, 'tp_strategy', 'auto') or 'auto'),
             }
         return None
     except Exception as e:
@@ -133,6 +134,48 @@ def _auto_log_trade(user_id, symbol, action, price, quantity, reason, score, con
     except Exception as e:
         print(f"[AUTO-TRADE] Trade log hatasi: {e}")
 
+def _decide_tp_strategy(user_id, entry_price, tp1, tp3):
+    """TP strateji karari: 'auto' modunda sistem heuristic ile secer.
+    Returns: 'staged' (50/25/25 - kar kossun) | 'all_at_tp1' (tek seferde sat).
+
+    Heuristic:
+      - Piyasa rejimi 'neutral' → temkinli, hizli kar al → 'all_at_tp1'
+      - TP1-TP3 araligi <%3 → dar hedef, fragmentasyon mantiksiz → 'all_at_tp1'
+      - Default → 'staged'
+
+    Kullanici override (config.tp_strategy='staged'/'all_at_tp1') varsa o oncelik alir.
+    Sadece config.tp_strategy='auto' ise bu fonksiyon devreye girer.
+    """
+    # 1. Kullanici manuel override
+    try:
+        cfg = _auto_get_config(user_id) or {}
+        cfg_strategy = (cfg.get('tpStrategy') or 'auto').lower()
+        if cfg_strategy in ('staged', 'all_at_tp1'):
+            return cfg_strategy
+    except Exception:
+        pass
+    # 2. Auto karar
+    # Piyasa rejimi
+    try:
+        from auto_trader_regime import get_market_regime
+        mode, _ = get_market_regime()
+    except Exception:
+        mode = 'risk-on'
+    # TP1↔TP3 spread (relative)
+    spread = 0.0
+    try:
+        if tp1 and tp3 and tp1 > 0:
+            spread = (float(tp3) - float(tp1)) / float(tp1)
+    except Exception:
+        pass
+    # Karar agacli
+    if mode == 'neutral':
+        return 'all_at_tp1'
+    if 0 < spread < 0.03:
+        return 'all_at_tp1'
+    return 'staged'
+
+
 def _auto_open_position(user_id, symbol, price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl):
     """Yeni pozisyon ac. Capital/max_positions yarış koşulu için son-an DB kontrolü yapar."""
     try:
@@ -164,13 +207,21 @@ def _auto_open_position(user_id, symbol, price, quantity, stop_loss, tp1, tp2, t
                           "Risk takibi icin capital ayarini guncelleyin.")
         except Exception as _guard_err:
             print(f"[AUTO-TRADE] Son-an kontrol hatası (devam ediliyor): {_guard_err}")
+        # TP strateji karari (auto/staged/all_at_tp1) — pozisyon acilirken belirle, DB'ye yaz
+        try:
+            tp_strategy = _decide_tp_strategy(user_id, price, tp1, tp3)
+        except Exception as _ts_err:
+            print(f"[AUTO-TRADE] TP strategy karar hatasi (default staged): {_ts_err}")
+            tp_strategy = 'staged'
         db.execute(
             """INSERT INTO auto_positions
-               (user_id, symbol, side, entry_price, quantity, stop_loss, take_profit1, take_profit2, take_profit3, trailing_stop, highest_price)
-               VALUES (?,?,'long',?,?,?,?,?,?,?,?)""",
-            (user_id, symbol, price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl, price)
+               (user_id, symbol, side, entry_price, quantity, stop_loss,
+                take_profit1, take_profit2, take_profit3, trailing_stop, highest_price, tp_strategy)
+               VALUES (?,?,'long',?,?,?,?,?,?,?,?,?)""",
+            (user_id, symbol, price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl, price, tp_strategy)
         )
         db.commit()
+        print(f"[AUTO-TRADE] Pozisyon acildi: {symbol} qty={quantity} @ {price}, tp_strategy={tp_strategy}")
         # Son eklenen ID'yi al
         if USE_POSTGRES and PG_OK:
             row = db.execute("SELECT MAX(id) as mid FROM auto_positions WHERE user_id=? AND symbol=?", (user_id, symbol)).fetchone()

@@ -357,7 +357,8 @@ def _get_open_positions():
         db = get_db()
         rows = db.execute(
             "SELECT ap.id, ap.user_id, ap.symbol, ap.entry_price, ap.quantity, "
-            "ap.stop_loss, ap.take_profit1, ap.take_profit2, ap.take_profit3 "
+            "ap.stop_loss, ap.take_profit1, ap.take_profit2, ap.take_profit3, "
+            "ap.tp_strategy "
             "FROM auto_positions ap WHERE ap.status='open'"
         ).fetchall()
         db.close()
@@ -415,6 +416,9 @@ def _check_positions_once():
         tp3   = float(pos['take_profit3'] or 0)
         uid   = pos['user_id']
         pid   = pos['id']
+        # TP strategy: 'staged' (default — 50/25/25 kademeli) | 'all_at_tp1' (TP1'de tamamini sat)
+        # NULL ise eski pozisyonlar icin staged davranisi (geriye donuk uyum).
+        tp_strategy = (pos['tp_strategy'] if 'tp_strategy' in pos.keys() else None) or 'staged'
 
         cur = get_price(sym)
         if not cur or cur <= 0 or not entry:
@@ -581,14 +585,24 @@ def _check_positions_once():
                     print(f"[RT-EXEC] {sym} TP2 partial hatasi: {ex}")
         elif tp1 > 0 and cur >= tp1:
             state['tp1_confirm'] = state['tp1_confirm'] + 1
+            # tp_strategy='all_at_tp1' ise TP1'de tamamini sat (full close, partial degil)
+            _all_at_tp1 = (tp_strategy == 'all_at_tp1')
             if not state['tp1_hit']:
                 if auto_exec:
-                    msgs.append(
-                        f"🤖 <b>TP1 HEDEFİ — {sym}</b>\n"
-                        f"Fiyat: {cur:.2f} ≥ TP1: {tp1:.2f}\n"
-                        f"📈 Kâr: %{pnl_pct:.1f}\n"
-                        f"⏳ Bot %50 partial close yapıyor..."
-                    )
+                    if _all_at_tp1:
+                        msgs.append(
+                            f"🤖 <b>TP1 HEDEFİ — {sym}</b>\n"
+                            f"Fiyat: {cur:.2f} ≥ TP1: {tp1:.2f}\n"
+                            f"📈 Kâr: %{pnl_pct:.1f}\n"
+                            f"⏳ Bot tamamini kapatiyor (all-at-tp1 strategi)..."
+                        )
+                    else:
+                        msgs.append(
+                            f"🤖 <b>TP1 HEDEFİ — {sym}</b>\n"
+                            f"Fiyat: {cur:.2f} ≥ TP1: {tp1:.2f}\n"
+                            f"📈 Kâr: %{pnl_pct:.1f}\n"
+                            f"⏳ Bot %50 partial close yapıyor..."
+                        )
                 else:
                     msgs.append(
                         f"🎯 <b>TP1 HEDEFİ — {sym}</b>\n"
@@ -599,16 +613,43 @@ def _check_positions_once():
             if (auto_exec and not state['tp1_executed']
                     and state['tp1_confirm'] >= _RT_CONFIRM_TICKS):
                 try:
-                    from auto_trader import _auto_partial_close, _auto_log_trade
-                    sell_qty = int(qty * 0.5) or int(qty)
-                    _auto_partial_close(pid, sell_qty, cur,
-                                        f"TP1 hedef ({tp1:.2f})", clear_tp_field='take_profit1')
-                    _auto_log_trade(uid, sym, 'SELL_TP1', cur, sell_qty,
-                                    f"TP1 RT kismi: {cur:.2f} >= {tp1:.2f}", 0, 0, pid)
-                    state['tp1_executed'] = True
-                    print(f"[RT-EXEC] {sym} TP1 partial close @ {cur:.2f} ({sell_qty} adet)")
+                    if _all_at_tp1:
+                        # TP1'de tamamini sat: full close
+                        from auto_trader import _auto_close_position, _auto_log_trade
+                        from auto_trader_risk import _panic_clear
+                        _auto_close_position(pid, cur, f"TP1 all-at-tp1 ({tp1:.2f})")
+                        _auto_log_trade(uid, sym, 'SELL_TP1', cur, qty,
+                                        f"TP1 all-at-tp1: {cur:.2f} >= {tp1:.2f}", 0, 0, pid)
+                        _panic_clear(pid)
+                        state['tp1_executed'] = True
+                        # Diger TP state'lerini de executed isaretle (artik tetiklenmesin)
+                        state['tp2_executed'] = state['tp3_executed'] = True
+                        print(f"[RT-EXEC] {sym} TP1 ALL-AT-TP1 close @ {cur:.2f} ({int(qty)} adet)")
+                        with _alert_lock:
+                            _alert_state.pop(pos_key, None)
+                        try:
+                            from database import _db_delete_alert_state
+                            _db_delete_alert_state(uid, sym, pid)
+                        except Exception:
+                            pass
+                        if send_telegram and msgs:
+                            for m in msgs:
+                                try: send_telegram(m)
+                                except Exception: pass
+                            msgs = []
+                        continue
+                    else:
+                        # Klasik staged: %50 partial
+                        from auto_trader import _auto_partial_close, _auto_log_trade
+                        sell_qty = int(qty * 0.5) or int(qty)
+                        _auto_partial_close(pid, sell_qty, cur,
+                                            f"TP1 hedef ({tp1:.2f})", clear_tp_field='take_profit1')
+                        _auto_log_trade(uid, sym, 'SELL_TP1', cur, sell_qty,
+                                        f"TP1 RT kismi: {cur:.2f} >= {tp1:.2f}", 0, 0, pid)
+                        state['tp1_executed'] = True
+                        print(f"[RT-EXEC] {sym} TP1 partial close @ {cur:.2f} ({sell_qty} adet)")
                 except Exception as ex:
-                    print(f"[RT-EXEC] {sym} TP1 partial hatasi: {ex}")
+                    print(f"[RT-EXEC] {sym} TP1 hatasi: {ex}")
         else:
             # Hicbir TP'de degil — confirm sayaclarini sifirla (spike kayboldu)
             state['tp1_confirm'] = state['tp2_confirm'] = state['tp3_confirm'] = 0
