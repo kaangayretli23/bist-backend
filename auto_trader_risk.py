@@ -39,12 +39,12 @@ _sl_cooldown: dict = {}
 
 # Reject sonrasi yeniden oneri engeli: {uid_sym: (expires_at_ts, reason)}
 # reason='hard' -> kullanici acikca reddetti (12 saat)
-# reason='soft' -> 15 dk icinde yanit vermedi (2 saat)
+# reason='soft' -> 15 dk icinde yanit vermedi (45 dk)
 _reject_cooldown: dict = {}
 
 _REJECT_COOLDOWN_SECS = {
     'hard': 12 * 3600,  # yarim gun
-    'soft':  2 * 3600,  # 2 saat
+    'soft':  45 * 60,   # 45 dk
 }
 
 

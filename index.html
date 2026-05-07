@@ -1574,6 +1574,15 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
   <!-- Performans Ozeti -->
   <div id="atPerformance" class="grid-2 mb-16"></div>
 
+  <!-- Hızlı PnL Özeti (Bugün / Hafta / Ay / Yıl) -->
+  <div class="card mb-16">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div class="section-title" style="margin:0;"><span class="icon">💵</span> Kâr/Zarar Özeti</div>
+      <button onclick="loadPnLSummary()" style="background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">↻ Yenile</button>
+    </div>
+    <div id="atPnLSummary" style="font-size:13px;color:var(--text-dim);">Yükleniyor…</div>
+  </div>
+
   <!-- C3: Performans Dashboard (winRate / profitFactor / Sharpe / reason dağılımı) -->
   <div class="card mb-16">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
@@ -7470,7 +7479,8 @@ async function loadAutoTrade() {
 
   // Bugunku ozet de yenilensin (paralel, cevap bekleme)
   loadDailySummary().catch(() => {});
-  // Performans dashboard + diagnostic (paralel, cevap bekleme)
+  // Performans dashboard + diagnostic + PnL ozet (paralel, cevap bekleme)
+  try { loadPnLSummary(); } catch {}
   try { loadPerformanceDashboard(); } catch {}
   try { loadSystemDiagnostic(); } catch {}
 }
@@ -7651,6 +7661,46 @@ async function saveAutoTradeConfig() {
     }
     setTimeout(() => { msg.textContent = ''; }, 3000);
   } catch(e) { console.error('Config kaydetme hatasi:', e); }
+}
+
+// ─── Hızlı PnL Özeti (today/week/month/year) ──────────────────────────
+async function loadPnLSummary() {
+  const uid = _getUid();
+  const el = document.getElementById('atPnLSummary');
+  if (!uid || !el) return;
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>Hesaplanıyor...</div>';
+  try {
+    const res = await fetch(`${API_BASE}/auto-trade/pnl-summary?userId=${uid}`);
+    const d = await res.json();
+    if (!d.success) {
+      el.innerHTML = `<div style="color:var(--red);">Hata: ${d.error || 'bilinmeyen'}</div>`;
+      return;
+    }
+    const fmtTL = (v) => (v >= 0 ? '+' : '') + (Math.round(v * 100) / 100).toLocaleString('tr-TR', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' TL';
+    const cardOf = (label, w) => {
+      const color = w.realizedPnL > 0 ? 'var(--green)' : (w.realizedPnL < 0 ? 'var(--red)' : 'var(--text-dim)');
+      return `<div style="background:var(--bg);border:1px solid var(--border);border-left:3px solid ${color};border-radius:8px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">${label}</div>
+        <div style="font-size:18px;font-weight:700;color:${color};margin-top:2px;">${fmtTL(w.realizedPnL)}</div>
+        <div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${w.trades} işlem · ${w.wins}W / ${w.losses}L · %${w.winRate}</div>
+      </div>`;
+    };
+    const unrealColor = d.unrealizedPnL > 0 ? 'var(--green)' : (d.unrealizedPnL < 0 ? 'var(--red)' : 'var(--text-dim)');
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;">
+        ${cardOf('Bugün', d.today)}
+        ${cardOf('Bu Hafta', d.week)}
+        ${cardOf('Bu Ay', d.month)}
+        ${cardOf('Bu Yıl', d.year)}
+      </div>
+      <div style="margin-top:10px;background:var(--bg);border:1px dashed var(--border);border-radius:8px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div style="font-size:11px;color:var(--text-muted);">Açık ${d.openPositions} pozisyon · Anlık unrealized PnL</div>
+        <div style="font-size:15px;font-weight:700;color:${unrealColor};">${fmtTL(d.unrealizedPnL)}</div>
+      </div>`;
+  } catch (e) {
+    console.warn('PnL summary hatasi:', e);
+    el.innerHTML = `<div style="color:var(--red);">Bağlantı hatası</div>`;
+  }
 }
 
 // ─── C3 Performans Dashboard ───────────────────────────────────────────

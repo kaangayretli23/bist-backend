@@ -355,13 +355,13 @@ def _cleanup_expired_signals():
                     pass
             for sig in expired_list:
                 print(f"[TELEGRAM] Suresi dolan sinyal temizlendi: {sig['symbol']} ({sig.get('uid', '')})")
-                # Soft reject: 2 saat sessiz kalsin (yanit yok, ama belki gun icinde tekrar degerlendirilir)
+                # Soft reject: 45 dk sessiz kalsin (yanit yok, ama gun icinde tekrar degerlendirilebilir)
                 try:
                     from auto_trader_risk import _reject_cooldown_block
                     _reject_cooldown_block(sig.get('uid', ''), sig['symbol'], reason='soft')
                 except Exception as _rc_err:
                     print(f"[TELEGRAM] Expired reject cooldown hatasi: {_rc_err}")
-                send_telegram(f"⏰ <b>{sig['symbol']}</b> sinyali yanıtlanmadı, iptal edildi.\n<i>Bu hisse 2 saat tekrar önerilmeyecek.</i>")
+                send_telegram(f"⏰ <b>{sig['symbol']}</b> sinyali yanıtlanmadı, iptal edildi.\n<i>Bu hisse 45 dk tekrar önerilmeyecek.</i>")
 
             # Trailing güncellemelerini temizle (süresi dolanlar otomatik onaylanır)
             expired_trails = []

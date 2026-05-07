@@ -721,3 +721,90 @@ def auto_trade_reconcile_fix():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/auto-trade/pnl-summary', methods=['GET'])
+@require_user
+def auto_trade_pnl_summary():
+    """Hizli PnL ozeti: bugun/hafta/ay/yil toplam realized PnL + trade sayisi.
+    Acik pozisyonlarin unrealized PnL'i de eklenir (snapshot).
+    Query: userId
+    """
+    try:
+        uid = request.args.get('userId', '')
+        if not uid:
+            return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+
+        from datetime import datetime as _dt, timedelta as _td
+        now = _dt.now()
+        # Hafta basi: pazartesi 00:00 (BIST takvimine yakin)
+        _wk_start = (now - _td(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        _today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        _month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        _year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        _fmt = '%Y-%m-%d %H:%M:%S'
+
+        windows = {
+            'today': _today_start.strftime(_fmt),
+            'week':  _wk_start.strftime(_fmt),
+            'month': _month_start.strftime(_fmt),
+            'year':  _year_start.strftime(_fmt),
+        }
+
+        db = get_db()
+        out = {}
+        for key, cutoff in windows.items():
+            row = db.execute(
+                "SELECT COALESCE(SUM(pnl), 0) AS pnl, COUNT(*) AS cnt, "
+                "       COALESCE(SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), 0) AS wins, "
+                "       COALESCE(SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END), 0) AS losses "
+                "FROM auto_positions "
+                "WHERE user_id=? AND status='closed' AND closed_at>=?",
+                (uid, cutoff),
+            ).fetchone()
+            _pnl = float(row['pnl']) if row else 0.0
+            _cnt = int(row['cnt']) if row else 0
+            _wins = int(row['wins']) if row else 0
+            _losses = int(row['losses']) if row else 0
+            _wr = round(_wins / _cnt * 100, 1) if _cnt > 0 else 0.0
+            out[key] = {
+                'realizedPnL': round(_pnl, 2),
+                'trades': _cnt,
+                'wins': _wins,
+                'losses': _losses,
+                'winRate': _wr,
+            }
+        # Acik pozisyonlarin unrealized PnL'i (anlik)
+        open_rows = db.execute(
+            "SELECT symbol, entry_price, quantity FROM auto_positions "
+            "WHERE user_id=? AND status='open'",
+            (uid,),
+        ).fetchall()
+        db.close()
+        unreal = 0.0
+        open_count = 0
+        for r in open_rows:
+            sym = r['symbol']
+            entry = float(r['entry_price'])
+            qty = float(r['quantity'])
+            cur = 0.0
+            try:
+                stk = _cget(_stock_cache, sym) or {}
+                cur = float(stk.get('price', 0) or 0)
+            except Exception:
+                cur = 0.0
+            if cur > 0:
+                unreal += (cur - entry) * qty
+            open_count += 1
+
+        return jsonify({
+            'success': True,
+            'today': out['today'],
+            'week':  out['week'],
+            'month': out['month'],
+            'year':  out['year'],
+            'openPositions': open_count,
+            'unrealizedPnL': round(unreal, 2),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
