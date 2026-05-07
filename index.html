@@ -1574,6 +1574,32 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
   <!-- Performans Ozeti -->
   <div id="atPerformance" class="grid-2 mb-16"></div>
 
+  <!-- C3: Performans Dashboard (winRate / profitFactor / Sharpe / reason dağılımı) -->
+  <div class="card mb-16">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div class="section-title" style="margin:0;"><span class="icon">📈</span> Performans Dashboard</div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <select id="atPerfDays" onchange="loadPerformanceDashboard()" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px 8px;color:var(--text);font-size:12px;">
+          <option value="7">Son 7 gün</option>
+          <option value="30" selected>Son 30 gün</option>
+          <option value="90">Son 90 gün</option>
+          <option value="365">Son 1 yıl</option>
+        </select>
+        <button onclick="loadPerformanceDashboard()" style="background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">↻ Yenile</button>
+      </div>
+    </div>
+    <div id="atPerfDashboard" style="font-size:13px;color:var(--text-dim);">Yükleniyor…</div>
+  </div>
+
+  <!-- D3: Sistem Diagnostic widget -->
+  <div class="card mb-16">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div class="section-title" style="margin:0;"><span class="icon">🩺</span> Sistem Sağlığı</div>
+      <button onclick="loadSystemDiagnostic()" style="background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">↻ Yenile</button>
+    </div>
+    <div id="atDiagnostic" style="font-size:12px;color:var(--text-dim);">Yükleniyor…</div>
+  </div>
+
   <!-- Bugunku Ozet -->
   <div class="card mb-16">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -1593,6 +1619,7 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
         <button onclick="openDecisionsModal()" title="Bugun hangi hisseler taranıp neden alınmadı" style="background:#e67e22;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">📋 Karar Logu</button>
         <button onclick="openAnalyticsModal()" title="Win-rate / saat / skor band / top hisse analizi" style="background:#1abc9c;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">📈 Strateji Analizi</button>
         <button onclick="openAddPositionModal()" title="Midas'tan aldiginiz bir hisseyi sisteme ekleyin" style="background:var(--green);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">➕ Pozisyon Ekle</button>
+        <button onclick="confirmCloseAllPositions()" title="Tüm açık pozisyonları piyasa fiyatından kapat (DB)" style="background:var(--red);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">🛑 Acil Çıkış</button>
       </div>
     </div>
     <div id="atPositions" style="font-size:13px;color:var(--text-dim);">Veri bekleniyor...</div>
@@ -1635,6 +1662,13 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
       <label style="font-size:12px;color:var(--text-dim);">Take-Profit (%)
         <input id="atTP" type="number" value="6" step="0.5" min="2" max="30" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
       </label>
+      <label style="font-size:12px;color:var(--text-dim);" title="Auto: sistem rejim/spread'e göre seçer. Staged: TP1 %50 + TP2 %25 + TP3 %25 (kâr koşar). All at TP1: tüm pozisyonu TP1'de kapat (temkinli).">TP Stratejisi
+        <select id="atTpStrategy" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+          <option value="auto" selected>Otomatik (sistem karar verir)</option>
+          <option value="staged">Kademeli (50/25/25)</option>
+          <option value="all_at_tp1">TP1'de Hepsi</option>
+        </select>
+      </label>
       <label style="font-size:12px;color:var(--text-dim);">Gunluk Max Islem
         <input id="atMaxDaily" type="number" value="3" min="1" max="10" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
       </label>
@@ -1671,6 +1705,12 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
       </label>
       <label style="font-size:12px;color:var(--text-dim);" title="Zirveyi bu kaç dakikalık pencere içinde ara.">Pencere (dk)
         <input id="atPanicWindow" type="number" value="5" min="2" max="15" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);" title="Son N gündeki realized + unrealized PnL toplamı sermayenin bu yüzdesi kadar negatife düşerse scanner yeni pozisyon açmaz. 0 = devre dışı.">Drawdown Freeze (%)
+        <input id="atDrawdownFreezePct" type="number" value="0" step="0.5" min="0" max="50" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);" title="Drawdown'u bu kaç günlük pencerede hesapla (kapanmış pozisyon PnL'leri).">Freeze Penceresi (gün)
+        <input id="atDrawdownFreezeWindow" type="number" value="7" step="1" min="1" max="30" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
       </label>
     </div>
     <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -7171,6 +7211,12 @@ async function loadAutoTrade() {
       document.getElementById('atPanicEnabled').value = cfg.panicSellEnabled ? '1' : '0';
       document.getElementById('atPanicDrop').value = cfg.panicDropPct ?? 2;
       document.getElementById('atPanicWindow').value = cfg.panicWindowMin ?? 5;
+      const _tpSel = document.getElementById('atTpStrategy');
+      if (_tpSel) _tpSel.value = cfg.tpStrategy || 'auto';
+      const _ddPct = document.getElementById('atDrawdownFreezePct');
+      if (_ddPct) _ddPct.value = cfg.drawdownFreezePct ?? 0;
+      const _ddWin = document.getElementById('atDrawdownFreezeWindow');
+      if (_ddWin) _ddWin.value = cfg.drawdownFreezeWindowDays ?? 7;
     }
 
     // Durum banner
@@ -7424,6 +7470,9 @@ async function loadAutoTrade() {
 
   // Bugunku ozet de yenilensin (paralel, cevap bekleme)
   loadDailySummary().catch(() => {});
+  // Performans dashboard + diagnostic (paralel, cevap bekleme)
+  try { loadPerformanceDashboard(); } catch {}
+  try { loadSystemDiagnostic(); } catch {}
 }
 
 // Bugunku ozet kartini doldur — daily-summary endpoint'inden
@@ -7583,6 +7632,9 @@ async function saveAutoTradeConfig() {
       panicSellEnabled: parseInt(document.getElementById('atPanicEnabled').value) || 0,
       panicDropPct: parseFloat(document.getElementById('atPanicDrop').value) || 2,
       panicWindowMin: parseInt(document.getElementById('atPanicWindow').value) || 5,
+      tpStrategy: (document.getElementById('atTpStrategy')?.value) || 'auto',
+      drawdownFreezePct: parseFloat(document.getElementById('atDrawdownFreezePct')?.value) || 0,
+      drawdownFreezeWindowDays: parseInt(document.getElementById('atDrawdownFreezeWindow')?.value) || 7,
     };
     const res = await fetch(`${API_BASE}/auto-trade/config`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -7599,6 +7651,149 @@ async function saveAutoTradeConfig() {
     }
     setTimeout(() => { msg.textContent = ''; }, 3000);
   } catch(e) { console.error('Config kaydetme hatasi:', e); }
+}
+
+// ─── C3 Performans Dashboard ───────────────────────────────────────────
+async function loadPerformanceDashboard() {
+  const uid = _getUid();
+  const el = document.getElementById('atPerfDashboard');
+  if (!uid || !el) return;
+  const days = parseInt(document.getElementById('atPerfDays')?.value) || 30;
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>Hesaplanıyor...</div>';
+  try {
+    const res = await fetch(`${API_BASE}/auto-trade/performance?userId=${uid}&days=${days}`);
+    const data = await res.json();
+    if (!data.success) {
+      el.innerHTML = `<div style="color:var(--red);">Hata: ${data.error || 'bilinmeyen'}</div>`;
+      return;
+    }
+    if (!data.totalTrades) {
+      el.innerHTML = `<div style="color:var(--text-muted);">${data.message || 'Veri yok'}</div>`;
+      return;
+    }
+    const fmt = (v) => (Math.round(v * 100) / 100).toLocaleString('tr-TR');
+    const winColor = data.winRate >= 55 ? 'var(--green)' : (data.winRate >= 40 ? 'var(--yellow)' : 'var(--red)');
+    const pfColor = data.profitFactor >= 1.5 ? 'var(--green)' : (data.profitFactor >= 1 ? 'var(--yellow)' : 'var(--red)');
+    const totalColor = data.totalPnL >= 0 ? 'var(--green)' : 'var(--red)';
+    const distMap = { sl: 'SL', tp1: 'TP1', tp2: 'TP2', tp3: 'TP3', trailing: 'Trail', panic: 'Panic', time_exit: 'Süre', manual: 'Manuel', unknown: '?' };
+    const dist = data.distByReason || {};
+    const distHtml = Object.entries(dist)
+      .sort((a,b) => b[1] - a[1])
+      .map(([k,v]) => `<span style="display:inline-block;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:2px 8px;margin:2px;font-size:11px;"><b>${distMap[k] || k}:</b> ${v}</span>`)
+      .join('');
+    const card = (label, val, color, sub) =>
+      `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">${label}</div>
+        <div style="font-size:18px;font-weight:700;color:${color || 'var(--text)'};margin-top:2px;">${val}</div>
+        ${sub ? `<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${sub}</div>` : ''}
+      </div>`;
+    const best = data.bestTrade, worst = data.worstTrade;
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;">
+        ${card('Win Rate', `%${fmt(data.winRate)}`, winColor, `${data.wins}W / ${data.losses}L`)}
+        ${card('Profit Factor', fmt(data.profitFactor), pfColor, `${data.totalTrades} işlem`)}
+        ${card('Sharpe (basit)', fmt(data.sharpeRatio))}
+        ${card('Toplam PnL', `${fmt(data.totalPnL)} TL`, totalColor, `Ort %${fmt(data.avgPnLPct)}`)}
+        ${card('Ort. Kazanç', `${fmt(data.avgWin)} TL`, 'var(--green)')}
+        ${card('Ort. Kayıp', `${fmt(data.avgLoss)} TL`, 'var(--red)')}
+        ${card('Ort. Tutma', `${fmt(data.avgHoldDays)} gün`)}
+      </div>
+      <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div style="background:var(--bg);border-left:3px solid var(--green);border-radius:4px;padding:8px;">
+          <div style="font-size:10px;color:var(--text-muted);">EN İYİ</div>
+          <div style="font-size:12px;font-weight:700;">${best ? escHtml(best.symbol) : '-'}</div>
+          <div style="font-size:11px;color:var(--green);">${best ? '+' + fmt(best.pnl) + ' TL (%' + fmt(best.pnlPct) + ')' : ''}</div>
+        </div>
+        <div style="background:var(--bg);border-left:3px solid var(--red);border-radius:4px;padding:8px;">
+          <div style="font-size:10px;color:var(--text-muted);">EN KÖTÜ</div>
+          <div style="font-size:12px;font-weight:700;">${worst ? escHtml(worst.symbol) : '-'}</div>
+          <div style="font-size:11px;color:var(--red);">${worst ? fmt(worst.pnl) + ' TL (%' + fmt(worst.pnlPct) + ')' : ''}</div>
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Kapanış Sebep Dağılımı</div>
+        <div>${distHtml || '<span style="color:var(--text-dim);">veri yok</span>'}</div>
+      </div>`;
+  } catch (e) {
+    console.warn('Performance dashboard hatasi:', e);
+    el.innerHTML = `<div style="color:var(--red);">Bağlantı hatası</div>`;
+  }
+}
+
+// ─── D3 Sistem Diagnostic widget ───────────────────────────────────────
+async function loadSystemDiagnostic() {
+  const el = document.getElementById('atDiagnostic');
+  if (!el) return;
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>Veri çekiliyor...</div>';
+  try {
+    const res = await fetch(`${API_BASE}/system/diagnostic`);
+    const d = await res.json();
+    if (!d || d.success === false) {
+      el.innerHTML = `<div style="color:var(--red);">Diagnostic alınamadı</div>`;
+      return;
+    }
+    const fmt = (v) => (v === null || v === undefined) ? '-' : v;
+    const stats = d.stats || {};
+    const ws = d.websocket || {};
+    const sc = d.stockCache || {};
+    const rt = d.rtCache || {};
+    const reg = d.regime || {};
+    const loaderOk = d.loaderStarted === true;
+    const tvOk = ws.streamConnected === true;
+    const dot = (ok) => `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${ok ? 'var(--green)' : 'var(--red)'};margin-right:4px;"></span>`;
+    const card = (label, val, color) =>
+      `<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;">
+        <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">${label}</div>
+        <div style="font-size:14px;font-weight:700;color:${color || 'var(--text)'};margin-top:2px;">${val}</div>
+      </div>`;
+    const upMin = Math.round((stats.uptimeSec || 0) / 60);
+    const lastTickAge = stats.lastTickAgeSec;
+    const tickFreshColor = (lastTickAge !== null && lastTickAge !== undefined && lastTickAge < 30) ? 'var(--green)' : ((lastTickAge < 120) ? 'var(--yellow)' : 'var(--red)');
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px;">
+        ${card('Loader', `${dot(loaderOk)}${loaderOk ? 'Çalışıyor' : 'Pasif'}`)}
+        ${card('TV Stream', `${dot(tvOk)}${tvOk ? 'Bağlı' : 'Kopuk'}`)}
+        ${card('Abone Hisse', fmt(ws.subscribedCount))}
+        ${card('Uptime', `${upMin} dk`)}
+        ${card('Tick/dk', fmt(stats.tickPerMin))}
+        ${card('Son Tick (sn)', fmt(lastTickAge), tickFreshColor)}
+        ${card('Toplam Tick', fmt(stats.tickCount))}
+        ${card('Reconnect', fmt(stats.reconnectCount), (stats.reconnectCount || 0) > 0 ? 'var(--yellow)' : 'var(--text)')}
+        ${card('Sub OK / Fail', `${fmt(stats.subscribeOK)} / ${fmt(stats.subscribeFail)}`, (stats.subscribeFail || 0) > 0 ? 'var(--yellow)' : 'var(--text)')}
+        ${card('Stock Cache', `${fmt(sc.fresh)}/${fmt(sc.total)}`, (sc.zeroChange > sc.total * 0.5) ? 'var(--red)' : 'var(--text)')}
+        ${card('RT Cache', `${fmt(rt.fresh)}/${fmt(rt.total)}`)}
+        ${card('Rejim', fmt(reg.mode))}
+      </div>`;
+  } catch (e) {
+    console.warn('Diagnostic hatasi:', e);
+    el.innerHTML = `<div style="color:var(--red);">Bağlantı hatası</div>`;
+  }
+}
+
+// ─── C2 Acil Çıkış (close-all) ─────────────────────────────────────────
+async function confirmCloseAllPositions() {
+  const uid = _getUid();
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
+  const ok = confirm('TÜM açık oto-trade pozisyonları piyasa fiyatından kapatılacak (DB).\n' +
+                     'Gerçek emir Midas\'tan ELLE yapılmalı.\n\nDevam edilsin mi?');
+  if (!ok) return;
+  try {
+    const res = await fetch(`${API_BASE}/auto-trade/close-all`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ userId: uid, reason: 'Acil çıkış (frontend)' }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      alert(`${data.closed || 0} pozisyon kapatıldı.${data.failed ? ' (' + data.failed + ' başarısız)' : ''}`);
+      try { loadAutoTradeStatus(); } catch {}
+      try { loadPerformanceDashboard(); } catch {}
+    } else {
+      alert('Hata: ' + (data.error || 'bilinmeyen'));
+    }
+  } catch (e) {
+    console.error('close-all hatasi:', e);
+    alert('Bağlantı hatası');
+  }
 }
 
 // Edit Position Modal — Midas'ta gerçekleşen doluma göre giriş fiyatı/adet düzelt

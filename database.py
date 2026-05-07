@@ -230,6 +230,8 @@ def init_db():
                 blocked_symbols TEXT DEFAULT '',
                 max_daily_trades INTEGER DEFAULT 3,
                 tp_strategy TEXT DEFAULT 'auto',
+                drawdown_freeze_pct REAL DEFAULT 0,
+                drawdown_freeze_window_days INTEGER DEFAULT 7,
                 updated_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );
@@ -335,6 +337,10 @@ def init_db():
         # Per-position override: NULL ise auto_config'ten alinir.
         # Pozisyon acilirken _decide_tp_strategy ile karar verilir ve buraya yazilir.
         ("ALTER TABLE auto_positions ADD COLUMN tp_strategy TEXT", True),
+        # A3 Drawdown freeze: kullanicinin son N gundeki realized PnL'i sermayenin
+        # %X'inden fazla negatifse scanner yeni pozisyon acmaz. 0 = devre disi.
+        ("ALTER TABLE auto_config ADD COLUMN drawdown_freeze_pct REAL DEFAULT 0", True),
+        ("ALTER TABLE auto_config ADD COLUMN drawdown_freeze_window_days INTEGER DEFAULT 7", True),
         # min_score default 8→5 bumpup (yalnız 8.0 bırakılmış default kayıtlar)
         ("UPDATE auto_config SET min_score=5.0 WHERE min_score=8.0", False),
         # SL cooldown persistence (restart sonrası kaybolmasın)

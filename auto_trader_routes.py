@@ -43,6 +43,19 @@ def auto_trade_config():
             _new_tp = data.get('tpStrategy', _row_get(existing, 'tp_strategy', 'auto') or 'auto')
             if _new_tp not in _allowed_tp:
                 _new_tp = 'auto'
+            # Drawdown freeze: 0..50% clamp, window 1..30 gun
+            try:
+                _dd_pct = float(data.get('drawdownFreezePct',
+                                         _row_get(existing, 'drawdown_freeze_pct', 0) or 0))
+            except (TypeError, ValueError):
+                _dd_pct = 0.0
+            _dd_pct = max(0.0, min(50.0, _dd_pct))
+            try:
+                _dd_win = int(data.get('drawdownFreezeWindowDays',
+                                       _row_get(existing, 'drawdown_freeze_window_days', 7) or 7))
+            except (TypeError, ValueError):
+                _dd_win = 7
+            _dd_win = max(1, min(30, _dd_win))
             db.execute("""UPDATE auto_config SET
                 enabled=?, max_positions=?, risk_per_trade=?,
                 min_score=?, min_confidence=?, trade_style=?,
@@ -50,7 +63,8 @@ def auto_trade_config():
                 allowed_symbols=?, blocked_symbols=?, max_daily_trades=?,
                 panic_sell_enabled=?, panic_drop_pct=?, panic_window_min=?,
                 commission_pct=?, bsmv_pct=?, tight_trailing_pct=?, max_per_sector=?,
-                min_turnover_tl=?, tp_strategy=?
+                min_turnover_tl=?, tp_strategy=?,
+                drawdown_freeze_pct=?, drawdown_freeze_window_days=?
                 WHERE user_id=?""",
                 (int(data.get('enabled', existing['enabled'])),
                  int(data.get('maxPositions', existing['max_positions'])),
@@ -74,12 +88,21 @@ def auto_trade_config():
                  int(data.get('maxPerSector', _row_get(existing, 'max_per_sector', 2) or 2)),
                  float(data.get('minTurnoverTL', _row_get(existing, 'min_turnover_tl', 1_000_000) or 1_000_000)),
                  _new_tp,
+                 _dd_pct, _dd_win,
                  uid))
         else:
             _allowed_tp = ('auto', 'staged', 'all_at_tp1')
             _new_tp = data.get('tpStrategy', 'auto')
             if _new_tp not in _allowed_tp:
                 _new_tp = 'auto'
+            try:
+                _dd_pct = max(0.0, min(50.0, float(data.get('drawdownFreezePct', 0) or 0)))
+            except (TypeError, ValueError):
+                _dd_pct = 0.0
+            try:
+                _dd_win = max(1, min(30, int(data.get('drawdownFreezeWindowDays', 7) or 7)))
+            except (TypeError, ValueError):
+                _dd_win = 7
             db.execute("""INSERT INTO auto_config
                 (user_id, enabled, capital, max_positions, risk_per_trade,
                  min_score, min_confidence, trade_style,
@@ -87,8 +110,9 @@ def auto_trade_config():
                  allowed_symbols, blocked_symbols, max_daily_trades,
                  panic_sell_enabled, panic_drop_pct, panic_window_min,
                  commission_pct, bsmv_pct, tight_trailing_pct, max_per_sector,
-                 min_turnover_tl, tp_strategy)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 min_turnover_tl, tp_strategy,
+                 drawdown_freeze_pct, drawdown_freeze_window_days)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (uid,
                  int(data.get('enabled', 0)),
                  float(data.get('capital', 100000)),
@@ -112,7 +136,8 @@ def auto_trade_config():
                  float(data.get('tightTrailingPct', 1.0)),
                  int(data.get('maxPerSector', 2)),
                  float(data.get('minTurnoverTL', 1_000_000)),
-                 _new_tp))
+                 _new_tp,
+                 _dd_pct, _dd_win))
         db.commit()
         db.close()
         return jsonify({'success': True, 'message': 'Konfigürasyon kaydedildi'})

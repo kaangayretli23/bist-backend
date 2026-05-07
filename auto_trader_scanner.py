@@ -18,6 +18,53 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
     if slots <= 0 or daily_remaining <= 0:
         return
 
+    # A3: Drawdown freeze — son N gun realized PnL + acik pozisyon unrealized PnL
+    # toplami sermayenin -X%'inden kotuyse yeni pozisyon acma. cfg.drawdownFreezePct=0 → kapali.
+    try:
+        _dd_pct = float(cfg.get('drawdownFreezePct', 0) or 0)
+        if _dd_pct > 0:
+            from config import get_db as _ddb
+            _dd_win = int(cfg.get('drawdownFreezeWindowDays', 7) or 7)
+            from datetime import datetime as _dt, timedelta as _td
+            _cutoff = (_dt.now() - _td(days=_dd_win)).strftime('%Y-%m-%d %H:%M:%S')
+            _cap = float(cfg.get('capital', 0) or 0)
+            _realized = 0.0
+            try:
+                _db = _ddb()
+                _row = _db.execute(
+                    "SELECT COALESCE(SUM(pnl), 0) AS s FROM auto_positions "
+                    "WHERE user_id=? AND status='closed' AND closed_at>=?",
+                    (uid, _cutoff),
+                ).fetchone()
+                _db.close()
+                _realized = float(_row['s']) if _row else 0.0
+            except Exception:
+                pass
+            # Unrealized PnL acik pozisyonlardan
+            _unrealized = 0.0
+            try:
+                from config import _cget, _stock_cache as _sc
+                for _p in open_positions:
+                    _stk = _cget(_sc, _p['symbol']) or {}
+                    _cur = float(_stk.get('price', 0) or 0)
+                    if _cur > 0:
+                        _unrealized += (_cur - float(_p['entryPrice'])) * float(_p['quantity'])
+            except Exception:
+                pass
+            _total_pnl = _realized + _unrealized
+            _threshold = -_cap * (_dd_pct / 100.0)
+            if _cap > 0 and _total_pnl <= _threshold:
+                _log_decision(uid, 'PORTFOLIO', 'SKIP', 'drawdown_freeze',
+                              detail=f"PnL={_total_pnl:.0f} TL ≤ esik={_threshold:.0f} "
+                                     f"(cap={_cap:.0f}, win={_dd_win}g, dd={_dd_pct}%)")
+                print(f"[AUTO-TRADE] {uid} drawdown freeze aktif: "
+                      f"realized={_realized:.0f}, unrealized={_unrealized:.0f}, "
+                      f"toplam={_total_pnl:.0f} TL ≤ esik={_threshold:.0f} TL "
+                      f"({_dd_win}g, %{_dd_pct})")
+                return
+    except Exception as _dd_err:
+        print(f"[AUTO-TRADE] drawdown freeze kontrol hatasi: {_dd_err}")
+
     candidates = []
     stocks = _get_stocks()
     _on_demand_fetches = 0
