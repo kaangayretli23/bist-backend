@@ -162,21 +162,25 @@ def _step1_manage_positions(uid, cfg, positions):
                 new_trailing = cur_price * (1 - _trail_pct / 100)
                 import os as _os_tg
                 _tg_configured = bool(_os_tg.environ.get('TELEGRAM_BOT_TOKEN') and _os_tg.environ.get('TELEGRAM_CHAT_ID'))
-                if _tg_configured and not _tp2_hit:
-                    # Telegram var ve henüz TP2 öncesi: highest update + onay bekle
+                if _tg_configured:
+                    # Telegram var: highest update + onay bekle (TP2 sonrasi runner
+                    # mode dahil — kullanici onayi olmadan trail degismez).
                     _auto_update_highest_price(pos['id'], cur_price)
                     try:
                         from routes_telegram import send_trailing_update
                         send_trailing_update(sym, new_trailing, cur_price, pos.get('entryPrice'),
                                              tp1=tp1, tp2=tp2, tp3=tp3, position_id=pos['id'])
+                        if _tp2_hit:
+                            print(f"[AUTO-TRADE] {sym} runner trail onayi istendi: "
+                                  f"{new_trailing:.2f} (TP2 sonrasi, %{_trail_pct} siki trail)")
                     except Exception as _tr_err:
                         print(f"[AUTO-TRADER] Trailing bildirim hatası ({sym}): {_tr_err}")
                 else:
-                    # Runner mode VEYA Telegram yok: trail'i doğrudan güncelle
+                    # Telegram yok: trail'i doğrudan güncelle (onay alacak yer yok)
                     _auto_update_trailing(pos['id'], round(new_trailing, 2), cur_price)
                     if _tp2_hit:
                         print(f"[AUTO-TRADE] {sym} runner trail: {new_trailing:.2f} "
-                              f"(TP2 sonrası, %{_trail_pct} sıkı trail)")
+                              f"(TP2 sonrası, %{_trail_pct} sıkı trail, Telegram yok)")
             else:
                 # Acilis ilk 15 dk trailing tetiklemesini atla (gap koruması);
                 # highest yine guncellenir ama stop tetiklenmez.
