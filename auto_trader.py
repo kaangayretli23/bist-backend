@@ -359,8 +359,10 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
         # Quantity azalt + tetiklenen TP'yi sıfırla (SQL whitelist: kullanıcı input'undan bağımsız)
         # TP1 tetiklenirse: SL'yi giriş fiyatına çek (break-even) — kar geri verilmesin.
         # Sadece mevcut SL girişin altındaysa yukarı taşı; trailing yukarı sürüklediyse dokunma.
+        # NOT: SL'yi otomatik UPDATE etmiyoruz — Telegram onay flow'una gidiyor.
         _BUMP_SL_TO_BE = clear_tp_field == 'take_profit1'
         _be_price = round(entry * 1.001, 2)  # %0.1 tampon
+        _cur_sl = float(row['stop_loss'] or 0)
         _ALLOWED_CLEAR_TP = {
             'take_profit1': "UPDATE auto_positions SET quantity=?, take_profit1=0 WHERE id=?",
             'take_profit2': "UPDATE auto_positions SET quantity=?, take_profit2=0 WHERE id=?",
@@ -369,28 +371,43 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
             db.execute(_ALLOWED_CLEAR_TP[clear_tp_field], [remaining, position_id])
         else:
             db.execute("UPDATE auto_positions SET quantity=? WHERE id=?", [remaining, position_id])
-        # Break-even SL: TP1 sonrası, mevcut SL girişin altındaysa yukarı çek
-        _be_applied = False
-        if _BUMP_SL_TO_BE:
-            cur_sl = float(row['stop_loss'] or 0)
-            if cur_sl < _be_price:
-                db.execute("UPDATE auto_positions SET stop_loss=? WHERE id=?", (_be_price, position_id))
-                _be_applied = True
         db.commit()
         db.close()
+
+        # Break-even SL onerisi: TP1 sonrasi mevcut SL girisin altindaysa,
+        # Telegram'dan onay iste (otomatik UPDATE yok). Kullanici onaylarsa
+        # _auto_update_level cagrilir; reddederse veya 60dk yanit gelmezse
+        # eski SL korunur.
+        _be_requested = False
+        if _BUMP_SL_TO_BE and _cur_sl < _be_price:
+            try:
+                from telegram_notifications import send_sl_change_request
+                _be_requested = bool(send_sl_change_request(
+                    position_id=position_id,
+                    symbol=row['symbol'],
+                    field='stop_loss',
+                    old_val=_cur_sl,
+                    new_val=_be_price,
+                    reason='TP1 hit -> SL break-even (kâr koruma)',
+                    cur_price=price,
+                    expires_min=60,
+                ))
+            except Exception as _be_err:
+                print(f"[AUTO-TRADE] BE onay istegi gonderilemedi: {_be_err}")
         # Portfoy senkronu: kismi SELL -> portfolios'tan actual_sell kadar dus
         try:
             from auto_trader_sync import _sync_portfolio_sell
             _sync_portfolio_sell(row['user_id'], row['symbol'], actual_sell)
         except Exception as _ps_err:
             print(f"[AUTO-TRADE] Portfoy partial SELL sync hatasi: {_ps_err}")
-        _be_msg = f", SL→BE ({_be_price:.2f})" if _be_applied else ""
+        _be_msg = f", SL→BE onayi istendi ({_cur_sl:.2f}→{_be_price:.2f})" if _be_requested else ""
         print(f"[AUTO-TRADE] Kısmi satış #{position_id}: {row['symbol']} "
               f"{actual_sell:.2f} lot @ {price:.2f}, kalan={remaining:.2f}, "
               f"PnL={pnl:.2f} ({pnl_pct:.1f}%) - {reason}{_be_msg}")
         try:
             from routes_telegram import send_position_closed_notification
-            _be_tail = f"\n🛡 SL break-even'a çekildi: {_be_price:.2f}" if _be_applied else ""
+            _be_tail = (f"\n🛡 SL break-even icin Telegram'dan onay istendi "
+                        f"({_be_price:.2f})") if _be_requested else ""
             send_position_closed_notification(
                 row['symbol'], price, round(pnl, 2), round(pnl_pct, 2),
                 f"{reason} (kısmi — kalan {remaining:.2f} lot){_be_tail}")
@@ -426,3 +443,29 @@ def _auto_update_highest_price(position_id, new_highest):
         db.close()
     except Exception as e:
         print(f"[AUTO-TRADE] Highest price guncelleme hatasi: {e}")
+
+
+_AUTO_LEVEL_FIELDS = {
+    'stop_loss':    'UPDATE auto_positions SET stop_loss=? WHERE id=?',
+    'take_profit1': 'UPDATE auto_positions SET take_profit1=? WHERE id=?',
+    'take_profit2': 'UPDATE auto_positions SET take_profit2=? WHERE id=?',
+    'take_profit3': 'UPDATE auto_positions SET take_profit3=? WHERE id=?',
+}
+
+
+def _auto_update_level(position_id, field, new_val):
+    """SL/TP seviyesini guncelle (Telegram onayi sonrasi cagrilir).
+    field whitelist: stop_loss / take_profit1 / take_profit2 / take_profit3.
+    """
+    sql = _AUTO_LEVEL_FIELDS.get(field)
+    if not sql:
+        print(f"[AUTO-TRADE] Gecersiz seviye alani: {field}")
+        return
+    try:
+        db = get_db()
+        db.execute(sql, (float(new_val), position_id))
+        db.commit()
+        db.close()
+        print(f"[AUTO-TRADE] Pozisyon #{position_id} {field} -> {float(new_val):.2f} (onay sonrasi)")
+    except Exception as e:
+        print(f"[AUTO-TRADE] Seviye guncelleme hatasi ({field}): {e}")

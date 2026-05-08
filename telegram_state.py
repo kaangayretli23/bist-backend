@@ -53,6 +53,12 @@ def load_pending_from_db():
 _pending_trailing = {}
 _pending_trailing_lock = threading.Lock()
 
+# Bekleyen SL/TP değişim önerileri (TP1 hit sonrası BE move vb. — sistem
+# otomatik degistirmeden önce kullanici onayini bekler):
+#   {sl_id: {position_id, symbol, field('stop_loss'|'take_profit1'|...), old_val, new_val, reason, expires_at}}
+_pending_sl_change = {}
+_pending_sl_change_lock = threading.Lock()
+
 # =====================================================================
 # WARNING COOLDOWNS (aynı hisse için tekrar spam önleme)
 # =====================================================================

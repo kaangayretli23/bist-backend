@@ -14,6 +14,7 @@ from telegram_state import (
     TELEGRAM_NEWS_BOT_TOKEN, TELEGRAM_NEWS_CHAT_ID,
     _pending_signals, _pending_lock,
     _pending_trailing, _pending_trailing_lock,
+    _pending_sl_change, _pending_sl_change_lock,
     _warning_cooldown, _warning_lock,
     _last_trailing_notified,
     SL_WARNING_COOLDOWN, TP_WARNING_COOLDOWN,
@@ -358,3 +359,57 @@ def send_trailing_update(symbol, new_trailing, highest_price, entry_price=None,
         {'text': '❌ Geç', 'callback_data': f'trail_reject_{trail_id}'}
     ]]
     send_telegram_with_keyboard(msg, keyboard)
+
+
+def send_sl_change_request(position_id, symbol, field, old_val, new_val, reason,
+                           cur_price=None, expires_min=60):
+    """SL/TP seviye degisikligi onerildiginde Telegram onay mesaji gonder.
+    Onay verilirse DB guncellenir; reddedilir veya suresi dolarsa eski seviye korunur.
+
+    field: 'stop_loss' | 'take_profit1' | 'take_profit2' | 'take_profit3'
+    reason: kisa aciklama (orn. 'TP1 hit -> SL break-even', 'manuel ayar')
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    sl_id = str(uuid.uuid4())[:8]
+    with _pending_sl_change_lock:
+        _pending_sl_change[sl_id] = {
+            'position_id': position_id,
+            'symbol': symbol,
+            'field': field,
+            'old_val': float(old_val or 0),
+            'new_val': float(new_val or 0),
+            'reason': reason or '',
+            'expires_at': datetime.now() + timedelta(minutes=expires_min),
+        }
+
+    field_label = {
+        'stop_loss':    '🛡 Stop-Loss',
+        'take_profit1': '🎯 TP1',
+        'take_profit2': '🎯 TP2',
+        'take_profit3': '🎯 TP3',
+    }.get(field, field)
+
+    cur_line = f"\n💰 Guncel: {cur_price:.2f} TL" if cur_price else ""
+    move_line = ""
+    try:
+        if old_val and old_val > 0:
+            diff_pct = (float(new_val) - float(old_val)) / float(old_val) * 100
+            arrow = "↑" if diff_pct > 0 else "↓"
+            move_line = f"  ({arrow}%{abs(diff_pct):.2f})"
+    except Exception:
+        pass
+
+    msg = (
+        f"⚙️ <b>SEVIYE DEGISIM ONERISI: {symbol}</b>\n"
+        f"{field_label}: {float(old_val or 0):.2f} → <b>{float(new_val or 0):.2f}</b>{move_line}"
+        f"{cur_line}\n"
+        f"📌 Sebep: {reason}\n"
+        f"⏱ Onay yoksa {expires_min} dk sonra iptal — eski seviye kalir."
+    )
+    keyboard = [[
+        {'text': '✅ Onayla', 'callback_data': f'slchg_approve_{sl_id}'},
+        {'text': '❌ Geç',    'callback_data': f'slchg_reject_{sl_id}'}
+    ]]
+    return send_telegram_with_keyboard(msg, keyboard)

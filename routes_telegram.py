@@ -26,6 +26,7 @@ from telegram_state import (
     TELEGRAM_NEWS_BOT_TOKEN, TELEGRAM_NEWS_CHAT_ID,
     _pending_signals, _pending_lock,
     _pending_trailing, _pending_trailing_lock,
+    _pending_sl_change, _pending_sl_change_lock,
     _warning_cooldown, _warning_lock,
     _last_trailing_notified,
     SL_WARNING_COOLDOWN, TP_WARNING_COOLDOWN,
@@ -37,10 +38,12 @@ from telegram_notifications import (
     send_trade_signal, send_position_closed_notification,
     _can_send_warning, clear_warning_cooldown,
     send_sl_warning, send_tp_approaching, send_trailing_update,
+    send_sl_change_request,
 )
 from telegram_callbacks import (
     _answer_callback, _handle_approve, _handle_reject,
     _handle_trailing_approve, _handle_trailing_reject,
+    _handle_sl_change_approve, _handle_sl_change_reject,
     _process_update, _telegram_polling, _cleanup_expired_signals,
     _start_telegram_thread,
 )
@@ -87,9 +90,23 @@ def get_pending_signals():
             }
             for tid, t in _pending_trailing.items()
         ]
+    with _pending_sl_change_lock:
+        sl_changes = [
+            {
+                'id': sid,
+                'symbol': c['symbol'],
+                'field': c['field'],
+                'oldVal': c['old_val'],
+                'newVal': c['new_val'],
+                'reason': c['reason'],
+                'expiresAt': c['expires_at'].isoformat(),
+            }
+            for sid, c in _pending_sl_change.items()
+        ]
     return jsonify(safe_dict({
         'success': True, 'signals': signals, 'count': len(signals),
         'trailingUpdates': trailing_updates, 'trailingCount': len(trailing_updates),
+        'slChanges': sl_changes, 'slChangeCount': len(sl_changes),
     }))
 
 

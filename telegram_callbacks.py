@@ -12,6 +12,7 @@ from telegram_state import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     _pending_signals, _pending_lock,
     _pending_trailing, _pending_trailing_lock,
+    _pending_sl_change, _pending_sl_change_lock,
     _telegram_thread_lock,
 )
 from telegram_notifications import send_telegram, edit_telegram_message
@@ -264,6 +265,61 @@ def _handle_trailing_reject(trail_id, message_id):
         )
 
 
+_SL_CHG_FIELD_LABELS = {
+    'stop_loss':    '🛡 Stop-Loss',
+    'take_profit1': '🎯 TP1',
+    'take_profit2': '🎯 TP2',
+    'take_profit3': '🎯 TP3',
+}
+
+
+def _handle_sl_change_approve(sl_id, message_id):
+    """SL/TP seviye degisikligi onaylandi -> DB guncelle."""
+    with _pending_sl_change_lock:
+        chg = _pending_sl_change.pop(sl_id, None)
+
+    if not chg:
+        edit_telegram_message(message_id, "⚠️ Seviye degisim onerisi bulunamadi veya suresi dolmus.")
+        return
+
+    if datetime.now() > chg['expires_at']:
+        edit_telegram_message(
+            message_id,
+            f"⏰ <b>{chg['symbol']}</b> seviye degisim onerisinin suresi dolmus.\n"
+            f"Eski seviye korunuyor."
+        )
+        return
+
+    try:
+        from auto_trader import _auto_update_level
+        _auto_update_level(chg['position_id'], chg['field'], chg['new_val'])
+        label = _SL_CHG_FIELD_LABELS.get(chg['field'], chg['field'])
+        edit_telegram_message(
+            message_id,
+            f"✅ <b>{chg['symbol']} {label} GUNCELLENDI</b>\n"
+            f"Yeni seviye: <b>{chg['new_val']:.2f} TL</b>\n"
+            f"📌 {chg['reason']}\n"
+            f"⚡ Midas'ta da bu seviyeye cek."
+        )
+    except Exception as e:
+        edit_telegram_message(message_id, f"❌ Seviye guncelleme hatasi: {e}")
+        print(f"[TELEGRAM] SL change approve hatasi: {e}")
+
+
+def _handle_sl_change_reject(sl_id, message_id):
+    """SL/TP seviye degisikligi reddedildi -> eski seviye kalir."""
+    with _pending_sl_change_lock:
+        chg = _pending_sl_change.pop(sl_id, None)
+
+    if chg:
+        label = _SL_CHG_FIELD_LABELS.get(chg['field'], chg['field'])
+        edit_telegram_message(
+            message_id,
+            f"❌ <b>{chg['symbol']} {label}</b> degisikligi reddedildi.\n"
+            f"Mevcut seviye ({chg['old_val']:.2f}) korunuyor."
+        )
+
+
 def _process_update(update):
     """Tek bir Telegram update'i islemi"""
     if 'callback_query' not in update:
@@ -280,6 +336,10 @@ def _process_update(update):
         _handle_trailing_approve(data.replace('trail_approve_', ''), message_id)
     elif data.startswith('trail_reject_'):
         _handle_trailing_reject(data.replace('trail_reject_', ''), message_id)
+    elif data.startswith('slchg_approve_'):
+        _handle_sl_change_approve(data.replace('slchg_approve_', ''), message_id)
+    elif data.startswith('slchg_reject_'):
+        _handle_sl_change_reject(data.replace('slchg_reject_', ''), message_id)
     elif data.startswith('approve_'):
         _handle_approve(data.replace('approve_', ''), message_id)
     elif data.startswith('reject_'):
@@ -374,6 +434,25 @@ def _cleanup_expired_signals():
                     from auto_trader import _auto_update_trailing
                     _auto_update_trailing(trail['position_id'], trail['new_trailing'], trail['new_highest'])
                     print(f"[TELEGRAM] Trailing süresi doldu, otomatik onaylandı: {trail['symbol']} → {trail['new_trailing']:.2f}")
+                except Exception:
+                    pass
+
+            # SL/TP seviye degisim onerilerini temizle (suresi dolanlar otomatik REDDEDILIR
+            # — kullanici onayi olmadan seviye degismez).
+            expired_chgs = []
+            with _pending_sl_change_lock:
+                exp_ids = [sid for sid, c in _pending_sl_change.items() if now > c['expires_at']]
+                for sid in exp_ids:
+                    expired_chgs.append(_pending_sl_change.pop(sid))
+            for chg in expired_chgs:
+                label = _SL_CHG_FIELD_LABELS.get(chg['field'], chg['field'])
+                print(f"[TELEGRAM] {chg['symbol']} {label} degisim onerisi suresi doldu, IPTAL "
+                      f"({chg['old_val']:.2f} -> {chg['new_val']:.2f})")
+                try:
+                    send_telegram(
+                        f"⏰ <b>{chg['symbol']}</b> {label} degisim onerisi yanitlanmadi, iptal edildi.\n"
+                        f"<i>Mevcut seviye ({chg['old_val']:.2f}) korunuyor.</i>"
+                    )
                 except Exception:
                     pass
         except Exception:
