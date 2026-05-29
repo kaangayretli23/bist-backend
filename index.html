@@ -3183,6 +3183,15 @@ async function loadStockDetail(symbol, period) {
       </div>
     </div>
 
+    <!-- Haber Sentiment Widget -->
+    <div class="card mb-24 fade-in">
+      <div class="flex-between mb-8">
+        <div style="font-weight:700;">📰 Haber Sentimenti (Türkçe Google News)</div>
+        <button class="btn btn-sm btn-secondary" onclick="loadSentimentWidget('${s.code}', true)" style="font-size:11px;">Yenile</button>
+      </div>
+      <div id="newsSentimentBody" style="font-size:13px;color:var(--text-muted);">Yükleniyor…</div>
+    </div>
+
     <!-- Chart System -->
     <div class="mb-24 fade-in" id="chartSystem"></div>
 
@@ -3391,6 +3400,76 @@ async function loadStockDetail(symbol, period) {
 
   // Faz 2-9 advanced analysis tabs
   _initAdvancedTabs(symbol);
+
+  // Haber sentiment widget (asynchronous, fail-safe)
+  try { loadSentimentWidget(s.code, false); } catch (_) {}
+}
+
+// =============================================================================
+// HABER SENTIMENT WIDGET
+// =============================================================================
+async function loadSentimentWidget(symbol, force) {
+  const body = document.getElementById('newsSentimentBody');
+  if (!body) return;
+  body.innerHTML = '<div class="loading"><div class="spinner"></div>Haberler taranıyor…</div>';
+  try {
+    const url = `${API_BASE}/news/sentiment/${encodeURIComponent(symbol)}${force ? '?force=1' : ''}`;
+    const res = await fetch(url);
+    const d = await res.json();
+    if (!d.success) {
+      body.innerHTML = `<div style="color:var(--red);">Sentiment yüklenemedi: ${d.error || ''}</div>`;
+      return;
+    }
+    const score = Number(d.score) || 0;
+    const label = d.label || 'nötr';
+    const count = d.article_count || 0;
+    const pos = d.positive_count || 0;
+    const neg = d.negative_count || 0;
+    const headlines = d.top_headlines || [];
+
+    // Skor [-1, 1] -> 0..100 (50 ortada)
+    const pct = Math.round(((score + 1) / 2) * 100);
+    const barColor = score >= 0.15 ? 'var(--green)' :
+                     score <= -0.15 ? 'var(--red)' :
+                     'var(--text-muted)';
+    const labelColor = score >= 0.15 ? 'var(--green)' :
+                       score <= -0.15 ? 'var(--red)' :
+                       'var(--text-secondary)';
+
+    if (count === 0) {
+      body.innerHTML = '<div style="color:var(--text-muted);">Bu hisse için son haberlerde anlamlı sentiment sinyali bulunamadı.</div>';
+      return;
+    }
+
+    body.innerHTML = `
+      <div style="display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;margin-bottom:10px;">
+        <div style="font-size:24px;font-weight:700;color:${labelColor};white-space:nowrap;">
+          ${score >= 0 ? '+' : ''}${score.toFixed(2)}
+        </div>
+        <div>
+          <div style="font-weight:600;color:${labelColor};text-transform:capitalize;">${label}</div>
+          <div style="height:8px;background:var(--border);border-radius:4px;margin-top:6px;overflow:hidden;position:relative;">
+            <div style="position:absolute;left:50%;top:0;width:1px;height:100%;background:var(--text-muted);opacity:0.5;"></div>
+            <div style="height:100%;background:${barColor};width:${Math.abs(pct - 50) * 2}%;${score >= 0 ? 'margin-left:50%;' : `margin-left:${pct}%;`}"></div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);text-align:right;">
+          ${count} haber<br>
+          <span class="price-up">▲${pos}</span> · <span class="price-down">▼${neg}</span>
+        </div>
+      </div>
+      ${headlines.length ? `
+        <div style="margin-top:8px;font-size:12px;">
+          <div style="font-weight:600;color:var(--text-secondary);margin-bottom:6px;">📰 Öne Çıkan Başlıklar:</div>
+          ${headlines.slice(0, 5).map(h =>
+            `<div style="padding:6px 8px;background:var(--card-bg);border-left:2px solid var(--border);margin-bottom:4px;border-radius:3px;">${escHtml(h)}</div>`
+          ).join('')}
+        </div>
+      ` : ''}
+    `;
+  } catch (e) {
+    body.innerHTML = `<div style="color:var(--red);">Hata: ${e.message}</div>`;
+  }
 }
 
 // =============================================================================

@@ -19,39 +19,69 @@ except ImportError:
 
 POSITIVE_KEYWORDS = {
     # Kârlılık
-    'rekor kâr': 3, 'net kâr arttı': 3, 'kâr açıkladı': 2,
+    'rekor kâr': 3, 'net kâr arttı': 3, 'kâr açıkladı': 2, 'kar açıkladı': 2,
     'güçlü büyüme': 2, 'olumlu': 1, 'yükseliş': 1, 'artış': 1,
-    # Kurumsal
-    'temettü': 2, 'bedelsiz': 2, 'hisse geri alım': 2,
+    'kar marjı yükseldi': 2, 'faaliyet karı arttı': 2, 'net dönem karı': 1,
+    'gelir arttı': 2, 'ciroda artış': 2, 'satışlarda artış': 2,
+    # Kurumsal aksiyon
+    'temettü': 2, 'temettü dağıtacak': 3, 'bedelsiz': 2, 'bedelsiz sermaye artırımı': 3,
+    'hisse geri alım': 3, 'hisse geri alımı': 3,
     'ortaklık': 1, 'anlaşma imzaladı': 2, 'sözleşme': 1,
-    'ihracat rekoru': 3, 'kapasite artışı': 2,
-    # Analist
-    'hedef fiyat artırıldı': 2, 'al tavsiyesi': 2, 'endekse eklendi': 2,
-    'yükseltildi': 1, 'güçlü tut': 1,
+    'birleşme': 2, 'satın alma': 1, 'iştirak satın aldı': 2,
+    'ihracat rekoru': 3, 'kapasite artışı': 2, 'yeni yatırım': 2,
+    'yeni fabrika': 2, 'yeni tesis': 2, 'fabrika açılışı': 2,
+    'ihracat arttı': 2, 'yeni anlaşma': 2,
+    # Analist / endeks
+    'hedef fiyat artırıldı': 2, 'al tavsiyesi': 2, 'al önerisi': 2,
+    'endekse eklendi': 2, 'bist 30': 1, 'bist 100': 1,
+    'yükseltildi': 1, 'güçlü tut': 1, 'tut tavsiyesi': 0,
+    'kredi notu yükseldi': 3, 'kredi derecelendirme yükseldi': 3,
+    # Düzenleyici / makro pozitif
+    'spk onayı': 2, 'spk izni': 2, 'lisans aldı': 2, 'ihale kazandı': 3,
+    'sertifika aldı': 1, 'patent aldı': 2,
+    'sübvansiyon': 1, 'teşvik aldı': 2,
     # Piyasa
-    'yükseldi': 1, 'güçlendi': 1, 'rallisi': 1, 'zirve': 1,
+    'yükseldi': 1, 'güçlendi': 1, 'rallisi': 1, 'zirve': 1, 'rekor kırdı': 2,
+    'pozitif ayrıştı': 2, 'tarihi zirve': 2,
 }
 
 NEGATIVE_KEYWORDS = {
     # Kârlılık
-    'zarar açıkladı': -3, 'net zarar': -3, 'kâr düştü': -2,
+    'zarar açıkladı': -3, 'net zarar': -3, 'kâr düştü': -2, 'kar düştü': -2,
     'gelirler azaldı': -2, 'zayıf': -1, 'hayal kırıklığı': -2,
-    # Hukuki/finansal sıkıntı
+    'gelir düştü': -2, 'satışlarda düşüş': -2, 'ciroda düşüş': -2,
+    'kar marjı düştü': -2, 'faaliyet karı düştü': -2,
+    # Hukuki / finansal sıkıntı
     'iflas': -4, 'konkordato': -4, 'temerrüt': -3, 'icra': -3,
-    'soruşturma': -2, 'dava açıldı': -2, 'ceza': -2,
+    'soruşturma': -2, 'soruşturma başlattı': -3, 'dava açıldı': -2, 'ceza': -2,
+    'manipülasyon': -3, 'manipulasyon': -3,
     'borç yapılandırması': -2, 'sermaye azaltımı': -2,
+    'hisse rehni': -2, 'haciz': -3, 'mahkeme': -1,
+    'spk cezası': -3, 'spk para cezası': -3, 'denetim raporu olumsuz': -3,
+    # Operasyon
+    'fabrika durdu': -3, 'üretim durdu': -3, 'üretim azaldı': -2,
+    'yangın': -2, 'kaza': -2, 'patlama': -3,
+    'işçi çıkardı': -2, 'iş bıraktı': -1, 'grev': -2,
     # Analist
-    'hedef fiyat düşürüldü': -2, 'sat tavsiyesi': -2,
+    'hedef fiyat düşürüldü': -2, 'sat tavsiyesi': -2, 'sat önerisi': -2,
     'endeksten çıkarıldı': -2, 'düşürüldü': -1,
+    'kredi notu düştü': -3, 'kredi derecelendirme düştü': -3,
     # Piyasa
-    'düştü': -1, 'geriledi': -1, 'sattı': -1, 'çöküş': -3,
-    # Makro/sektör
+    'düştü': -1, 'geriledi': -1, 'sattı': -1, 'çöküş': -3, 'sert düşüş': -2,
+    'tabana vurdu': -2, 'değer kaybetti': -1, 'negatif ayrıştı': -2,
+    # Makro / sektör
     'enflasyon baskısı': -1, 'kur riski': -1, 'faiz artışı': -1,
+    'durgunluk': -1, 'resesyon': -2, 'kriz': -2,
+    # KAP / şüpheli
+    'olağanüstü durum': -1, 'aciklama yapildi': 0,
 }
 
 NEUTRAL_AMPLIFIERS = {
     'beklentinin üzerinde': 1, 'beklentinin altında': -1,
     'tahminlerin üzerinde': 1, 'tahminlerin altında': -1,
+    'rekor': 1,  # baglama göre + ya da - olabilir, hafif pozitif sayalim
+    'düşük performans': -1, 'zayıf performans': -1,
+    'güçlü performans': 1, 'olumlu görünüm': 1, 'olumsuz görünüm': -1,
 }
 
 # =====================================================================
