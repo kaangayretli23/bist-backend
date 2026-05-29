@@ -1649,6 +1649,13 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
   <!-- Konfigürasyon -->
   <div class="card mb-16">
     <div class="section-title mb-12"><span class="icon">⚙</span> Konfigürasyon</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px;background:var(--bg);border-radius:6px;border:1px dashed var(--border);">
+      <span style="font-size:12px;color:var(--text-dim);font-weight:600;">🎯 Hızlı Preset:</span>
+      <button type="button" onclick="applyConfigPreset('conservative')" title="Yüksek skor barı, sıkı SL, az pozisyon — büyük drawdown'a karşı koruma. Onaylayıp 'Kaydet'e basmayı unutma." style="background:#27ae60;color:white;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;">🛡 Konservatif</button>
+      <button type="button" onclick="applyConfigPreset('balanced')" title="Default değerler — orta risk, swing odaklı." style="background:#3498db;color:white;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;">⚖ Dengeli</button>
+      <button type="button" onclick="applyConfigPreset('aggressive')" title="Düşük skor barı, geniş SL, çok pozisyon — fırsatları kaçırmamak için. Drawdown freeze de geniş." style="background:#e67e22;color:white;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;">🔥 Agresif</button>
+      <span id="atPresetMsg" style="font-size:11px;color:var(--text-dim);opacity:0.85;">ℹ️ Preset alanları doldurur, kaydetmek için "Kaydet"e bas.</span>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
       <label style="font-size:12px;color:var(--text-dim);">Sermaye (TL) <span style="font-size:10px;color:var(--text-dim);opacity:0.7;">— "💰 Bakiye Ayarla" butonu</span>
         <input id="atCapital" type="number" value="100000" readonly style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text-dim);margin-top:4px;cursor:not-allowed;opacity:0.75;">
@@ -7617,6 +7624,73 @@ function applyStyleDefaults() {
   document.getElementById('atTP').value = p.tp;
   document.getElementById('atTrailPct').value = p.trail;
   document.getElementById('atPanicDrop').value = p.panicDrop;
+}
+
+// Strategy preset'leri — form alanlarini doldurur, kaydetmek icin Kaydet'e basilir.
+const AT_CONFIG_PRESETS = {
+  conservative: {
+    label: '🛡 Konservatif',
+    maxPos: 3, risk: 1.5, minScore: 10, minConf: 75,
+    sl: 2, tp: 4, tpStrategy: 'all_at_tp1',
+    maxDaily: 2, style: 'swing',
+    trailing: 1, trailPct: 1.5, tightTrail: 0.75,
+    maxPerSector: 1,
+    panicEnabled: 1, panicDrop: 1.5, panicWindow: 5,
+    ddFreezePct: 5, ddFreezeWin: 5,
+  },
+  balanced: {
+    label: '⚖ Dengeli',
+    maxPos: 5, risk: 2, minScore: 8, minConf: 60,
+    sl: 3, tp: 6, tpStrategy: 'auto',
+    maxDaily: 3, style: 'swing',
+    trailing: 1, trailPct: 2, tightTrail: 1,
+    maxPerSector: 2,
+    panicEnabled: 1, panicDrop: 2, panicWindow: 5,
+    ddFreezePct: 10, ddFreezeWin: 7,
+  },
+  aggressive: {
+    label: '🔥 Agresif',
+    maxPos: 8, risk: 3, minScore: 6, minConf: 50,
+    sl: 4, tp: 10, tpStrategy: 'staged',
+    maxDaily: 5, style: 'swing',
+    trailing: 1, trailPct: 3, tightTrail: 1.5,
+    maxPerSector: 3,
+    panicEnabled: 0, panicDrop: 3, panicWindow: 8,
+    ddFreezePct: 15, ddFreezeWin: 10,
+  },
+};
+
+function applyConfigPreset(name) {
+  const p = AT_CONFIG_PRESETS[name];
+  if (!p) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set('atMaxPos', p.maxPos);
+  set('atRisk', p.risk);
+  set('atMinScore', p.minScore);
+  set('atMinConf', p.minConf);
+  set('atSL', p.sl);
+  set('atTP', p.tp);
+  set('atTpStrategy', p.tpStrategy);
+  set('atMaxDaily', p.maxDaily);
+  set('atStyle', p.style);
+  set('atTrailing', p.trailing);
+  set('atTrailPct', p.trailPct);
+  set('atTightTrailPct', p.tightTrail);
+  set('atMaxPerSector', p.maxPerSector);
+  set('atPanicEnabled', p.panicEnabled);
+  set('atPanicDrop', p.panicDrop);
+  set('atPanicWindow', p.panicWindow);
+  set('atDrawdownFreezePct', p.ddFreezePct);
+  set('atDrawdownFreezeWindow', p.ddFreezeWin);
+  const msg = document.getElementById('atPresetMsg');
+  if (msg) {
+    msg.textContent = `${p.label} uygulandi — "Kaydet"e basarak onayla.`;
+    msg.style.color = 'var(--orange, #e67e22)';
+    setTimeout(() => {
+      msg.textContent = 'ℹ️ Preset alanları doldurur, kaydetmek için "Kaydet"e bas.';
+      msg.style.color = 'var(--text-dim)';
+    }, 5000);
+  }
 }
 
 async function saveAutoTradeConfig() {
