@@ -456,16 +456,15 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         _already_pending = False
         _tg_configured = False
         try:
-            from routes_telegram import send_trade_signal, _pending_signals, _pending_lock
+            from routes_telegram import send_trade_signal
+            from telegram_state import has_pending_signal
             import os as _os
             _tg_configured = bool(_os.environ.get('TELEGRAM_BOT_TOKEN')
                                   and _os.environ.get('TELEGRAM_CHAT_ID'))
             if _tg_configured:
-                with _pending_lock:
-                    _already_pending = any(
-                        ps['symbol'] == sym and ps['uid'] == uid
-                        for ps in _pending_signals.values()
-                    )
+                # O4: helper ile thread-safe check (eski O(N) inline scan'in
+                # yerine encapsulated; pending state telegram_state'te tutuluyor)
+                _already_pending = has_pending_signal(uid, sym)
                 if not _already_pending:
                     _tg_sent = send_trade_signal(
                         uid, sym, price, quantity,

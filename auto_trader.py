@@ -106,16 +106,25 @@ def _auto_get_open_positions(user_id):
         return []
 
 def _auto_get_daily_trade_count(user_id):
-    """Bugün açılmış pozisyon sayısı (sadece BUY).
+    """Bugün (TR saati) açılmış pozisyon sayısı (sadece BUY).
     SELL/SELL_TRAIL/SELL_TP dahil DEĞİL — SL/TP tetiklemelerinin sınırlanması istenmiyor.
-    maxDailyTrades = gün içinde kullanıcıya uyarı/oto-open limiti (yeni giriş)."""
+    maxDailyTrades = gün içinde kullanıcıya uyarı/oto-open limiti (yeni giriş).
+
+    NOT (Y2): SQLite tarafi UTC parse eder; sunucu UTC'de calisirken TR saati 00:00-03:00
+    araliginda acilan trade'ler 'dunkune' sayilirdi. '+3 hours' modifier ile Europe/Istanbul'a
+    cevriliyor; Postgres tarafi zaten 'AT TIME ZONE'.
+    """
     try:
         db = get_db()
         today = _today_ist()
         if USE_POSTGRES and PG_OK:
             row = db.execute("SELECT COUNT(*) as cnt FROM auto_trades WHERE user_id=%s AND action='BUY' AND (created_at AT TIME ZONE 'Europe/Istanbul')::date=%s::date", (user_id, today)).fetchone()
         else:
-            row = db.execute("SELECT COUNT(*) as cnt FROM auto_trades WHERE user_id=? AND action='BUY' AND date(created_at)=?", (user_id, today)).fetchone()
+            row = db.execute(
+                "SELECT COUNT(*) as cnt FROM auto_trades "
+                "WHERE user_id=? AND action='BUY' AND date(created_at, '+3 hours')=?",
+                (user_id, today)
+            ).fetchone()
         db.close()
         return int(row['cnt']) if row else 0
     except Exception as e:
@@ -260,12 +269,17 @@ def _auto_open_position(user_id, symbol, price, quantity, stop_loss, tp1, tp2, t
         print(f"[AUTO-TRADE] Pozisyon acma hatasi: {e}")
         return 0
 
-def _calc_trade_costs(user_id, notional_buy, notional_sell):
+def _calc_trade_costs(user_id, notional_buy, notional_sell, cfg=None):
     """Komisyon + BSMV'yi hesapla (BUY ve SELL tarafinda ayri ayri).
     Midas BIST'te 0 — cfg bos/yoksa 0 dondurur. BSMV komisyon uzerinden alinir.
+
+    O3: cfg opsiyonel parametre — caller cfg'yi zaten elinde tutuyorsa
+    geçirsin ki extra DB conn acmayalim. cfg=None -> _auto_get_config DB hit.
+    Partial close/close path'leri 5-6 conn aciyordu; cfg passthrough ile -1 conn.
     """
     try:
-        cfg = _auto_get_config(user_id) or {}
+        if cfg is None:
+            cfg = _auto_get_config(user_id) or {}
         c_pct = float(cfg.get('commissionPct', 0) or 0)
         b_pct = float(cfg.get('bsmvPct', 0) or 0)
         if c_pct <= 0:
@@ -277,8 +291,8 @@ def _calc_trade_costs(user_id, notional_buy, notional_sell):
         return 0.0
 
 
-def _auto_close_position(position_id, close_price, reason):
-    """Pozisyon kapat"""
+def _auto_close_position(position_id, close_price, reason, cfg=None):
+    """Pozisyon kapat. cfg opsiyonel — passthrough ile _calc_trade_costs extra DB conn acmaz (O3)."""
     try:
         db = get_db()
         row = db.execute("SELECT * FROM auto_positions WHERE id=?", (position_id,)).fetchone()
@@ -288,7 +302,7 @@ def _auto_close_position(position_id, close_price, reason):
         entry = float(row['entry_price'])
         qty = float(row['quantity'])
         gross = (close_price - entry) * qty
-        costs = _calc_trade_costs(row['user_id'], entry * qty, close_price * qty)
+        costs = _calc_trade_costs(row['user_id'], entry * qty, close_price * qty, cfg=cfg)
         pnl = gross - costs
         pnl_pct = ((close_price - entry) / entry * 100) if entry > 0 else 0
         if entry > 0 and qty > 0 and costs > 0:
@@ -337,10 +351,11 @@ def _auto_close_position(position_id, close_price, reason):
     except Exception as e:
         print(f"[AUTO-TRADE] Pozisyon kapatma hatasi: {e}")
 
-def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=None):
+def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=None, cfg=None):
     """Pozisyonun bir kısmını sat (TP1/TP2 kademeli kâr alma).
     sell_qty: satılacak miktar. Kalan quantity DB'de güncellenir.
     clear_tp_field: 'take_profit1' veya 'take_profit2' → 0'a set eder (tekrar tetiklemesin)
+    cfg: opsiyonel oto-trade config (O3 — _calc_trade_costs extra conn acmasin).
 
     Concurrency: quantity guncellemesi atomic CAS ile (WHERE quantity>=?).
     Parallel partial close (orn. TP1+trailing ayni cycle'da) ezme olmaz —
@@ -367,7 +382,7 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
         # 0.01 float artefakti yakalanmiyordu (Y5).
         if estimated_remaining < 1.0:
             db.close()
-            _auto_close_position(position_id, price, reason)
+            _auto_close_position(position_id, price, reason, cfg=cfg)
             return
 
         # Atomic CAS update: WHERE quantity>=actual_sell. Baska thread daha onceden
@@ -416,7 +431,7 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
 
         # PnL hesabi (CAS basariliydi — bu satis bizim)
         gross = (price - entry) * actual_sell
-        costs = _calc_trade_costs(row['user_id'], entry * actual_sell, price * actual_sell)
+        costs = _calc_trade_costs(row['user_id'], entry * actual_sell, price * actual_sell, cfg=cfg)
         pnl = gross - costs
         # PnL%: net (entry*qty notional uzerinden). costs=0 olsa bile formul tutarli.
         pnl_pct = (pnl / (entry * actual_sell) * 100) if entry > 0 and actual_sell > 0 else 0
@@ -424,7 +439,7 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
         # CAS sonrasi remaining gercekte 1'in altinda kaldiysa (float artefakti
         # veya baska partial paralel) tam kapatma cagrisi:
         if remaining < 1.0:
-            _auto_close_position(position_id, price, f"{reason} (kalan {remaining:.2f} lot temizlik)")
+            _auto_close_position(position_id, price, f"{reason} (kalan {remaining:.2f} lot temizlik)", cfg=cfg)
             return
 
         # Break-even SL onerisi: TP1 sonrasi mevcut SL girisin altindaysa,

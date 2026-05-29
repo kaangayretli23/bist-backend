@@ -71,7 +71,7 @@ def _step1_manage_positions(uid, cfg, positions):
                         # 7 takvim günü (~5 işlem günü) hareketsizlik → çık
                         _reason = (f"Time-based exit: {_days_held:.1f}gün ±%2 ({entry:.2f}→{cur_price:.2f}, "
                                    f"hareket %{_move_pct:.2f}), sermaye kilidi")
-                        _auto_close_position(pos['id'], cur_price, _reason)
+                        _auto_close_position(pos['id'], cur_price, _reason, cfg=cfg)
                         _auto_log_trade(uid, sym, 'SELL_TIME', cur_price, pos['quantity'],
                                         _reason, 0, 0, pos['id'])
                         _panic_clear(pos['id'])
@@ -83,7 +83,7 @@ def _step1_manage_positions(uid, cfg, positions):
         # Stop-Loss kontrolu
         sl = pos['stopLoss']
         if sl > 0 and cur_price <= sl:
-            _auto_close_position(pos['id'], cur_price, f"Stop-Loss tetiklendi ({sl:.2f})")
+            _auto_close_position(pos['id'], cur_price, f"Stop-Loss tetiklendi ({sl:.2f})", cfg=cfg)
             _auto_log_trade(uid, sym, 'SELL_SL', cur_price, pos['quantity'],
                            f"SL tetiklendi: {cur_price:.2f} <= {sl:.2f}", 0, 0, pos['id'])
             _sl_cooldown_block(uid, sym, cfg.get('tradeStyle', 'swing'))
@@ -105,7 +105,7 @@ def _step1_manage_positions(uid, cfg, positions):
         tp1 = pos['takeProfit1']
         qty = pos['quantity']
         if tp3 > 0 and cur_price >= tp3:
-            _auto_close_position(pos['id'], cur_price, f"TP3 hedef ({tp3:.2f})")
+            _auto_close_position(pos['id'], cur_price, f"TP3 hedef ({tp3:.2f})", cfg=cfg)
             _auto_log_trade(uid, sym, 'SELL_TP3', cur_price, qty,
                            f"TP3: {cur_price:.2f} >= {tp3:.2f}", 0, 0, pos['id'])
             _panic_clear(pos['id'])
@@ -115,7 +115,7 @@ def _step1_manage_positions(uid, cfg, positions):
             if sell_qty < 1:
                 sell_qty = qty  # çok az kaldıysa hepsini sat
             _auto_partial_close(pos['id'], sell_qty, cur_price,
-                               f"TP2 hedef ({tp2:.2f})", clear_tp_field='take_profit2')
+                               f"TP2 hedef ({tp2:.2f})", clear_tp_field='take_profit2', cfg=cfg)
             _auto_log_trade(uid, sym, 'SELL_TP2', cur_price, sell_qty,
                            f"TP2 kısmi: {cur_price:.2f} >= {tp2:.2f}", 0, 0, pos['id'])
         elif tp1 > 0 and cur_price >= tp1:
@@ -123,7 +123,7 @@ def _step1_manage_positions(uid, cfg, positions):
             if sell_qty < 1:
                 sell_qty = qty
             _auto_partial_close(pos['id'], sell_qty, cur_price,
-                               f"TP1 hedef ({tp1:.2f})", clear_tp_field='take_profit1')
+                               f"TP1 hedef ({tp1:.2f})", clear_tp_field='take_profit1', cfg=cfg)
             _auto_log_trade(uid, sym, 'SELL_TP1', cur_price, sell_qty,
                            f"TP1 kısmi: {cur_price:.2f} >= {tp1:.2f}", 0, 0, pos['id'])
 
@@ -139,12 +139,20 @@ def _step1_manage_positions(uid, cfg, positions):
         except Exception:
             pass
 
-        # Trailing Stop kontrolu
-        # Runner mode: TP2 hit edilmis pozisyon (tp1=0 AND tp2=0 AND tp3>0) →
-        #   sıkı trail (tightTrailingPct), Telegram onayı bypass, master flag bypass.
+        # Trailing Stop kontrolu — Runner mode tespiti
+        # Runner mode: TP1 + TP2 hit edilmis, sadece TP3 ve kalan miktar mevcut.
+        #   sıkı trail (tightTrailingPct) aktif, master trailing flag override.
         # Mantik: TP2 sonrasi kazanan pozisyon, momentum verince TP3'e ya da daha
         # uzaga gidebilir; ama donerse hizli kilitlemeliyiz (kar geri verilmesin).
-        _tp2_hit = (tp1 == 0 and tp2 == 0 and tp3 > 0)
+        #
+        # Tespit kriterleri (O8 — defensive):
+        #   1) tp1=0 AND tp2=0 (zerolanmis = tetiklenmis) AND tp3>0
+        #   2) highest_price > entry_price (gercekten kara gecmis — kullanici
+        #      manuel TP1/TP2'yi 0'ladiysa false runner'a girmeyelim)
+        _highest = float(pos.get('highestPrice', 0) or 0)
+        _entry_val = float(pos.get('entryPrice', 0) or 0)
+        _tp2_hit = (tp1 == 0 and tp2 == 0 and tp3 > 0
+                    and _entry_val > 0 and _highest > _entry_val)
         _trailing_enabled = bool(cfg['trailingStop']) or _tp2_hit
         _trail_pct = float(cfg.get('tightTrailingPct', 1.0)) if _tp2_hit else float(cfg['trailingPct'])
         # Tick-aware trail: dusuk fiyatli (mikro) hisselerde nominal %3 trail cok dar
@@ -190,7 +198,7 @@ def _step1_manage_positions(uid, cfg, positions):
                                    _tr_now.hour == 10 and _tr_now.minute < 15)
                 trailing_sl = pos['trailingStop']
                 if (not _opening_window) and trailing_sl > 0 and cur_price <= trailing_sl:
-                    _auto_close_position(pos['id'], cur_price, f"Trailing-Stop ({trailing_sl:.2f})")
+                    _auto_close_position(pos['id'], cur_price, f"Trailing-Stop ({trailing_sl:.2f})", cfg=cfg)
                     _auto_log_trade(uid, sym, 'SELL_TRAIL', cur_price, pos['quantity'],
                                    f"Trailing SL: {cur_price:.2f} <= {trailing_sl:.2f}", 0, 0, pos['id'])
                     _sl_cooldown_block(uid, sym, cfg.get('tradeStyle', 'swing'))
@@ -209,7 +217,7 @@ def _step1_manage_positions(uid, cfg, positions):
                 )
                 if triggered:
                     reason = f"Panic-Sell: {window_min}dk içinde zirveden %{drop:.1f} düşüş ({peak:.2f}→{cur_price:.2f})"
-                    _auto_close_position(pos['id'], cur_price, reason)
+                    _auto_close_position(pos['id'], cur_price, reason, cfg=cfg)
                     _auto_log_trade(uid, sym, 'SELL_PANIC', cur_price, pos['quantity'],
                                    reason, 0, 0, pos['id'])
                     _panic_clear(pos['id'])

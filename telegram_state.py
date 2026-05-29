@@ -48,6 +48,19 @@ def load_pending_from_db():
     except Exception as e:
         print(f"[TELEGRAM-STATE] Pending yukleme hatasi: {e}")
 
+
+def has_pending_signal(uid: str, symbol: str) -> bool:
+    """O4: Belirli kullanici+sembol icin pending sinyal var mi (thread-safe).
+    Scanner aday loop'unda _pending_signals dict scan'i encapsulate eder.
+    """
+    if not uid or not symbol:
+        return False
+    with _pending_lock:
+        for ps in _pending_signals.values():
+            if ps.get('uid') == uid and ps.get('symbol') == symbol:
+                return True
+    return False
+
 # Bekleyen trailing güncellemeleri:
 #   {trail_id: {position_id, symbol, new_trailing, new_highest, expires_at}}
 _pending_trailing = {}
