@@ -179,58 +179,70 @@ def _decide_tp_strategy(user_id, entry_price, tp1, tp3):
 
 
 def _auto_open_position(user_id, symbol, price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl):
-    """Yeni pozisyon ac. Capital/max_positions yarış koşulu için son-an DB kontrolü yapar."""
+    """Yeni pozisyon ac. Capital/max_positions yarış koşulu için son-an DB kontrolü yapar.
+
+    Concurrency: son-an kontrol + INSERT atomik blok icinde calismali (Scanner thread
+    ile Telegram approve thread paralel acmaya kalkmasin -> max_positions asabilirdi).
+    _auto_trade_lock ile sariliyor; pratikte 1-2ms blok suresi, scanner thread
+    zaten 5 dk cycle'da.
+    """
+    pos_id = 0
+    tp_strategy = 'staged'
     try:
-        db = get_db()
-        # Yarış koşulu önlemi: INSERT'ten hemen önce mevcut açık pozisyon sayısını + toplam kullanılan sermayeyi doğrula
-        try:
-            cfg_row = db.execute(
-                "SELECT max_positions, capital FROM auto_config WHERE user_id=?", (user_id,)
-            ).fetchone()
-            if cfg_row:
-                max_pos = int(cfg_row['max_positions'] or 5)
-                capital = float(cfg_row['capital'] or 0)
-                count_row = db.execute(
-                    "SELECT COUNT(*) AS c, COALESCE(SUM(entry_price*quantity), 0) AS used "
-                    "FROM auto_positions WHERE user_id=? AND status='open'",
-                    (user_id,)
+        # ─── K2: Lock altinda son-an kontrol + INSERT ───────────────────
+        with _auto_trade_lock:
+            db = get_db()
+            try:
+                cfg_row = db.execute(
+                    "SELECT max_positions, capital FROM auto_config WHERE user_id=?", (user_id,)
                 ).fetchone()
-                cur_count = int(count_row['c']) if count_row else 0
-                used_capital = float(count_row['used']) if count_row else 0.0
-                cost = price * quantity
-                if cur_count >= max_pos:
-                    print(f"[AUTO-TRADE] Pozisyon açılmadı — max_positions sınırına ulaşıldı ({cur_count}/{max_pos})")
-                    db.close()
-                    return 0
-                # Sermaye kontrolu: artik gercek alim Midas'ta yapildigi icin BLOK degil sadece UYARI
-                if capital > 0 and (used_capital + cost) > capital * 1.001:
-                    print(f"[AUTO-TRADE] UYARI — sermaye limiti asildi ama yine de aciliyor "
-                          f"(kullanılan={used_capital:.0f} + yeni={cost:.0f} > kapital={capital:.0f}). "
-                          "Risk takibi icin capital ayarini guncelleyin.")
-        except Exception as _guard_err:
-            print(f"[AUTO-TRADE] Son-an kontrol hatası (devam ediliyor): {_guard_err}")
-        # TP strateji karari (auto/staged/all_at_tp1) — pozisyon acilirken belirle, DB'ye yaz
-        try:
-            tp_strategy = _decide_tp_strategy(user_id, price, tp1, tp3)
-        except Exception as _ts_err:
-            print(f"[AUTO-TRADE] TP strategy karar hatasi (default staged): {_ts_err}")
-            tp_strategy = 'staged'
-        db.execute(
-            """INSERT INTO auto_positions
-               (user_id, symbol, side, entry_price, quantity, stop_loss,
-                take_profit1, take_profit2, take_profit3, trailing_stop, highest_price, tp_strategy)
-               VALUES (?,?,'long',?,?,?,?,?,?,?,?,?)""",
-            (user_id, symbol, price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl, price, tp_strategy)
-        )
-        db.commit()
-        print(f"[AUTO-TRADE] Pozisyon acildi: {symbol} qty={quantity} @ {price}, tp_strategy={tp_strategy}")
-        # Son eklenen ID'yi al
-        if USE_POSTGRES and PG_OK:
-            row = db.execute("SELECT MAX(id) as mid FROM auto_positions WHERE user_id=? AND symbol=?", (user_id, symbol)).fetchone()
-        else:
-            row = db.execute("SELECT last_insert_rowid() as mid").fetchone()
-        pos_id = int(row['mid']) if row else 0
-        db.close()
+                if cfg_row:
+                    max_pos = int(cfg_row['max_positions'] or 5)
+                    capital = float(cfg_row['capital'] or 0)
+                    count_row = db.execute(
+                        "SELECT COUNT(*) AS c, COALESCE(SUM(entry_price*quantity), 0) AS used "
+                        "FROM auto_positions WHERE user_id=? AND status='open'",
+                        (user_id,)
+                    ).fetchone()
+                    cur_count = int(count_row['c']) if count_row else 0
+                    used_capital = float(count_row['used']) if count_row else 0.0
+                    cost = price * quantity
+                    if cur_count >= max_pos:
+                        print(f"[AUTO-TRADE] Pozisyon açılmadı — max_positions sınırına ulaşıldı ({cur_count}/{max_pos})")
+                        db.close()
+                        return 0
+                    # Sermaye kontrolu: artik gercek alim Midas'ta yapildigi icin BLOK degil sadece UYARI
+                    if capital > 0 and (used_capital + cost) > capital * 1.001:
+                        print(f"[AUTO-TRADE] UYARI — sermaye limiti asildi ama yine de aciliyor "
+                              f"(kullanılan={used_capital:.0f} + yeni={cost:.0f} > kapital={capital:.0f}). "
+                              "Risk takibi icin capital ayarini guncelleyin.")
+            except Exception as _guard_err:
+                print(f"[AUTO-TRADE] Son-an kontrol hatası (devam ediliyor): {_guard_err}")
+
+            # TP strateji karari (auto/staged/all_at_tp1) — INSERT'ten once
+            try:
+                tp_strategy = _decide_tp_strategy(user_id, price, tp1, tp3)
+            except Exception as _ts_err:
+                print(f"[AUTO-TRADE] TP strategy karar hatasi (default staged): {_ts_err}")
+                tp_strategy = 'staged'
+
+            db.execute(
+                """INSERT INTO auto_positions
+                   (user_id, symbol, side, entry_price, quantity, stop_loss,
+                    take_profit1, take_profit2, take_profit3, trailing_stop, highest_price, tp_strategy)
+                   VALUES (?,?,'long',?,?,?,?,?,?,?,?,?)""",
+                (user_id, symbol, price, quantity, stop_loss, tp1, tp2, tp3, trailing_sl, price, tp_strategy)
+            )
+            db.commit()
+            print(f"[AUTO-TRADE] Pozisyon acildi: {symbol} qty={quantity} @ {price}, tp_strategy={tp_strategy}")
+            # Son eklenen ID'yi al (lock icinde okumamiz lazim — baska INSERT araya girmesin)
+            if USE_POSTGRES and PG_OK:
+                row = db.execute("SELECT MAX(id) as mid FROM auto_positions WHERE user_id=? AND symbol=?", (user_id, symbol)).fetchone()
+            else:
+                row = db.execute("SELECT last_insert_rowid() as mid").fetchone()
+            pos_id = int(row['mid']) if row else 0
+            db.close()
+        # ─── Lock burada birakilir, network IO buradan sonra ───────────
         # Portfoy senkronu: gercek alim oldugu icin manuel portfoye de ekle
         try:
             from auto_trader_sync import _sync_portfolio_buy
@@ -329,6 +341,10 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
     """Pozisyonun bir kısmını sat (TP1/TP2 kademeli kâr alma).
     sell_qty: satılacak miktar. Kalan quantity DB'de güncellenir.
     clear_tp_field: 'take_profit1' veya 'take_profit2' → 0'a set eder (tekrar tetiklemesin)
+
+    Concurrency: quantity guncellemesi atomic CAS ile (WHERE quantity>=?).
+    Parallel partial close (orn. TP1+trailing ayni cycle'da) ezme olmaz —
+    ikinci thread'in UPDATE'i rowcount=0 doner, sessizce iptal olur.
     """
     try:
         db = get_db()
@@ -342,37 +358,74 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
         if actual_sell <= 0:
             db.close()
             return
-        remaining = round(cur_qty - actual_sell, 2)
-        gross = (price - entry) * actual_sell
-        costs = _calc_trade_costs(row['user_id'], entry * actual_sell, price * actual_sell)
-        pnl = gross - costs
-        pnl_pct = ((price - entry) / entry * 100) if entry > 0 else 0
-        if entry > 0 and actual_sell > 0 and costs > 0:
-            pnl_pct = (pnl / (entry * actual_sell)) * 100
 
-        if remaining <= 0.01:
-            # Kalan yok — tam kapat
+        # Yaklasik kalan (CAS sonrasi gercek deger DB'den okunacak)
+        estimated_remaining = round(cur_qty - actual_sell, 2)
+
+        # Eger neredeyse hepsi satilacaksa (1 lottan az kalir) → tam kapat
+        # Threshold 0.01'den 1.0'a yukseldi: BIST'te integer lot kurali,
+        # 0.01 float artefakti yakalanmiyordu (Y5).
+        if estimated_remaining < 1.0:
             db.close()
             _auto_close_position(position_id, price, reason)
             return
 
-        # Quantity azalt + tetiklenen TP'yi sıfırla (SQL whitelist: kullanıcı input'undan bağımsız)
-        # TP1 tetiklenirse: SL'yi giriş fiyatına çek (break-even) — kar geri verilmesin.
-        # Sadece mevcut SL girişin altındaysa yukarı taşı; trailing yukarı sürüklediyse dokunma.
-        # NOT: SL'yi otomatik UPDATE etmiyoruz — Telegram onay flow'una gidiyor.
+        # Atomic CAS update: WHERE quantity>=actual_sell. Baska thread daha onceden
+        # quantity'i dusurmusse (race condition) bizim UPDATE rowcount=0 doner,
+        # PnL/log/notification BIZIM tarafimizdan tetiklenmez — diger thread halletti.
+        _ALLOWED_CLEAR_TP_CAS = {
+            'take_profit1': "UPDATE auto_positions SET quantity=quantity-?, take_profit1=0 WHERE id=? AND quantity>=?",
+            'take_profit2': "UPDATE auto_positions SET quantity=quantity-?, take_profit2=0 WHERE id=? AND quantity>=?",
+        }
         _BUMP_SL_TO_BE = clear_tp_field == 'take_profit1'
         _be_price = round(entry * 1.001, 2)  # %0.1 tampon
         _cur_sl = float(row['stop_loss'] or 0)
-        _ALLOWED_CLEAR_TP = {
-            'take_profit1': "UPDATE auto_positions SET quantity=?, take_profit1=0 WHERE id=?",
-            'take_profit2': "UPDATE auto_positions SET quantity=?, take_profit2=0 WHERE id=?",
-        }
-        if clear_tp_field and clear_tp_field in _ALLOWED_CLEAR_TP:
-            db.execute(_ALLOWED_CLEAR_TP[clear_tp_field], [remaining, position_id])
+
+        if clear_tp_field and clear_tp_field in _ALLOWED_CLEAR_TP_CAS:
+            cur = db.execute(_ALLOWED_CLEAR_TP_CAS[clear_tp_field],
+                             (actual_sell, position_id, actual_sell))
         else:
-            db.execute("UPDATE auto_positions SET quantity=? WHERE id=?", [remaining, position_id])
+            cur = db.execute(
+                "UPDATE auto_positions SET quantity=quantity-? WHERE id=? AND quantity>=?",
+                (actual_sell, position_id, actual_sell)
+            )
+
+        if cur.rowcount == 0:
+            # Race: baska thread quantity'i bizim okudugumuz andan beri dusurmus.
+            db.close()
+            print(f"[AUTO-TRADE] #{position_id} {row['symbol']} kismi satis atlandi "
+                  f"(race condition — diger thread halletti)")
+            return
+
+        # CRITICAL: commit'i UPDATE'ten hemen sonra cagir — paralel thread'lerin
+        # bizim CAS'imizi gormesi icin. Aksi takdirde:
+        #   - SQLite: write lock biz commit edene kadar tutulur (BUSY error riski)
+        #   - Postgres: ikinci UPDATE bizim commit'i bekler, ama timeout olabilir
+        # Asagidaki PnL hesabi/_calc_trade_costs ayri connection acar; commit'siz
+        # uncommitted state'i goremez.
         db.commit()
+
+        # Gercek kalan (CAS sonrasi DB'den oku — local estimated stale olabilir)
+        try:
+            _row2 = db.execute("SELECT quantity FROM auto_positions WHERE id=?",
+                               (position_id,)).fetchone()
+            remaining = float(_row2['quantity']) if _row2 else estimated_remaining
+        except Exception:
+            remaining = estimated_remaining
         db.close()
+
+        # PnL hesabi (CAS basariliydi — bu satis bizim)
+        gross = (price - entry) * actual_sell
+        costs = _calc_trade_costs(row['user_id'], entry * actual_sell, price * actual_sell)
+        pnl = gross - costs
+        # PnL%: net (entry*qty notional uzerinden). costs=0 olsa bile formul tutarli.
+        pnl_pct = (pnl / (entry * actual_sell) * 100) if entry > 0 and actual_sell > 0 else 0
+
+        # CAS sonrasi remaining gercekte 1'in altinda kaldiysa (float artefakti
+        # veya baska partial paralel) tam kapatma cagrisi:
+        if remaining < 1.0:
+            _auto_close_position(position_id, price, f"{reason} (kalan {remaining:.2f} lot temizlik)")
+            return
 
         # Break-even SL onerisi: TP1 sonrasi mevcut SL girisin altindaysa,
         # Telegram'dan onay iste (otomatik UPDATE yok). Kullanici onaylarsa
