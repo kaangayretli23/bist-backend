@@ -156,23 +156,54 @@ def edit_telegram_message(message_id, new_text):
 # =====================================================================
 
 def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, tp2, tp3, trailing_sl):
-    """Al sinyali bildirimi — Midas uyumlu format, onay/red butonlu"""
+    """Al sinyali bildirimi — Midas uyumlu format, onay/red butonlu.
+
+    Y1: Duplicate check + signal_id reserve + insert atomik blok icinde.
+    Eski kodda iki ayri 'with _pending_lock' arasinda race vardi:
+    iki scanner thread ayni sembol icin paralel sinyal ekleyebilirdi.
+    """
+    # Tam lot (Midas için integer)
+    lot        = max(1, int(quantity))
+
+    # ─── Y1: ATOMIK CHECK + RESERVE ─────────────────────────────────
+    # Tek lock altinda: (1) duplicate kontrol, (2) UUID uretip _pending_signals'a
+    # placeholder INSERT. Sonraki dis IO (HTTP send) lock disinda — sinyal
+    # mesaj ID'si zaten reserved.
+    expires_at = datetime.now() + timedelta(minutes=15)
     with _pending_lock:
         for sig in _pending_signals.values():
             if sig['symbol'] == symbol and sig['uid'] == uid:
                 return False
+        # Collision-safe uuid (cok dusuk ihtimal ama defensive)
+        signal_id = str(uuid.uuid4())[:8]
+        while signal_id in _pending_signals:
+            signal_id = str(uuid.uuid4())[:8]
+        _pending_signals[signal_id] = {
+            'uid': uid, 'symbol': symbol, 'price': price,
+            'quantity': lot, 'score': score, 'confidence': confidence,
+            'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
+            'trailing_sl': trailing_sl,
+            'expires_at': expires_at,
+        }
+    # ────────────────────────────────────────────────────────────────
 
-    signal_id = str(uuid.uuid4())[:8]
+    # Persist (restart-resilient onay sinyali)
+    try:
+        from database import _db_save_pending_signal
+        with _pending_lock:
+            _signal_snapshot = _pending_signals.get(signal_id)
+        if _signal_snapshot:
+            _db_save_pending_signal(signal_id, _signal_snapshot)
+    except Exception:
+        pass
 
-    # Hesaplamalar
+    # Hesaplamalar (lock disinda — local degiskenler)
     risk_pct   = round((price - sl) / price * 100, 1) if price > sl else 0
     tp1_pct    = round((tp1 - price) / price * 100, 1) if tp1 > price else 0
     tp2_pct    = round((tp2 - price) / price * 100, 1) if tp2 > price else 0
     tp3_pct    = round((tp3 - price) / price * 100, 1) if tp3 > price else 0
     rr         = round(tp1_pct / risk_pct, 1) if risk_pct > 0 else 0
 
-    # Tam lot (Midas için integer)
-    lot        = max(1, int(quantity))
     toplam_tl  = round(lot * price, 2)
     risk_tl    = round(lot * (price - sl), 2) if price > sl else 0
     kar_tl1    = round(lot * (tp1 - price), 2) if tp1 > price else 0
@@ -188,21 +219,6 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
     sig_time = datetime.now(_TZ_TR)
     sig_time_str = sig_time.strftime('%H:%M')
     expire_time_str = (sig_time + timedelta(minutes=15)).strftime('%H:%M')
-
-    with _pending_lock:
-        _pending_signals[signal_id] = {
-            'uid': uid, 'symbol': symbol, 'price': price,
-            'quantity': lot, 'score': score, 'confidence': confidence,
-            'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
-            'trailing_sl': trailing_sl,
-            'expires_at': datetime.now() + timedelta(minutes=15),
-        }
-    # Persist (restart-resilient onay sinyali)
-    try:
-        from database import _db_save_pending_signal
-        _db_save_pending_signal(signal_id, _pending_signals[signal_id])
-    except Exception:
-        pass
 
     msg = (
         f"🟢 <b>AL SİNYALİ — {symbol}</b>  <i>({sig_time_str})</i>\n"
@@ -236,7 +252,19 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
         ]
     ]
 
-    return send_telegram_with_keyboard(msg, keyboard)
+    ok = send_telegram_with_keyboard(msg, keyboard)
+    # Y1 (cleanup): HTTP send basarisizsa reserved signal_id'yi temizle —
+    # cleanup loop'unu 15 dk beklemeden serbest birakir.
+    if not ok:
+        with _pending_lock:
+            _pending_signals.pop(signal_id, None)
+        try:
+            from database import _db_delete_pending_signal
+            _db_delete_pending_signal(signal_id)
+        except Exception:
+            pass
+        print(f"[TELEGRAM] send_trade_signal HTTP basarisiz, signal_id={signal_id} serbest")
+    return ok
 
 
 def send_position_closed_notification(symbol, close_price, pnl, pnl_pct, reason):

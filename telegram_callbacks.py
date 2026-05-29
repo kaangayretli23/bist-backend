@@ -130,26 +130,37 @@ def _handle_reject(signal_id, message_id):
 
 def _handle_snooze(signal_id, message_id):
     """Sinyali 30 dk ertele — expires_at uzatilir, mesaj guncellenir.
-    Kullanici karar veremediyse Midas'i acmak icin ek sure verir."""
+    Kullanici karar veremediyse Midas'i acmak icin ek sure verir.
+
+    Y3: DB save lock altinda + snapshot kopyasi ile. Onceki kodda lock disinda
+    DB save edilirken cleanup thread sinyali pop edebilirdi -> stale 'hayalet'
+    sinyal restart sonrasi DB'den yuklenirdi.
+    """
     from datetime import timedelta as _td
     new_exp = datetime.now() + _td(minutes=30)
+    symbol = None
+    snapshot = None
     with _pending_lock:
         signal = _pending_signals.get(signal_id)
         if signal:
             signal['expires_at'] = new_exp
-    if not signal:
+            symbol = signal['symbol']
+            # Snapshot al — lock disinda DB'ye yazarken cleanup pop etse bile
+            # ne yazdigimizi biliyoruz, race condition kapanir.
+            snapshot = dict(signal)
+    if not snapshot:
         edit_telegram_message(message_id, "⚠️ Sinyal bulunamadı veya süresi dolmuş.")
         return
-    # DB'de de uzat
+    # DB'de de uzat (snapshot ile — lock'tan cikar cikmaz ama veri stale degil)
     try:
         from database import _db_save_pending_signal
-        _db_save_pending_signal(signal_id, signal)
+        _db_save_pending_signal(signal_id, snapshot)
     except Exception:
         pass
     new_exp_str = new_exp.strftime('%H:%M')
     edit_telegram_message(
         message_id,
-        f"⏸ <b>{signal['symbol']}</b> sinyali 30 dk ertelendi.\n"
+        f"⏸ <b>{symbol}</b> sinyali 30 dk ertelendi.\n"
         f"⏰ Yeni geçerlilik: <b>{new_exp_str}</b>'e kadar\n"
         f"<i>Karar verince yukarıdaki ✅ Aldım veya ❌ Geç butonlarına basabilirsin.</i>"
     )
@@ -321,7 +332,13 @@ def _handle_sl_change_reject(sl_id, message_id):
 
 
 def _process_update(update):
-    """Tek bir Telegram update'i islemi"""
+    """Tek bir Telegram update'i islemi.
+
+    K1: Authorization — yalnizca TELEGRAM_CHAT_ID'deki kullanici callback'leri
+    kabul edilir. Bot baska bir chat'e eklenirse veya birisi sahte callback
+    yollarsa, pozisyon acma/SL degisme/trail onaylama gibi para etkili
+    aksiyonlar bloklanir.
+    """
     if 'callback_query' not in update:
         return
 
@@ -329,6 +346,17 @@ def _process_update(update):
     callback_id = cq.get('id')
     data = cq.get('data', '')
     message_id = cq.get('message', {}).get('message_id')
+
+    # K1: Sender authorization — sadece tanimli chat_id'deki kullanici
+    from_user = cq.get('from') or {}
+    from_user_id = str(from_user.get('id', ''))
+    from_username = from_user.get('username') or from_user.get('first_name') or '?'
+    if not TELEGRAM_CHAT_ID or from_user_id != str(TELEGRAM_CHAT_ID):
+        print(f"[TELEGRAM] AUTHORIZED DEGIL — callback bloklandi "
+              f"(from_id={from_user_id}, user={from_username}, data={data[:32]})")
+        # Yine de answerCallbackQuery yapilmali (Telegram client'da yukleniyor takilmasin)
+        _answer_callback(callback_id)
+        return
 
     _answer_callback(callback_id)
 
@@ -354,10 +382,42 @@ def _process_update(update):
 # ARKA PLAN THREADLERI
 # =====================================================================
 
+def _sync_last_update_id():
+    """Y2: Startup'ta Telegram'in 24 saatlik backlog'unu atla — son update_id'yi
+    aktif kabul et. Aksi takdirde restart sonrasi:
+      - Kullanicinin saatler once reject ettigi sinyallerin approve_xxx callback'i
+        tekrar gelir (Telegram 24 saat saklar)
+      - 'Suresi dolmus' mesajlari kullaniciyi confuse eder
+    offset=-1 + limit=1 -> sadece en sondaki update'i getirir; offset'i ona +1 olarak set ederiz.
+    """
+    import requests as req
+    try:
+        resp = req.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+            params={'offset': -1, 'limit': 1, 'timeout': 0,
+                    'allowed_updates': ['callback_query']},
+            timeout=10
+        )
+        if resp.status_code != 200:
+            return
+        updates = resp.json().get('result', [])
+        if updates:
+            # En sondaki update'i atla, sonraki'lerden basla
+            _state._last_update_id = int(updates[-1]['update_id'])
+            print(f"[TELEGRAM] Initial sync — _last_update_id={_state._last_update_id} "
+                  f"(eski {len(updates)} update atlandi)")
+    except Exception as e:
+        print(f"[TELEGRAM] Initial sync hatasi (devam ediliyor): {e}")
+
+
 def _telegram_polling():
     """Telegram long-polling — buton basimlarini dinle.
     _last_update_id telegram_state modülünde tutuluyor; attribute erişimiyle güncelliyoruz."""
     import requests as req
+
+    # Y2: Startup'ta eski backlog'u atla
+    if _state._last_update_id == 0:
+        _sync_last_update_id()
 
     print("[TELEGRAM] Polling thread basladi")
     while True:
