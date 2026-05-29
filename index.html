@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BIST Pro — Borsa Analiz Platformu</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,800&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.1/dist/chartjs-chart-financial.min.js" defer></script>
 <style>
@@ -704,6 +704,705 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
 @media (max-width: 640px) {
   body::before { background-size: 40px 40px; }
   .hud-card .hud-value { font-size: 24px; }
+}
+
+/* =====================================================================
+   DESIGN SYSTEM v2 — "Terminal Editorial"
+   Display: Fraunces (variable serif) · Body: Plus Jakarta · Mono: JetBrains
+   Aesthetic: Bloomberg-density + Economist-refinement
+   ===================================================================== */
+:root {
+  --font-display: 'Fraunces', 'PP Editorial New', Georgia, serif;
+  --ink: #d4a574;            /* editorial amber accent */
+  --ink-soft: rgba(212,165,116,0.12);
+  --paper: #f1ead8;           /* very subtle warm light (selective use) */
+  --hairline: rgba(180,200,230,0.08);
+  --hairline-strong: rgba(180,200,230,0.16);
+  --shadow-inner: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+/* ── Editorial Typography helpers ────────────────────────────────────── */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.eyebrow.with-rule::before {
+  content: '';
+  display: inline-block;
+  width: 14px; height: 1px; background: currentColor;
+  vertical-align: middle; margin-right: 8px; opacity: 0.5;
+}
+.serif-display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  font-feature-settings: "ss01", "ss02", "case", "lnum", "tnum";
+}
+.serif-light { font-family: var(--font-display); font-weight: 300; }
+.tabular { font-variant-numeric: tabular-nums; font-feature-settings: "tnum","cv11"; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ── Panel: bracket-cornered card (terminal motif) ───────────────────── */
+.panel {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(26,34,52,0.55) 0%, rgba(17,24,39,0.65) 100%);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 22px;
+  box-shadow: var(--shadow-inner), 0 1px 0 rgba(255,255,255,0.02);
+  isolation: isolate;
+}
+.panel::before, .panel::after {
+  content: ''; position: absolute; width: 14px; height: 14px;
+  border: 1px solid var(--ink); opacity: 0.35;
+  transition: opacity .25s ease, border-color .25s ease;
+  pointer-events: none;
+}
+.panel::before { top: 7px; left: 7px; border-right: 0; border-bottom: 0; }
+.panel::after  { bottom: 7px; right: 7px; border-left: 0; border-top: 0; }
+.panel:hover::before, .panel:hover::after { opacity: 0.7; }
+
+.panel.flush { padding: 0; }
+.panel.compact { padding: 14px 16px; }
+.panel.no-brackets::before, .panel.no-brackets::after { display: none; }
+
+.panel-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding-bottom: 14px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+.panel-head h2 {
+  font-family: var(--font-display);
+  font-weight: 400; font-size: 22px; line-height: 1.1;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+}
+.panel-head h2 em { font-style: italic; color: var(--ink); font-weight: 400; }
+.panel-tools { display: flex; gap: 6px; align-items: center; }
+
+/* ── Live pulse ──────────────────────────────────────────────────────── */
+.live-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green); box-shadow: 0 0 0 0 rgba(0,229,160,0.7);
+  animation: livePulse 1.8s infinite ease-out;
+  vertical-align: middle;
+}
+@keyframes livePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(0,229,160,0.7); }
+  70%  { box-shadow: 0 0 0 8px rgba(0,229,160,0); }
+  100% { box-shadow: 0 0 0 0 rgba(0,229,160,0); }
+}
+
+/* ── Metric tile — small stat card with optional sparkline ───────────── */
+.metric {
+  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0));
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 12px 14px 14px;
+  position: relative;
+  transition: border-color .25s ease, transform .25s ease;
+}
+.metric:hover { border-color: var(--hairline-strong); transform: translateY(-1px); }
+.metric .metric-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px; font-weight: 500;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 6px;
+}
+.metric .metric-value {
+  font-family: var(--font-display); font-weight: 400;
+  font-size: 22px; line-height: 1; letter-spacing: -0.015em;
+  color: var(--text-primary); font-variant-numeric: tabular-nums;
+}
+.metric .metric-sub {
+  margin-top: 6px; font-family: var(--font-mono);
+  font-size: 11px; color: var(--text-secondary);
+}
+.metric.tone-up    { border-left: 2px solid var(--green); }
+.metric.tone-down  { border-left: 2px solid var(--red); }
+.metric.tone-flat  { border-left: 2px solid var(--text-muted); }
+.metric.tone-ink   { border-left: 2px solid var(--ink); }
+
+/* ── Editorial divider with caption ──────────────────────────────────── */
+.editorial-rule {
+  display: flex; align-items: center; gap: 14px;
+  margin: 28px 0 16px;
+  color: var(--text-muted);
+}
+.editorial-rule::before, .editorial-rule::after {
+  content: ''; flex: 1; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--hairline-strong), transparent);
+}
+.editorial-rule .label {
+  font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: 0.24em; text-transform: uppercase;
+}
+
+/* ── Stock detail HERO ───────────────────────────────────────────────── */
+.stock-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.65fr 1fr;
+  gap: 28px;
+  padding: 32px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(212,165,116,0.06) 0%, transparent 38%),
+    radial-gradient(circle at 100% 100%, rgba(0,212,170,0.05) 0%, transparent 40%),
+    linear-gradient(180deg, rgba(26,34,52,0.7) 0%, rgba(17,24,39,0.8) 100%);
+  box-shadow: var(--shadow-inner);
+  margin-bottom: 24px;
+}
+.stock-hero::before, .stock-hero::after {
+  content: ''; position: absolute; width: 18px; height: 18px;
+  border: 1px solid var(--ink); opacity: 0.5; pointer-events: none;
+}
+.stock-hero::before { top: 10px; left: 10px; border-right: 0; border-bottom: 0; }
+.stock-hero::after  { bottom: 10px; right: 10px; border-left: 0; border-top: 0; }
+
+.stock-hero .ticker-row {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+.stock-hero .stock-name-display {
+  font-family: var(--font-display);
+  font-weight: 400; font-size: 36px; line-height: 1.1;
+  letter-spacing: -0.025em;
+  color: var(--text-primary);
+  margin: 12px 0 4px;
+}
+.stock-hero .stock-name-display em {
+  font-style: italic; color: var(--ink); font-weight: 400;
+}
+.stock-hero .stock-code {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--text-secondary); letter-spacing: 0.1em;
+}
+.stock-hero .price-block {
+  margin-top: 26px;
+  display: flex; align-items: baseline; gap: 18px;
+}
+.stock-hero .price-big {
+  font-family: var(--font-display);
+  font-weight: 400; font-size: 64px; line-height: 0.95;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.stock-hero .price-currency {
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 300; font-size: 28px; opacity: 0.55;
+}
+.stock-hero .price-change {
+  font-family: var(--font-mono); font-size: 14px; font-weight: 500;
+  padding: 4px 10px; border-radius: 3px;
+  letter-spacing: 0.02em;
+}
+.stock-hero .price-change.up   { background: var(--green-bg); color: var(--green); border: 1px solid rgba(0,229,160,0.25); }
+.stock-hero .price-change.down { background: var(--red-bg);   color: var(--red);   border: 1px solid rgba(255,77,106,0.25); }
+
+.stock-hero .hero-side {
+  display: flex; flex-direction: column; justify-content: space-between;
+  border-left: 1px solid var(--hairline);
+  padding-left: 28px;
+}
+.stock-hero .side-metric {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--hairline);
+}
+.stock-hero .side-metric:last-child { border-bottom: 0; }
+.stock-hero .side-metric .label {
+  font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.stock-hero .side-metric .value {
+  font-family: var(--font-mono); font-size: 13px;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+
+.period-chips {
+  display: inline-flex; gap: 0;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 3px; overflow: hidden;
+  margin-top: 18px;
+}
+.period-chips .chip {
+  background: transparent; border: 0;
+  padding: 6px 12px;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  letter-spacing: 0.06em;
+  border-right: 1px solid var(--hairline);
+  transition: background .2s ease, color .2s ease;
+}
+.period-chips .chip:last-child { border-right: 0; }
+.period-chips .chip:hover { background: var(--hairline); color: var(--text-primary); }
+.period-chips .chip.active {
+  background: var(--ink); color: #0a0e17; font-weight: 600;
+}
+
+.hero-ctas {
+  display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap;
+}
+.cta-ghost {
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  color: var(--text-primary);
+  padding: 8px 14px;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: all .2s ease;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.cta-ghost:hover {
+  border-color: var(--ink); color: var(--ink);
+  background: var(--ink-soft);
+}
+.cta-ghost.accent { border-color: rgba(0,212,170,0.4); color: var(--accent); }
+.cta-ghost.accent:hover { background: var(--accent-dim); border-color: var(--accent); }
+
+/* ── Quick info strip (compact metric row under hero) ────────────────── */
+.info-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+.info-strip .cell {
+  padding: 14px 18px;
+  border-right: 1px solid var(--hairline);
+  background: linear-gradient(180deg, rgba(255,255,255,0.012), transparent);
+}
+.info-strip .cell:last-child { border-right: 0; }
+.info-strip .cell .lbl {
+  font-family: var(--font-mono);
+  font-size: 9.5px; letter-spacing: 0.22em;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px;
+}
+.info-strip .cell .val {
+  font-family: var(--font-display); font-size: 18px; font-weight: 400;
+  letter-spacing: -0.01em; color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Signal verdict card ─────────────────────────────────────────────── */
+.signal-verdict {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 24px;
+  align-items: center;
+  padding: 20px 24px;
+  background: linear-gradient(135deg, rgba(0,212,170,0.04), transparent 60%);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 4px;
+  margin-bottom: 24px;
+}
+.signal-verdict .verdict-label {
+  font-family: var(--font-display);
+  font-size: 32px; font-weight: 400; line-height: 1;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.signal-verdict .verdict-label em { font-style: italic; }
+.signal-verdict .verdict-explain {
+  font-size: 13px; color: var(--text-secondary); line-height: 1.6;
+}
+.signal-verdict .verdict-tally {
+  display: flex; gap: 14px; font-family: var(--font-mono);
+  font-size: 11px; letter-spacing: 0.06em;
+}
+.signal-verdict .verdict-tally span {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+
+/* ── Section title (editorial) ───────────────────────────────────────── */
+.section-editorial {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin: 36px 0 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+.section-editorial h3 {
+  font-family: var(--font-display);
+  font-weight: 400; font-size: 22px;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+}
+.section-editorial h3 em { color: var(--ink); font-style: italic; }
+.section-editorial .meta {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-muted); letter-spacing: 0.12em;
+}
+
+/* ── Auto-trade hero PnL block ───────────────────────────────────────── */
+.at-hero {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 28px;
+  padding: 28px 32px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  margin-bottom: 22px;
+  position: relative;
+  background:
+    radial-gradient(circle at 12% 30%, rgba(0,212,170,0.05), transparent 45%),
+    radial-gradient(circle at 90% 80%, rgba(212,165,116,0.04), transparent 50%),
+    linear-gradient(180deg, rgba(26,34,52,0.7), rgba(17,24,39,0.85));
+  box-shadow: var(--shadow-inner);
+}
+.at-hero::before, .at-hero::after {
+  content: ''; position: absolute; width: 16px; height: 16px;
+  border: 1px solid var(--ink); opacity: 0.5; pointer-events: none;
+}
+.at-hero::before { top: 10px; left: 10px; border-right: 0; border-bottom: 0; }
+.at-hero::after  { bottom: 10px; right: 10px; border-left: 0; border-top: 0; }
+.at-hero .pnl-headline {
+  font-family: var(--font-display); font-weight: 300;
+  font-size: 56px; line-height: 1; letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  margin-top: 8px;
+}
+.at-hero .pnl-headline em { font-style: italic; font-weight: 400; }
+.at-hero .pnl-headline.up   { color: var(--green); }
+.at-hero .pnl-headline.down { color: var(--red); }
+.at-hero .pnl-headline.flat { color: var(--text-primary); }
+.at-hero .pnl-meta {
+  display: flex; gap: 18px; margin-top: 14px;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-secondary); letter-spacing: 0.08em;
+}
+.at-hero .pnl-meta span { display: inline-flex; align-items: center; gap: 6px; }
+.at-hero .pnl-side {
+  border-left: 1px solid var(--hairline); padding-left: 28px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.at-hero .pnl-side-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 8px 0; border-bottom: 1px dashed var(--hairline);
+}
+.at-hero .pnl-side-row:last-child { border-bottom: 0; }
+
+/* ── PnL period grid (4 cards) ───────────────────────────────────────── */
+.pnl-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 22px;
+}
+@media (max-width: 760px) { .pnl-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Position row (terminal table) ───────────────────────────────────── */
+.term-table {
+  width: 100%; border-collapse: collapse;
+  font-family: var(--font-mono); font-size: 12px;
+}
+.term-table th {
+  text-align: left;
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-muted); font-weight: 500;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline-strong);
+}
+.term-table td {
+  padding: 14px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.term-table tr:hover td { background: rgba(255,255,255,0.015); }
+.term-table .num { text-align: right; }
+.term-table .symbol-cell {
+  font-family: var(--font-display); font-size: 16px;
+  font-weight: 400; letter-spacing: -0.01em;
+}
+
+/* ── Sentiment widget (editorial newspaper feel) ─────────────────────── */
+.sentiment-card {
+  position: relative;
+  padding: 24px 28px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(26,34,52,0.5), rgba(17,24,39,0.7));
+  margin-bottom: 22px;
+}
+.sentiment-card::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--ink) 50%, transparent);
+  opacity: 0.5;
+}
+.sentiment-masthead {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding-bottom: 14px; border-bottom: 1px solid var(--hairline);
+  margin-bottom: 18px;
+}
+.sentiment-masthead .title {
+  font-family: var(--font-display); font-size: 22px; font-weight: 400;
+  letter-spacing: -0.015em;
+}
+.sentiment-masthead .title em { color: var(--ink); font-style: italic; }
+.sentiment-masthead .edition {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+.sentiment-score-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 22px;
+  align-items: center;
+  margin-bottom: 20px;
+}
+.sentiment-score-row .big-score {
+  font-family: var(--font-display); font-weight: 300;
+  font-size: 60px; line-height: 1; letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sentiment-score-row .label-stack .lbl {
+  font-family: var(--font-display); font-style: italic;
+  font-size: 20px; text-transform: capitalize;
+  margin-bottom: 8px;
+}
+.sentiment-bar {
+  position: relative; height: 4px; background: var(--hairline);
+  border-radius: 2px; overflow: hidden;
+}
+.sentiment-bar .center {
+  position: absolute; left: 50%; top: -2px; width: 1px; height: 8px;
+  background: var(--text-muted); opacity: 0.5;
+}
+.sentiment-bar .fill {
+  position: absolute; top: 0; height: 100%; transition: all .4s ease;
+}
+.sentiment-bar .fill.up   { background: linear-gradient(90deg, transparent, var(--green)); left: 50%; }
+.sentiment-bar .fill.down { background: linear-gradient(270deg, transparent, var(--red)); right: 50%; }
+.sentiment-bar .fill.flat { background: var(--text-muted); left: 49%; width: 2%; opacity: 0.4; }
+
+.sentiment-tally {
+  text-align: right; font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-muted); letter-spacing: 0.08em;
+}
+.sentiment-tally .count {
+  font-size: 22px; font-family: var(--font-display); font-weight: 400;
+  color: var(--text-primary); display: block; line-height: 1;
+  margin-bottom: 4px;
+}
+.sentiment-headlines {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.sentiment-headlines .hl-label {
+  font-family: var(--font-mono); font-size: 9.5px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 4px;
+}
+.sentiment-headlines .hl-item {
+  position: relative;
+  padding: 10px 14px 10px 20px;
+  background: rgba(255,255,255,0.015);
+  border-left: 2px solid var(--hairline-strong);
+  font-size: 13px; line-height: 1.5;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  transition: border-color .2s ease, background .2s ease;
+}
+.sentiment-headlines .hl-item::before {
+  content: '§'; position: absolute; left: 6px; top: 8px;
+  font-family: var(--font-display); font-size: 12px;
+  color: var(--ink); opacity: 0.6;
+}
+.sentiment-headlines .hl-item:hover {
+  border-left-color: var(--ink); background: rgba(255,255,255,0.025);
+}
+
+/* ── Tax Report CTA (refined call-to-action) ────────────────────────── */
+.tax-report-band {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px;
+  background: linear-gradient(90deg, rgba(212,165,116,0.06), transparent);
+  border: 1px solid var(--hairline);
+  border-left: 2px solid var(--ink);
+  border-radius: 3px;
+  flex-wrap: wrap;
+}
+.tax-report-band .tax-label {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+.tax-report-band .year-input {
+  background: var(--bg-input);
+  border: 1px solid var(--hairline-strong);
+  color: var(--text-primary);
+  font-family: var(--font-mono); font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  padding: 6px 10px; border-radius: 3px;
+  width: 80px; text-align: center;
+  transition: border-color .2s ease;
+}
+.tax-report-band .year-input:focus {
+  outline: none; border-color: var(--ink);
+}
+.tax-report-band .download-cta {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 8px 18px;
+  background: var(--ink); color: #0a0e17;
+  border: 0; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  cursor: pointer;
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+.tax-report-band .download-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(212,165,116,0.25);
+}
+.tax-report-band .download-cta .arrow {
+  font-family: var(--font-display); font-size: 16px; line-height: 1;
+}
+
+/* ── Open position card (auto-trade) ─────────────────────────────────── */
+.position-card {
+  display: grid;
+  grid-template-columns: 1.5fr repeat(4, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  padding: 18px 20px;
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.012), transparent);
+  margin-bottom: 8px;
+  transition: border-color .2s ease, transform .2s ease;
+}
+.position-card:hover { border-color: var(--hairline-strong); transform: translateY(-1px); }
+.position-card .pos-symbol {
+  font-family: var(--font-display); font-size: 22px; font-weight: 400;
+  letter-spacing: -0.01em;
+}
+.position-card .pos-stat .lbl {
+  font-family: var(--font-mono); font-size: 9.5px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 3px;
+}
+.position-card .pos-stat .val {
+  font-family: var(--font-mono); font-size: 13px;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+.position-card .pos-pnl {
+  font-family: var(--font-display); font-size: 22px;
+  letter-spacing: -0.01em; font-variant-numeric: tabular-nums;
+}
+.position-card .pos-pnl.up { color: var(--green); }
+.position-card .pos-pnl.down { color: var(--red); }
+
+/* ── Toolbar (auto-trade actions row) ────────────────────────────────── */
+.tool-row {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+}
+.tool-row .tool-btn {
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  color: var(--text-secondary);
+  padding: 7px 12px;
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all .2s ease;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.tool-row .tool-btn:hover {
+  border-color: var(--ink); color: var(--ink);
+  background: var(--ink-soft);
+}
+.tool-row .tool-btn.warn { color: var(--red); border-color: rgba(255,77,106,0.3); }
+.tool-row .tool-btn.warn:hover { background: var(--red-bg); border-color: var(--red); }
+.tool-row .tool-btn.accent { color: var(--accent); border-color: rgba(0,212,170,0.35); }
+.tool-row .tool-btn.accent:hover { background: var(--accent-dim); border-color: var(--accent); }
+
+/* ── Preset row v2 (config quick presets) ────────────────────────────── */
+.preset-row-v2 {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  background: linear-gradient(90deg, rgba(212,165,116,0.04), transparent 60%);
+}
+.preset-row-v2 .preset-eyebrow {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--text-muted);
+  padding-right: 8px; border-right: 1px solid var(--hairline);
+  margin-right: 4px;
+}
+.preset-row-v2 .preset-btn {
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  color: var(--text-primary);
+  padding: 8px 16px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline-flex; align-items: baseline; gap: 8px;
+  transition: all .2s ease;
+}
+.preset-row-v2 .preset-btn .icon {
+  font-family: var(--font-display); font-size: 16px; line-height: 1;
+}
+.preset-row-v2 .preset-btn .name {
+  font-family: var(--font-display); font-size: 14px;
+  letter-spacing: -0.005em;
+}
+.preset-row-v2 .preset-btn .name em { font-style: italic; }
+.preset-row-v2 .preset-btn:hover {
+  border-color: var(--ink); color: var(--ink); transform: translateY(-1px);
+}
+.preset-row-v2 .preset-msg {
+  margin-left: auto;
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+/* ── Pageload stagger ────────────────────────────────────────────────── */
+@keyframes editorialReveal {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.reveal { animation: editorialReveal .6s ease-out both; }
+.reveal-d1 { animation-delay: .05s; }
+.reveal-d2 { animation-delay: .12s; }
+.reveal-d3 { animation-delay: .19s; }
+.reveal-d4 { animation-delay: .26s; }
+.reveal-d5 { animation-delay: .33s; }
+
+/* ── Responsive ──────────────────────────────────────────────────────── */
+@media (max-width: 860px) {
+  .stock-hero { grid-template-columns: 1fr; }
+  .stock-hero .hero-side { border-left: 0; border-top: 1px solid var(--hairline); padding-left: 0; padding-top: 22px; }
+  .stock-hero .stock-name-display { font-size: 28px; }
+  .stock-hero .price-big { font-size: 48px; }
+  .at-hero { grid-template-columns: 1fr; padding: 22px; }
+  .at-hero .pnl-side { border-left: 0; border-top: 1px solid var(--hairline); padding-left: 0; padding-top: 18px; }
+  .position-card { grid-template-columns: 1fr 1fr; gap: 12px; }
+  .signal-verdict { grid-template-columns: 1fr; gap: 12px; }
 }
 </style>
 </head>
@@ -1585,9 +2284,12 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
 
   <!-- Hızlı PnL Özeti (Bugün / Hafta / Ay / Yıl) -->
   <div class="card mb-16">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
-      <div class="section-title" style="margin:0;"><span class="icon">💵</span> Kâr/Zarar Özeti</div>
-      <button onclick="loadPnLSummary()" style="background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">↻ Yenile</button>
+    <div class="section-editorial" style="margin:0 0 18px;">
+      <h3>Kâr/Zarar <em>Özeti</em></h3>
+      <div style="display:flex;gap:12px;align-items:baseline;">
+        <span class="meta">BUGÜN · HAFTA · AY · YIL</span>
+        <button onclick="loadPnLSummary()" class="cta-ghost" style="padding:4px 10px;font-size:9.5px;">↻ Yenile</button>
+      </div>
     </div>
     <div id="atPnLSummary" style="font-size:13px;color:var(--text-dim);">Yükleniyor…</div>
   </div>
@@ -1629,49 +2331,69 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
 
   <!-- Acik Pozisyonlar -->
   <div class="card mb-16">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <div class="section-title" style="margin:0;"><span class="icon">📊</span> Acik Pozisyonlar</div>
-      <div style="display:flex;gap:6px;">
-        <button onclick="openCapitalAdjustModal()" title="Sermayeyi hizlica artir/azalt (diger ayarlar korunur)" style="background:#9b59b6;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">💰 Bakiye</button>
-        <button onclick="openReconcileModal()" title="Oto-trade pozisyonlarini manuel portfoy ile karsilastir" style="background:var(--blue);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">🔍 Senkron Kontrol</button>
-        <button onclick="openDecisionsModal()" title="Bugun hangi hisseler taranıp neden alınmadı" style="background:#e67e22;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">📋 Karar Logu</button>
-        <button onclick="openAnalyticsModal()" title="Win-rate / saat / skor band / top hisse analizi" style="background:#1abc9c;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">📈 Strateji Analizi</button>
-        <button onclick="openAddPositionModal()" title="Midas'tan aldiginiz bir hisseyi sisteme ekleyin" style="background:var(--green);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">➕ Pozisyon Ekle</button>
-        <button onclick="confirmCloseAllPositions()" title="Tüm açık pozisyonları piyasa fiyatından kapat (DB)" style="background:var(--red);color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">🛑 Acil Çıkış</button>
-      </div>
+    <div class="section-editorial" style="margin:0 0 16px;">
+      <h3>Açık <em>Pozisyonlar</em> <span class="live-dot" style="margin-left:8px;"></span></h3>
+      <div class="meta">CANLI · OTO-TRADE</div>
+    </div>
+    <div class="tool-row" style="margin-bottom:18px;">
+      <button onclick="openCapitalAdjustModal()" class="tool-btn" title="Sermayeyi hizlica artir/azalt (diger ayarlar korunur)">💰 Bakiye</button>
+      <button onclick="openReconcileModal()" class="tool-btn" title="Oto-trade pozisyonlarini manuel portfoy ile karsilastir">🔍 Senkron Kontrol</button>
+      <button onclick="openDecisionsModal()" class="tool-btn" title="Bugun hangi hisseler taranıp neden alınmadı">📋 Karar Logu</button>
+      <button onclick="openAnalyticsModal()" class="tool-btn" title="Win-rate / saat / skor band / top hisse analizi">📈 Strateji Analizi</button>
+      <button onclick="openAddPositionModal()" class="tool-btn accent" title="Midas'tan aldiginiz bir hisseyi sisteme ekleyin">+ Pozisyon Ekle</button>
+      <button onclick="confirmCloseAllPositions()" class="tool-btn warn" title="Tüm açık pozisyonları piyasa fiyatından kapat (DB)">⊗ Acil Çıkış</button>
     </div>
     <div id="atPositions" style="font-size:13px;color:var(--text-dim);">Veri bekleniyor...</div>
   </div>
 
   <!-- Son Islemler -->
   <div class="card mb-16">
-    <div class="section-title mb-12"><span class="icon">📜</span> Son Islemler</div>
+    <div class="section-editorial" style="margin:0 0 16px;">
+      <h3>Son <em>İşlemler</em></h3>
+      <div class="meta">SCANNER · TELEGRAM ONAYLI</div>
+    </div>
     <div id="atTrades" style="font-size:13px;color:var(--text-dim);">Veri bekleniyor...</div>
   </div>
 
   <!-- Kapatilmis Pozisyonlar -->
   <div class="card mb-16">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-      <div class="section-title" style="margin:0;"><span class="icon">✅</span> Kapatilmis Pozisyonlar</div>
-      <div style="display:flex;gap:6px;align-items:center;">
-        <label style="font-size:11px;color:var(--text-dim);">Yıl:
-          <input id="taxReportYear" type="number" min="2020" max="2100" style="width:80px;background:var(--card-bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);margin-left:4px;">
-        </label>
-        <button onclick="downloadTaxReport()" title="Seçilen yıl için kapatılmış pozisyonların özet PDF raporunu indir (bilgilendirme amaçlı, resmi vergi beyanı değil)" style="background:#8e44ad;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">📄 Vergi Raporu PDF</button>
-      </div>
+    <div class="section-editorial" style="margin:0 0 16px;">
+      <h3>Kapatılmış <em>Pozisyonlar</em></h3>
+      <div class="meta">ARŞIV · TÜM İŞLEMLER</div>
     </div>
-    <div id="atClosed" style="font-size:13px;color:var(--text-dim);">Veri bekleniyor...</div>
+    <div class="tax-report-band">
+      <span class="tax-label">— Yıllık Özet —</span>
+      <span style="font-family:var(--font-mono);font-size:10px;letter-spacing:0.18em;color:var(--text-muted);">YIL</span>
+      <input id="taxReportYear" type="number" min="2020" max="2100" class="year-input">
+      <button onclick="downloadTaxReport()" class="download-cta" title="Seçilen yıl için kapatılmış pozisyonların özet PDF raporunu indir (bilgilendirme amaçlı, resmi vergi beyanı değil)">
+        <span class="arrow">↓</span> Vergi Raporu · PDF
+      </button>
+      <span style="font-family:var(--font-mono);font-size:9.5px;color:var(--text-muted);opacity:0.7;letter-spacing:0.12em;">ℹ Bilgilendirme amaçlıdır</span>
+    </div>
+    <div id="atClosed" style="font-size:13px;color:var(--text-dim);margin-top:18px;">Veri bekleniyor...</div>
   </div>
 
   <!-- Konfigürasyon -->
   <div class="card mb-16">
-    <div class="section-title mb-12"><span class="icon">⚙</span> Konfigürasyon</div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px;background:var(--bg);border-radius:6px;border:1px dashed var(--border);">
-      <span style="font-size:12px;color:var(--text-dim);font-weight:600;">🎯 Hızlı Preset:</span>
-      <button type="button" onclick="applyConfigPreset('conservative')" title="Yüksek skor barı, sıkı SL, az pozisyon — büyük drawdown'a karşı koruma. Onaylayıp 'Kaydet'e basmayı unutma." style="background:#27ae60;color:white;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;">🛡 Konservatif</button>
-      <button type="button" onclick="applyConfigPreset('balanced')" title="Default değerler — orta risk, swing odaklı." style="background:#3498db;color:white;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;">⚖ Dengeli</button>
-      <button type="button" onclick="applyConfigPreset('aggressive')" title="Düşük skor barı, geniş SL, çok pozisyon — fırsatları kaçırmamak için. Drawdown freeze de geniş." style="background:#e67e22;color:white;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;">🔥 Agresif</button>
-      <span id="atPresetMsg" style="font-size:11px;color:var(--text-dim);opacity:0.85;">ℹ️ Preset alanları doldurur, kaydetmek için "Kaydet"e bas.</span>
+    <div class="section-editorial" style="margin:0 0 18px;">
+      <h3>Stratej<em>i</em> Konfigürasyonu</h3>
+      <div class="meta">PARAMETRELER · RİSK · FİLTRELER</div>
+    </div>
+    <div class="preset-row-v2">
+      <span class="preset-eyebrow">Hızlı Preset</span>
+      <button type="button" onclick="applyConfigPreset('conservative')" class="preset-btn" title="Yüksek skor barı, sıkı SL, az pozisyon — büyük drawdown'a karşı koruma. Onaylayıp 'Kaydet'e basmayı unutma.">
+        <span class="icon">▲</span>
+        <span class="name"><em>Konservatif</em></span>
+      </button>
+      <button type="button" onclick="applyConfigPreset('balanced')" class="preset-btn" title="Default değerler — orta risk, swing odaklı.">
+        <span class="icon">◆</span>
+        <span class="name"><em>Dengeli</em></span>
+      </button>
+      <button type="button" onclick="applyConfigPreset('aggressive')" class="preset-btn" title="Düşük skor barı, geniş SL, çok pozisyon — fırsatları kaçırmamak için.">
+        <span class="icon">▼</span>
+        <span class="name"><em>Agresif</em></span>
+      </button>
+      <span id="atPresetMsg" class="preset-msg">— Preset alanları doldurur, "Kaydet"e basarak onayla —</span>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
       <label style="font-size:12px;color:var(--text-dim);">Sermaye (TL) <span style="font-size:10px;color:var(--text-dim);opacity:0.7;">— "💰 Bakiye Ayarla" butonu</span>
@@ -3129,67 +3851,102 @@ async function loadStockDetail(symbol, period) {
   const ind = s.indicators || {};
   const summary = ind.summary || {};
 
+  // ── Helpers (verdict, change direction) ─────────────────────────
+  const _up = s.changePercent >= 0;
+  const _verdict = (summary.overall || '').toUpperCase();
+  const _verdictWord = _verdict === 'BUY' || _verdict === 'AL' ? 'AL' :
+                       _verdict === 'STRONG_BUY' ? 'GÜÇLÜ AL' :
+                       _verdict === 'SELL' || _verdict === 'SAT' ? 'SAT' :
+                       _verdict === 'STRONG_SELL' ? 'GÜÇLÜ SAT' : 'NÖTR';
+  const _verdictColor = _verdictWord.includes('AL') ? 'var(--green)' :
+                        _verdictWord.includes('SAT') ? 'var(--red)' : 'var(--text-muted)';
+
   container.innerHTML = `
-    <!-- Header -->
-    <div class="stock-header fade-in">
-      <div>
-        <div class="stock-name">${s.name} · ${s.code}</div>
-        <div class="stock-price-big ${changeClass(s.changePercent)}">${fmtPrice(s.price)} ₺</div>
-        <div class="stock-change-big ${changeClass(s.changePercent)}">
-          ${s.change >= 0 ? '▲' : '▼'} ${fmtPrice(Math.abs(s.change))} (${fmtPct(s.changePercent)})
+    <!-- ═══ HERO BLOCK (editorial) ═══ -->
+    <div class="stock-hero reveal reveal-d1">
+      <div class="hero-main">
+        <div class="ticker-row">
+          <span class="live-dot"></span>
+          <span>BIST · İSTANBUL · ${(s.period || '1y').toUpperCase()}</span>
+        </div>
+        <div class="stock-name-display">${s.name} <em>·</em> <span class="stock-code">${s.code}</span></div>
+        <div class="price-block">
+          <div class="price-big ${changeClass(s.changePercent)}">${fmtPrice(s.price)}</div>
+          <div class="price-currency">₺</div>
+          <div class="price-change ${_up ? 'up' : 'down'}">
+            ${_up ? '▲' : '▼'} ${fmtPrice(Math.abs(s.change))} · ${fmtPct(s.changePercent)}
+          </div>
+        </div>
+        <div class="period-chips">
+          ${['1mo','3mo','6mo','1y','2y','5y'].map(p =>
+            `<button class="chip ${p === s.period ? 'active' : ''}" onclick="loadStockPeriod('${s.code}','${p}')">${p.toUpperCase()}</button>`
+          ).join('')}
+        </div>
+        <div class="hero-ctas">
+          <button class="cta-ghost" onclick="toggleWatchlist('${s.code}').then(d => { if(d?.action==='added') this.textContent='✓ Favorilerde'; else if(d?.action==='removed') this.textContent='+ Favorilere'; })">
+            <span style="font-size:14px;">★</span> Favorilere Ekle
+          </button>
+          <button class="cta-ghost accent" onclick="document.getElementById('pfSymbol').value='${s.code}'; navigate('portfolio'); showAddPositionForm();">
+            <span style="font-size:14px;">+</span> Portföye Ekle
+          </button>
         </div>
       </div>
-      <div class="flex-center gap-8" style="flex-wrap:wrap;">
-        ${['1mo','3mo','6mo','1y','2y','5y'].map(p =>
-          `<button class="btn btn-sm ${p === s.period ? 'btn-primary' : 'btn-secondary'}" onclick="loadStockPeriod('${s.code}','${p}')">${p}</button>`
-        ).join('')}
-        <span style="width:1px;height:20px;background:var(--border);margin:0 4px;"></span>
-        <button class="btn btn-sm" style="background:rgba(255,197,71,0.1);color:var(--yellow);border:1px solid rgba(255,197,71,0.3);" onclick="toggleWatchlist('${s.code}').then(d => { if(d?.action==='added') this.textContent='Favorilerde'; else if(d?.action==='removed') this.textContent='Favorilere Ekle'; })">Favorilere Ekle</button>
-        <button class="btn btn-sm" style="background:rgba(0,212,170,0.1);color:var(--accent);border:1px solid rgba(0,212,170,0.3);" onclick="document.getElementById('pfSymbol').value='${s.code}'; navigate('portfolio'); showAddPositionForm();">Portföye Ekle</button>
+      <div class="hero-side">
+        <div class="side-metric">
+          <span class="label">Gün Açılış</span>
+          <span class="value">${fmtPrice(s.open || s.price)}</span>
+        </div>
+        <div class="side-metric">
+          <span class="label">Önceki Kapanış</span>
+          <span class="value">${fmtPrice((s.price - s.change) || 0)}</span>
+        </div>
+        <div class="side-metric">
+          <span class="label">Gün Aralığı</span>
+          <span class="value">${fmtPrice(s.dayLow)} — ${fmtPrice(s.dayHigh)}</span>
+        </div>
+        <div class="side-metric">
+          <span class="label">52H Aralığı</span>
+          <span class="value">${s.week52?.low52w ? fmtPrice(s.week52.low52w) + ' — ' + fmtPrice(s.week52.high52w) : '—'}</span>
+        </div>
+        <div class="side-metric">
+          <span class="label">Hacim</span>
+          <span class="value">${fmtVolume(s.volume)}</span>
+        </div>
+        <div class="side-metric">
+          <span class="label">Piyasa Değeri</span>
+          <span class="value">${s.marketValue ? fmtVolume(s.marketValue) + ' ₺' : '—'}</span>
+        </div>
       </div>
     </div>
 
-    <!-- Info Cards -->
-    <div class="grid-4 mb-24 fade-in">
-      <div class="card" style="text-align:center;">
-        <div style="font-size:11px;color:var(--text-muted);">Gün Aralığı</div>
-        <div class="td-mono" style="margin-top:4px;">${fmtPrice(s.dayLow)} - ${fmtPrice(s.dayHigh)}</div>
+    <!-- ═══ SIGNAL VERDICT BAR ═══ -->
+    <div class="signal-verdict reveal reveal-d2">
+      <div class="verdict-label" style="color:${_verdictColor};">
+        <em>${_verdictWord.split(' ')[0].toLowerCase()}</em>${_verdictWord.includes(' ') ? '<br><span style="font-size:18px;opacity:0.7;">' + _verdictWord.split(' ').slice(1).join(' ').toLowerCase() + '</span>' : ''}
       </div>
-      <div class="card" style="text-align:center;">
-        <div style="font-size:11px;color:var(--text-muted);">Hacim</div>
-        <div class="td-mono" style="margin-top:4px;">${fmtVolume(s.volume)}</div>
+      <div class="verdict-explain">
+        <div class="eyebrow with-rule" style="margin-bottom:6px;">Teknik Sinyal Konsensüsü</div>
+        ${summary.explanation || 'Teknik göstergeler değerlendiriliyor.'}
       </div>
-      <div class="card" style="text-align:center;">
-        <div style="font-size:11px;color:var(--text-muted);">52H Aralık</div>
-        <div class="td-mono" style="margin-top:4px;">${s.week52?.low52w ? fmtPrice(s.week52.low52w) + ' - ' + fmtPrice(s.week52.high52w) : '-'}</div>
-      </div>
-      <div class="card" style="text-align:center;">
-        <div style="font-size:11px;color:var(--text-muted);">Piyasa Değeri</div>
-        <div class="td-mono" style="margin-top:4px;">${s.marketValue ? fmtVolume(s.marketValue) : '-'}</div>
+      <div class="verdict-tally">
+        <span style="color:var(--green);">●&nbsp;AL ${summary.buySignals || 0}</span>
+        <span style="color:var(--red);">●&nbsp;SAT ${summary.sellSignals || 0}</span>
+        <span style="color:var(--text-muted);">○&nbsp;NÖTR ${summary.neutralSignals || 0}</span>
       </div>
     </div>
 
-    <!-- Sinyal Özeti -->
-    <div class="card mb-24 fade-in">
-      <div class="flex-between mb-8">
-        <div style="font-weight:700;">Teknik Sinyal Özeti</div>
-        ${signalBadge(summary.overall)}
+    <!-- ═══ HABER SENTIMENT (editorial newspaper) ═══ -->
+    <div class="sentiment-card reveal reveal-d3">
+      <div class="sentiment-masthead">
+        <div class="title">Haber <em>Sentimenti</em></div>
+        <div class="edition">
+          <span style="margin-right:8px;">TR · Google News</span>
+          <button class="cta-ghost" style="padding:4px 10px;font-size:9.5px;" onclick="loadSentimentWidget('${s.code}', true)">↻ Yenile</button>
+        </div>
       </div>
-      <div style="font-size:13px;color:var(--text-secondary);">${summary.explanation || ''}</div>
-      <div class="flex-center gap-16 mt-16" style="font-size:13px;">
-        <span class="price-up">🟢 AL: ${summary.buySignals || 0}</span>
-        <span class="price-down">🔴 SAT: ${summary.sellSignals || 0}</span>
-        <span style="color:var(--text-muted);">⚪ Nötr: ${summary.neutralSignals || 0}</span>
+      <div id="newsSentimentBody">
+        <div class="loading"><div class="spinner"></div>Haberler taranıyor…</div>
       </div>
-    </div>
-
-    <!-- Haber Sentiment Widget -->
-    <div class="card mb-24 fade-in">
-      <div class="flex-between mb-8">
-        <div style="font-weight:700;">📰 Haber Sentimenti (Türkçe Google News)</div>
-        <button class="btn btn-sm btn-secondary" onclick="loadSentimentWidget('${s.code}', true)" style="font-size:11px;">Yenile</button>
-      </div>
-      <div id="newsSentimentBody" style="font-size:13px;color:var(--text-muted);">Yükleniyor…</div>
     </div>
 
     <!-- Chart System -->
@@ -3417,7 +4174,7 @@ async function loadSentimentWidget(symbol, force) {
     const res = await fetch(url);
     const d = await res.json();
     if (!d.success) {
-      body.innerHTML = `<div style="color:var(--red);">Sentiment yüklenemedi: ${d.error || ''}</div>`;
+      body.innerHTML = `<div style="color:var(--red);font-family:var(--font-mono);font-size:12px;">Sentiment yüklenemedi: ${d.error || ''}</div>`;
       return;
     }
     const score = Number(d.score) || 0;
@@ -3427,48 +4184,53 @@ async function loadSentimentWidget(symbol, force) {
     const neg = d.negative_count || 0;
     const headlines = d.top_headlines || [];
 
-    // Skor [-1, 1] -> 0..100 (50 ortada)
-    const pct = Math.round(((score + 1) / 2) * 100);
-    const barColor = score >= 0.15 ? 'var(--green)' :
-                     score <= -0.15 ? 'var(--red)' :
-                     'var(--text-muted)';
-    const labelColor = score >= 0.15 ? 'var(--green)' :
-                       score <= -0.15 ? 'var(--red)' :
-                       'var(--text-secondary)';
+    const tone = score >= 0.15 ? 'up' : score <= -0.15 ? 'down' : 'flat';
+    const labelColor = tone === 'up' ? 'var(--green)' : tone === 'down' ? 'var(--red)' : 'var(--text-secondary)';
 
     if (count === 0) {
-      body.innerHTML = '<div style="color:var(--text-muted);">Bu hisse için son haberlerde anlamlı sentiment sinyali bulunamadı.</div>';
+      body.innerHTML = `
+        <div style="text-align:center;padding:36px 20px;">
+          <div class="eyebrow" style="margin-bottom:10px;">— · —</div>
+          <div style="font-family:var(--font-display);font-size:18px;color:var(--text-secondary);font-style:italic;">
+            Bu hisse için son haberlerde anlamlı sinyal bulunamadı.
+          </div>
+        </div>`;
       return;
     }
 
+    // Bar width: score |v| / 1 → 0..50% (each side)
+    const fillPct = Math.min(50, Math.abs(score) * 50);
+
     body.innerHTML = `
-      <div style="display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;margin-bottom:10px;">
-        <div style="font-size:24px;font-weight:700;color:${labelColor};white-space:nowrap;">
-          ${score >= 0 ? '+' : ''}${score.toFixed(2)}
+      <div class="sentiment-score-row">
+        <div class="big-score" style="color:${labelColor};">
+          ${score >= 0 ? '+' : '−'}${Math.abs(score).toFixed(2)}
         </div>
-        <div>
-          <div style="font-weight:600;color:${labelColor};text-transform:capitalize;">${label}</div>
-          <div style="height:8px;background:var(--border);border-radius:4px;margin-top:6px;overflow:hidden;position:relative;">
-            <div style="position:absolute;left:50%;top:0;width:1px;height:100%;background:var(--text-muted);opacity:0.5;"></div>
-            <div style="height:100%;background:${barColor};width:${Math.abs(pct - 50) * 2}%;${score >= 0 ? 'margin-left:50%;' : `margin-left:${pct}%;`}"></div>
+        <div class="label-stack">
+          <div class="lbl" style="color:${labelColor};">${label}</div>
+          <div class="sentiment-bar">
+            <div class="center"></div>
+            ${tone === 'flat'
+              ? `<div class="fill flat"></div>`
+              : `<div class="fill ${tone}" style="width:${fillPct}%;"></div>`}
           </div>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);text-align:right;">
-          ${count} haber<br>
-          <span class="price-up">▲${pos}</span> · <span class="price-down">▼${neg}</span>
+        <div class="sentiment-tally">
+          <span class="count tabular">${count}</span>
+          başlık<br>
+          <span style="color:var(--green);">▲ ${pos}</span>
+          &nbsp;<span style="color:var(--red);">▼ ${neg}</span>
         </div>
       </div>
       ${headlines.length ? `
-        <div style="margin-top:8px;font-size:12px;">
-          <div style="font-weight:600;color:var(--text-secondary);margin-bottom:6px;">📰 Öne Çıkan Başlıklar:</div>
-          ${headlines.slice(0, 5).map(h =>
-            `<div style="padding:6px 8px;background:var(--card-bg);border-left:2px solid var(--border);margin-bottom:4px;border-radius:3px;">${escHtml(h)}</div>`
-          ).join('')}
+        <div class="sentiment-headlines">
+          <div class="hl-label">— Öne çıkan başlıklar —</div>
+          ${headlines.slice(0, 5).map(h => `<div class="hl-item">${escHtml(h)}</div>`).join('')}
         </div>
       ` : ''}
     `;
   } catch (e) {
-    body.innerHTML = `<div style="color:var(--red);">Hata: ${e.message}</div>`;
+    body.innerHTML = `<div style="color:var(--red);font-family:var(--font-mono);font-size:12px;">Hata: ${e.message}</div>`;
   }
 }
 
@@ -7519,34 +8281,49 @@ async function loadAutoTrade() {
       return { score: Math.round(score), grade, reasons: reasons.slice(0, 3) };
     };
 
-    // Acik Pozisyonlar
+    // Acik Pozisyonlar — Terminal Editorial
     if (positions.length === 0) {
-      document.getElementById('atPositions').innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);">Acik pozisyon yok</div>';
+      document.getElementById('atPositions').innerHTML = `
+        <div style="text-align:center;padding:40px 20px;border:1px dashed var(--hairline);border-radius:3px;">
+          <div class="eyebrow" style="margin-bottom:8px;">— · —</div>
+          <div style="font-family:var(--font-display);font-size:20px;color:var(--text-secondary);font-style:italic;">Açık pozisyon yok</div>
+          <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-top:6px;letter-spacing:0.1em;">Scanner sinyalleri Telegram'a düşünce burada görünecek</div>
+        </div>`;
     } else {
       document.getElementById('atPositions').innerHTML = positions.map(p => {
-        const pnlColor = p.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-        const pnlSign = p.pnl >= 0 ? '+' : '';
+        const isUp = p.pnl >= 0;
+        const tone = isUp ? 'up' : 'down';
+        const pnlSign = isUp ? '+' : '−';
         const health = _calcPosHealth(p);
-        return `<div class="card" style="padding:12px;margin-bottom:8px;border-left:3px solid ${pnlColor};">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-            <div>
-              <strong>${p.symbol}</strong>
-              <span title="${escHtml(health.reasons.join(' · '))}" style="margin-left:6px;font-size:11px;padding:2px 7px;border-radius:10px;background:${health.grade.color};color:white;font-weight:700;">${health.grade.emoji} ${health.score}/100 ${health.grade.label}</span>
-              <span style="font-size:11px;color:var(--text-dim);margin-left:8px;">Giris: ${p.entryPrice.toFixed(2)} TL | Guncel: ${p.currentPrice > 0 ? p.currentPrice.toFixed(2) + ' TL' : '<span style="color:var(--orange)">Yükleniyor...</span>'}</span>
-            </div>
-            <div style="text-align:right;">
-              <span style="font-weight:600;color:${pnlColor};">${pnlSign}${p.pnl.toFixed(2)} TL (${pnlSign}${p.pnlPct.toFixed(1)}%)</span>
-              <button onclick="openEditPositionModal(${p.id}, ${p.entryPrice}, ${p.quantity})" title="Giriş fiyatı/adet düzelt" style="margin-left:6px;background:var(--orange);color:white;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:11px;">✏️</button>
-              <button onclick="closePosition(${p.id})" title="Piyasa fiyatından tam kapat" style="margin-left:4px;background:var(--red);color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:11px;">Kapat</button>
-              <button onclick="openCustomCloseModal(${p.id}, '${p.symbol}', ${p.quantity}, ${p.currentPrice > 0 ? p.currentPrice : p.entryPrice})" title="Adet ve fiyat belirterek kapat" style="margin-left:4px;background:var(--purple, #9333ea);color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:11px;">✍️ Düzenle</button>
+        return `<div class="position-card">
+          <div>
+            <div class="pos-symbol">${p.symbol}</div>
+            <div style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:0.1em;color:var(--text-muted);margin-top:4px;">
+              <span title="${escHtml(health.reasons.join(' · '))}" style="display:inline-block;padding:1px 7px;border-radius:2px;background:${health.grade.color}22;color:${health.grade.color};font-weight:600;border:1px solid ${health.grade.color}44;">${health.grade.emoji} ${health.score}/100</span>
+              <span style="margin-left:8px;">${_fmtDt(p.openedAt)}</span>
             </div>
           </div>
-          <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
-            SL: ${(p.stopLoss||0).toFixed(2)} | TP1: ${(p.takeProfit1||0).toFixed(2)} | TP2: ${(p.takeProfit2||0).toFixed(2)} | TP3: ${(p.takeProfit3||0).toFixed(2)}
-            ${p.trailingStop > 0 ? ` | Trail: ${p.trailingStop.toFixed(2)}` : ''}
-            | Lot: ${p.quantity}
+          <div class="pos-stat">
+            <div class="lbl">Giriş</div>
+            <div class="val">${p.entryPrice.toFixed(2)}</div>
           </div>
-          <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">🕐 Açılış: ${_fmtDt(p.openedAt)} · Saglik: ${escHtml(health.reasons.join(' · '))}</div>
+          <div class="pos-stat">
+            <div class="lbl">Güncel</div>
+            <div class="val">${p.currentPrice > 0 ? p.currentPrice.toFixed(2) : '<span style="color:var(--yellow);">…</span>'}</div>
+          </div>
+          <div class="pos-stat">
+            <div class="lbl">SL · TP1</div>
+            <div class="val">${(p.stopLoss||0).toFixed(2)} · ${(p.takeProfit1||0).toFixed(2)}</div>
+          </div>
+          <div>
+            <div class="pos-pnl ${tone}">${pnlSign}${Math.abs(p.pnl).toFixed(2)}</div>
+            <div style="font-family:var(--font-mono);font-size:10.5px;color:${isUp ? 'var(--green)' : 'var(--red)'};text-align:right;letter-spacing:0.06em;">${pnlSign}${Math.abs(p.pnlPct).toFixed(1)}% · ${p.quantity} lot</div>
+          </div>
+          <div style="display:flex;gap:4px;">
+            <button onclick="openEditPositionModal(${p.id}, ${p.entryPrice}, ${p.quantity})" class="tool-btn" title="Giriş fiyatı/adet düzelt" style="padding:6px 8px;font-size:10px;">✏</button>
+            <button onclick="closePosition(${p.id})" class="tool-btn warn" title="Piyasa fiyatından tam kapat" style="padding:6px 10px;font-size:10px;">Kapat</button>
+            <button onclick="openCustomCloseModal(${p.id}, '${p.symbol}', ${p.quantity}, ${p.currentPrice > 0 ? p.currentPrice : p.entryPrice})" class="tool-btn" title="Adet ve fiyat belirterek kapat" style="padding:6px 10px;font-size:10px;">✍ Düzenle</button>
+          </div>
         </div>`;
       }).join('');
     }
@@ -7797,11 +8574,9 @@ function applyConfigPreset(name) {
   set('atDrawdownFreezeWindow', p.ddFreezeWin);
   const msg = document.getElementById('atPresetMsg');
   if (msg) {
-    msg.textContent = `${p.label} uygulandi — "Kaydet"e basarak onayla.`;
-    msg.style.color = 'var(--orange, #e67e22)';
+    msg.innerHTML = `<span style="color:var(--ink);">► ${p.label} uygulandı — "Kaydet"e basarak onayla</span>`;
     setTimeout(() => {
-      msg.textContent = 'ℹ️ Preset alanları doldurur, kaydetmek için "Kaydet"e bas.';
-      msg.style.color = 'var(--text-dim)';
+      msg.innerHTML = '— Preset alanları doldurur, "Kaydet"e basarak onayla —';
     }, 5000);
   }
 }
@@ -7850,7 +8625,7 @@ async function saveAutoTradeConfig() {
   } catch(e) { console.error('Config kaydetme hatasi:', e); }
 }
 
-// ─── Hızlı PnL Özeti (today/week/month/year) ──────────────────────────
+// ─── Hızlı PnL Özeti (today/week/month/year) — Terminal Editorial ────
 async function loadPnLSummary() {
   const uid = _getUid();
   const el = document.getElementById('atPnLSummary');
@@ -7860,33 +8635,72 @@ async function loadPnLSummary() {
     const res = await fetch(`${API_BASE}/auto-trade/pnl-summary?userId=${uid}`);
     const d = await res.json();
     if (!d.success) {
-      el.innerHTML = `<div style="color:var(--red);">Hata: ${d.error || 'bilinmeyen'}</div>`;
+      el.innerHTML = `<div style="color:var(--red);font-family:var(--font-mono);font-size:12px;">Hata: ${d.error || 'bilinmeyen'}</div>`;
       return;
     }
-    const fmtTL = (v) => (v >= 0 ? '+' : '') + (Math.round(v * 100) / 100).toLocaleString('tr-TR', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' TL';
-    const cardOf = (label, w) => {
-      const color = w.realizedPnL > 0 ? 'var(--green)' : (w.realizedPnL < 0 ? 'var(--red)' : 'var(--text-dim)');
-      return `<div style="background:var(--bg);border:1px solid var(--border);border-left:3px solid ${color};border-radius:8px;padding:10px;">
-        <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">${label}</div>
-        <div style="font-size:18px;font-weight:700;color:${color};margin-top:2px;">${fmtTL(w.realizedPnL)}</div>
-        <div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${w.trades} işlem · ${w.wins}W / ${w.losses}L · %${w.winRate}</div>
+    const fmtTL = (v) => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v * 100) / 100).toLocaleString('tr-TR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const totalAll = (d.year?.realizedPnL || 0) + (d.unrealizedPnL || 0);
+    const totalTone = totalAll > 0 ? 'up' : (totalAll < 0 ? 'down' : 'flat');
+
+    // Hero block: yıllık net + unrealized
+    const hero = `
+      <div class="at-hero">
+        <div>
+          <div class="eyebrow with-rule">Net Performans · ${new Date().getFullYear()}</div>
+          <div class="pnl-headline ${totalTone}">
+            ${totalAll >= 0 ? '+' : '−'}${Math.abs(totalAll).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2})}
+            <span style="font-family:var(--font-display);font-style:italic;font-size:24px;opacity:0.5;font-weight:300;"> ₺</span>
+          </div>
+          <div class="pnl-meta">
+            <span><span class="live-dot"></span>${d.openPositions || 0} açık pozisyon</span>
+            <span>·</span>
+            <span>Yıllık ${d.year?.trades || 0} işlem</span>
+            <span>·</span>
+            <span style="color:${d.year?.winRate >= 50 ? 'var(--green)' : 'var(--text-secondary)'};">Başarı %${d.year?.winRate || 0}</span>
+          </div>
+        </div>
+        <div class="pnl-side">
+          <div class="eyebrow" style="margin-bottom:4px;">— Detay —</div>
+          <div class="pnl-side-row">
+            <span style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:0.16em;color:var(--text-muted);text-transform:uppercase;">Realized (Yıl)</span>
+            <span class="mono" style="font-size:14px;color:${(d.year?.realizedPnL || 0) >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtTL(d.year?.realizedPnL || 0)} ₺</span>
+          </div>
+          <div class="pnl-side-row">
+            <span style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:0.16em;color:var(--text-muted);text-transform:uppercase;">Unrealized</span>
+            <span class="mono" style="font-size:14px;color:${(d.unrealizedPnL || 0) >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtTL(d.unrealizedPnL || 0)} ₺</span>
+          </div>
+          <div class="pnl-side-row">
+            <span style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:0.16em;color:var(--text-muted);text-transform:uppercase;">Yıllık Brüt</span>
+            <span class="mono" style="font-size:14px;color:var(--text-primary);">${d.year?.trades || 0} işlem</span>
+          </div>
+        </div>
+      </div>`;
+
+    // 4-period grid
+    const tile = (label, w, eyebrow) => {
+      const v = w?.realizedPnL || 0;
+      const tone = v > 0.001 ? 'up' : (v < -0.001 ? 'down' : 'flat');
+      const klass = tone === 'up' ? 'tone-up' : tone === 'down' ? 'tone-down' : 'tone-flat';
+      const color = tone === 'up' ? 'var(--green)' : tone === 'down' ? 'var(--red)' : 'var(--text-primary)';
+      return `<div class="metric ${klass}">
+        <div class="metric-label">${eyebrow}</div>
+        <div class="metric-value" style="color:${color};">${fmtTL(v)}</div>
+        <div class="metric-sub">${w?.trades || 0} işlem · ${w?.wins || 0}W/${w?.losses || 0}L · <span style="color:${(w?.winRate || 0) >= 50 ? 'var(--green)' : 'var(--text-muted)'};">%${w?.winRate || 0}</span></div>
       </div>`;
     };
-    const unrealColor = d.unrealizedPnL > 0 ? 'var(--green)' : (d.unrealizedPnL < 0 ? 'var(--red)' : 'var(--text-dim)');
-    el.innerHTML = `
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;">
-        ${cardOf('Bugün', d.today)}
-        ${cardOf('Bu Hafta', d.week)}
-        ${cardOf('Bu Ay', d.month)}
-        ${cardOf('Bu Yıl', d.year)}
-      </div>
-      <div style="margin-top:10px;background:var(--bg);border:1px dashed var(--border);border-radius:8px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <div style="font-size:11px;color:var(--text-muted);">Açık ${d.openPositions} pozisyon · Anlık unrealized PnL</div>
-        <div style="font-size:15px;font-weight:700;color:${unrealColor};">${fmtTL(d.unrealizedPnL)}</div>
+
+    const grid = `
+      <div class="pnl-grid">
+        ${tile('Bugün', d.today, '01 · Gün')}
+        ${tile('Bu Hafta', d.week, '02 · Hafta')}
+        ${tile('Bu Ay', d.month, '03 · Ay')}
+        ${tile('Bu Yıl', d.year, '04 · Yıl')}
       </div>`;
+
+    el.innerHTML = hero + grid;
   } catch (e) {
     console.warn('PnL summary hatasi:', e);
-    el.innerHTML = `<div style="color:var(--red);">Bağlantı hatası</div>`;
+    el.innerHTML = `<div style="color:var(--red);font-family:var(--font-mono);font-size:12px;">Bağlantı hatası</div>`;
   }
 }
 
