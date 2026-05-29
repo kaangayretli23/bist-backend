@@ -200,6 +200,12 @@ def get_alerts():
         return jsonify({'error': str(e)}), 500
 
 
+_ALLOWED_ALERT_CONDITIONS = (
+    'price_above', 'price_below', 'change_above', 'change_below',
+    'rsi_above', 'rsi_below', 'volume_spike',
+)
+
+
 @portfolio_bp.route('/api/alerts', methods=['POST'])
 @require_user
 def add_alert():
@@ -210,7 +216,15 @@ def add_alert():
         condition = d.get('condition', 'price_above')
         target = float(d.get('targetValue', d.get('threshold', 0)))
         if not uid: return jsonify({'error': 'Giris yapmaniz gerekli'}), 401
-        if not sym or target <= 0: return jsonify({'error': 'Gecersiz veri'}), 400
+        if not sym: return jsonify({'error': 'Hisse kodu gerekli'}), 400
+        if condition not in _ALLOWED_ALERT_CONDITIONS:
+            return jsonify({'error': f'Gecersiz kosul: {condition}'}), 400
+        # change_below ve negatif target, rsi 0..100 — sifir geçerli; sadece price/volume
+        # icin pozitif kontrolu yap.
+        if condition in ('price_above', 'price_below', 'volume_spike') and target <= 0:
+            return jsonify({'error': 'Hedef deger 0 dan buyuk olmali'}), 400
+        if condition in ('rsi_above', 'rsi_below') and not (0 <= target <= 100):
+            return jsonify({'error': 'RSI hedefi 0..100 araliginda olmali'}), 400
         with db_conn() as db:
             db.execute("INSERT INTO alerts (user_id, symbol, condition, target_value) VALUES (?, ?, ?, ?)",
                        (uid, sym, condition, target))
@@ -243,6 +257,7 @@ def check_alerts():
         uid = d.get('userId', '')
         if not uid:
             return jsonify({'success': True, 'triggered': []})
+        from data_fetcher import evaluate_alert_condition as _eval
         triggered = []
         with db_conn() as db:
             rows = db.execute("SELECT * FROM alerts WHERE user_id=? AND active=1 AND triggered=0", (uid,)).fetchall()
@@ -250,24 +265,17 @@ def check_alerts():
                 stock = _cget(_stock_cache, r['symbol'])
                 if not stock:
                     continue
-                price = stock['price']
-                fire = False
-                if r['condition'] == 'price_above' and price >= r['target_value']:
-                    fire = True
-                elif r['condition'] == 'price_below' and price <= r['target_value']:
-                    fire = True
-                elif r['condition'] == 'change_above' and stock.get('changePct', 0) >= r['target_value']:
-                    fire = True
-                elif r['condition'] == 'change_below' and stock.get('changePct', 0) <= r['target_value']:
-                    fire = True
-
+                fire, observed = _eval(r['condition'], r['target_value'], stock, r['symbol'])
                 if fire:
                     db.execute("UPDATE alerts SET triggered=1, triggered_at=? WHERE id=?",
                                (datetime.now().isoformat(), r['id']))
+                    obs_str = f"{observed:.2f}" if isinstance(observed, (int, float)) else "-"
                     triggered.append({
                         'id': r['id'], 'symbol': r['symbol'], 'condition': r['condition'],
-                        'targetValue': r['target_value'], 'currentPrice': price,
-                        'message': f"{r['symbol']} uyarisi tetiklendi: {r['condition']} {r['target_value']} (Guncel: {price})",
+                        'targetValue': r['target_value'], 'currentPrice': stock.get('price', 0),
+                        'observed': observed,
+                        'message': (f"{r['symbol']} uyarisi tetiklendi: {r['condition']} "
+                                    f"{r['target_value']} (gozlenen: {obs_str})"),
                     })
             db.commit()
 

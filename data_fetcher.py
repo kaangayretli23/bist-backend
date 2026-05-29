@@ -339,6 +339,58 @@ def _background_loop():
         time.sleep(300)
 
 
+def evaluate_alert_condition(condition, target, stock, sym):
+    """Tek bir alert kosulunu degerlendir. True donerse tetiklenir.
+    Desteklenen kosullar:
+      - price_above / price_below : stock['price'] target ile karsilastir
+      - change_above / change_below: stock['changePct']
+      - rsi_above / rsi_below     : hist'ten RSI(14) hesapla
+      - volume_spike              : stock['volume'] / 20g ortalama >= target (kat)
+    Returns: (fire: bool, observed: float|None — bildirimde gosterilecek deger)
+    """
+    price = stock.get('price', 0) or 0
+    if condition == 'price_above':
+        return (price >= target, price)
+    if condition == 'price_below':
+        return (price <= target, price)
+    if condition == 'change_above':
+        ch = stock.get('changePct', 0) or 0
+        return (ch >= target, ch)
+    if condition == 'change_below':
+        ch = stock.get('changePct', 0) or 0
+        return (ch <= target, ch)
+    if condition in ('rsi_above', 'rsi_below'):
+        try:
+            hist = _cget_hist(f"{sym}_1y")
+            if hist is None or len(hist) < 30:
+                return (False, None)
+            from indicators_basic import calc_rsi_single
+            closes = hist['Close'].tolist()
+            rsi = calc_rsi_single(closes, period=14)
+            if rsi is None:
+                return (False, None)
+            if condition == 'rsi_above':
+                return (rsi >= target, rsi)
+            return (rsi <= target, rsi)
+        except Exception:
+            return (False, None)
+    if condition == 'volume_spike':
+        try:
+            hist = _cget_hist(f"{sym}_1y")
+            if hist is None or 'Volume' not in hist.columns or len(hist) < 21:
+                return (False, None)
+            cur_vol = stock.get('volume', 0) or 0
+            # Son 20 gunun ortalamasi (bugun haric, son tam gun dahil)
+            avg20 = float(hist['Volume'].iloc[-21:-1].mean())
+            if avg20 <= 0:
+                return (False, None)
+            ratio = float(cur_vol) / avg20
+            return (ratio >= target, ratio)
+        except Exception:
+            return (False, None)
+    return (False, None)
+
+
 def _auto_check_all_alerts():
     """Background loop'ta tum aktif alert'leri kontrol et (cooldown destekli)"""
     try:
@@ -365,16 +417,9 @@ def _auto_check_all_alerts():
             if not stock:
                 continue
 
-            price = stock['price']
-            fire = False
-            if r['condition'] == 'price_above' and price >= r['target_value']:
-                fire = True
-            elif r['condition'] == 'price_below' and price <= r['target_value']:
-                fire = True
-            elif r['condition'] == 'change_above' and stock.get('changePct', 0) >= r['target_value']:
-                fire = True
-            elif r['condition'] == 'change_below' and stock.get('changePct', 0) <= r['target_value']:
-                fire = True
+            fire, observed = evaluate_alert_condition(
+                r['condition'], r['target_value'], stock, r['symbol']
+            )
 
             if fire:
                 cooldown_end = (now + timedelta(minutes=30)).isoformat()
@@ -384,11 +429,15 @@ def _auto_check_all_alerts():
 
                 # Telegram bildirim
                 _tg = _get_send_telegram_alerts()
-                if _tg: _tg(r['user_id'], [{
-                    'symbol': r['symbol'], 'condition': r['condition'],
-                    'targetValue': r['target_value'], 'currentPrice': price,
-                    'message': f"{r['symbol']} uyarisi tetiklendi: {r['condition']} {r['target_value']} (Guncel: {price})"
-                }])
+                if _tg:
+                    obs_str = f"{observed:.2f}" if isinstance(observed, (int, float)) else "-"
+                    _tg(r['user_id'], [{
+                        'symbol': r['symbol'], 'condition': r['condition'],
+                        'targetValue': r['target_value'], 'currentPrice': stock.get('price', 0),
+                        'observed': observed,
+                        'message': (f"{r['symbol']} uyarisi tetiklendi: {r['condition']} "
+                                    f"{r['target_value']} (gozlenen: {obs_str})")
+                    }])
 
         if triggered_count > 0:
             db.commit()

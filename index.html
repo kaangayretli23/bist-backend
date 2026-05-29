@@ -1320,15 +1320,24 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
       </div>
       <div>
         <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Koşul</label>
-        <select id="alertCondition" style="width:100%;">
-          <option value="price_above">Fiyat Üstünde</option>
-          <option value="price_below">Fiyat Altında</option>
-          <option value="change_above">Değişim % Üstünde</option>
-          <option value="change_below">Değişim % Altında</option>
+        <select id="alertCondition" style="width:100%;" onchange="updateAlertThresholdHint()">
+          <optgroup label="Fiyat / Değişim">
+            <option value="price_above">Fiyat Üstünde (TL)</option>
+            <option value="price_below">Fiyat Altında (TL)</option>
+            <option value="change_above">Günlük % Üstünde</option>
+            <option value="change_below">Günlük % Altında</option>
+          </optgroup>
+          <optgroup label="RSI">
+            <option value="rsi_above">RSI(14) Üstünde (aşırı alım)</option>
+            <option value="rsi_below">RSI(14) Altında (aşırı satım)</option>
+          </optgroup>
+          <optgroup label="Hacim">
+            <option value="volume_spike">Hacim Patlaması (X katı, 20g)</option>
+          </optgroup>
         </select>
       </div>
       <div>
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Eşik Değer</label>
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">Eşik Değer <span id="alertThresholdHint" style="font-size:10px;color:var(--text-dim);opacity:0.8;"></span></label>
         <input id="alertThreshold" type="number" step="0.01" placeholder="300" style="width:100%;">
       </div>
     </div>
@@ -5192,13 +5201,30 @@ async function runBacktest() {
 // =============================================================================
 // ALERTS
 // =============================================================================
+const ALERT_THRESHOLD_HINTS = {
+  price_above:  '— fiyat hedefi (TL, örn. 25.50)',
+  price_below:  '— fiyat hedefi (TL, örn. 19.80)',
+  change_above: '— gün içi % (örn. 3 = %3 yükseliş)',
+  change_below: '— gün içi % (örn. -3 = %3 düşüş)',
+  rsi_above:    '— RSI değeri (örn. 70 = aşırı alım)',
+  rsi_below:    '— RSI değeri (örn. 30 = aşırı satım)',
+  volume_spike: '— kat çarpanı (örn. 3 = 20g ortalamanın 3x üstü)',
+};
+
+function updateAlertThresholdHint() {
+  const sel = document.getElementById('alertCondition');
+  const hint = document.getElementById('alertThresholdHint');
+  if (!sel || !hint) return;
+  hint.textContent = ALERT_THRESHOLD_HINTS[sel.value] || '';
+}
+
 async function createAlert() {
   if (!currentUser) { showLogin(); return; }
   const symbol = document.getElementById('alertSymbol').value.toUpperCase();
   const condition = document.getElementById('alertCondition').value;
   const threshold = parseFloat(document.getElementById('alertThreshold').value);
 
-  if (!symbol || !condition || !threshold) { alert('Zorunlu alanları doldurun'); return; }
+  if (!symbol || !condition || isNaN(threshold)) { alert('Zorunlu alanları doldurun'); return; }
 
   await api('/alerts', {
     method: 'POST',
