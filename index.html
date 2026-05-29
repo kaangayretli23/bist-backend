@@ -1651,7 +1651,15 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
 
   <!-- Kapatilmis Pozisyonlar -->
   <div class="card mb-16">
-    <div class="section-title mb-12"><span class="icon">✅</span> Kapatilmis Pozisyonlar</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+      <div class="section-title" style="margin:0;"><span class="icon">✅</span> Kapatilmis Pozisyonlar</div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <label style="font-size:11px;color:var(--text-dim);">Yıl:
+          <input id="taxReportYear" type="number" min="2020" max="2100" style="width:80px;background:var(--card-bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);margin-left:4px;">
+        </label>
+        <button onclick="downloadTaxReport()" title="Seçilen yıl için kapatılmış pozisyonların özet PDF raporunu indir (bilgilendirme amaçlı, resmi vergi beyanı değil)" style="background:#8e44ad;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;">📄 Vergi Raporu PDF</button>
+      </div>
+    </div>
     <div id="atClosed" style="font-size:13px;color:var(--text-dim);">Veri bekleniyor...</div>
   </div>
 
@@ -8057,6 +8065,24 @@ async function reopenPosition(posId, symbol) {
     else alert(data.error || 'Hata');
   } catch(e) { console.error('Pozisyon geri alma hatasi:', e); alert('İstek başarısız'); }
 }
+
+// Vergi/yillik islem ozeti PDF indir
+function downloadTaxReport() {
+  const uid = _getUid();
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
+  const yEl = document.getElementById('taxReportYear');
+  let year = parseInt(yEl && yEl.value) || new Date().getFullYear();
+  if (year < 2020 || year > 2100) { alert('Gecerli bir yil girin'); return; }
+  const url = `${API_BASE}/auto-trade/tax-report.pdf?userId=${encodeURIComponent(uid)}&year=${year}`;
+  // Browser indirme baslat (Content-Disposition: attachment ile)
+  window.location.href = url;
+}
+
+// Yil input'unu acilista bu yila set et
+document.addEventListener('DOMContentLoaded', () => {
+  const yEl = document.getElementById('taxReportYear');
+  if (yEl && !yEl.value) yEl.value = new Date().getFullYear();
+});
 
 // Sermaye hizli ayar — diger ayarlara dokunmadan capital'i artir/azalt
 async function openCapitalAdjustModal() {
