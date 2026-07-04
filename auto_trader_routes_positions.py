@@ -6,6 +6,7 @@ auto_trader_routes.py'dan ayrıştırıldı (600 satır kuralı).
 backend.py `import auto_trader_routes_positions` ile yüklenir;
 @app.route decoratorları importta rotaları Flask app'e kaydeder.
 """
+import re
 from flask import jsonify, request
 from config import app, get_db, _stock_cache, _cget
 from auth_middleware import require_user
@@ -505,6 +506,126 @@ def auto_trade_reopen_position():
             0, 0, pos_id
         )
         return jsonify({'success': True, 'message': f'{sym} pozisyonu geri acildi ({qty} lot @ {entry:.2f} giris)'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _parse_tp_from_reason(reason):
+    """Kısmi satış reason metninden temizlenen TP hedefini çıkar.
+    Tüm partial-close yolları '... >= 15.00' formatını kullanıyor
+    (örn. 'TP1 kısmi: 12.34 >= 15.00'). '>=' sonrası sayıyı döner, yoksa None."""
+    if not reason:
+        return None
+    try:
+        m = re.search(r'>=\s*([0-9]+(?:[.,][0-9]+)?)', reason)
+        if m:
+            return float(m.group(1).replace(',', '.'))
+    except Exception:
+        pass
+    return None
+
+
+@app.route('/api/auto-trade/undo-partial', methods=['POST'])
+@require_user
+def auto_trade_undo_partial():
+    """Kısmi satışı (SELL_TP1/SELL_TP2) geri al — Midas'ta gerçekte satılmadıysa.
+    Satılan adedi pozisyona geri ekler, temizlenen TP'yi reason'dan parse edip
+    yeniden kurar ve alert state'i sıfırlar (TP tekrar tetiklenebilsin).
+    Body: { userId, tradeId }
+
+    NOT: Kısmi satış SL'ye dokunmaz (sadece Telegram'dan BE onayı ister), o yüzden
+    burada SL geri yüklenmez. Pozisyon partial sonrası tamamen kapandıysa bu endpoint
+    'açık değil' döner — o durumda Kapatılmış Pozisyonlar'daki Geri Al kullanılır.
+    """
+    try:
+        data = request.json or {}
+        uid = data.get('userId', '')
+        trade_id = int(data.get('tradeId', 0))
+        if not uid or not trade_id:
+            return jsonify({'success': False, 'error': 'userId ve tradeId gerekli'}), 400
+
+        db = get_db()
+        trade = db.execute(
+            "SELECT * FROM auto_trades WHERE id=? AND user_id=?", (trade_id, uid)
+        ).fetchone()
+        if not trade:
+            db.close()
+            return jsonify({'success': False, 'error': 'İşlem bulunamadı'}), 404
+
+        action = trade['action'] or ''
+        if action not in ('SELL_TP1', 'SELL_TP2'):
+            db.close()
+            return jsonify({'success': False, 'error': 'Sadece kısmi satışlar (TP1/TP2) geri alınabilir'}), 400
+
+        pos_id = trade['position_id']
+        if not pos_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'İşleme bağlı pozisyon yok'}), 400
+
+        # Çift undo koruması: bu işlem için daha önce UNDO_PARTIAL yazılmış mı?
+        already = db.execute(
+            "SELECT id FROM auto_trades WHERE user_id=? AND action='UNDO_PARTIAL' "
+            "AND position_id=? AND reason LIKE ?",
+            (uid, pos_id, f"%#{trade_id})%")
+        ).fetchone()
+        if already:
+            db.close()
+            return jsonify({'success': False, 'error': 'Bu kısmi satış zaten geri alınmış'}), 400
+
+        pos = db.execute(
+            "SELECT * FROM auto_positions WHERE id=? AND user_id=?", (pos_id, uid)
+        ).fetchone()
+        if not pos:
+            db.close()
+            return jsonify({'success': False, 'error': 'Pozisyon bulunamadı'}), 404
+
+        sym = trade['symbol']
+        sold_qty = float(trade['quantity'])
+        entry = float(pos['entry_price'] or 0)
+        tp_field = 'take_profit1' if action == 'SELL_TP1' else 'take_profit2'
+        old_tp = _parse_tp_from_reason(trade['reason'])
+
+        # quantity geri ekle + TP yeniden kur — yalnız pozisyon hala AÇIKSA (race-safe).
+        # tp_field sabit whitelist'ten ('take_profit1'|'take_profit2'), SQL injection yok.
+        if old_tp and old_tp > 0:
+            cur = db.execute(
+                f"UPDATE auto_positions SET quantity=quantity+?, {tp_field}=? "
+                "WHERE id=? AND status='open'",
+                (sold_qty, old_tp, pos_id)
+            )
+        else:
+            cur = db.execute(
+                "UPDATE auto_positions SET quantity=quantity+? WHERE id=? AND status='open'",
+                (sold_qty, pos_id)
+            )
+        if cur.rowcount == 0:
+            db.close()
+            return jsonify({'success': False, 'error': 'Pozisyon artık açık değil (muhtemelen tamamen kapandı). Kapatılmış Pozisyonlar bölümünden Geri Al kullanın.'}), 400
+        db.commit()
+        db.close()
+
+        # Portföye geri ekle (kısmi satışta düşülmüştü)
+        try:
+            from auto_trader_sync import _sync_portfolio_buy
+            _sync_portfolio_buy(uid, sym, sold_qty, entry)
+        except Exception as _ps_err:
+            print(f"[AUTO-TRADE] Undo-partial portföy sync hatası: {_ps_err}")
+
+        # Alert state'i sıfırla — restore edilen TP yeniden tetiklenebilsin
+        try:
+            from realtime_prices import clear_alert_state
+            clear_alert_state(sym, uid, pos_id)
+        except Exception:
+            pass
+
+        tp_msg = (f", {tp_field}={old_tp:.2f} yeniden kuruldu" if old_tp
+                  else " (TP reason'dan okunamadı — gerekirse ✏ ile elle ayarla)")
+        _auto_log_trade(
+            uid, sym, 'UNDO_PARTIAL', float(trade['price']), sold_qty,
+            f"Kısmi satış geri alındı (işlem #{trade_id}){tp_msg}", 0, 0, pos_id
+        )
+        return jsonify({'success': True,
+                        'message': f"{sym}: {sold_qty:.0f} lot pozisyona geri eklendi{tp_msg}"})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

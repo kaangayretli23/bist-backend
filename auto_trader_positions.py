@@ -15,7 +15,7 @@ def _step1_manage_positions(uid, cfg, positions):
     from config import _cget, _cset, _stock_cache
     from auto_trader import (
         _auto_close_position, _auto_partial_close, _auto_log_trade,
-        _auto_update_trailing, _auto_update_highest_price,
+        _auto_update_trailing, _auto_update_highest_price, _tp_take_profit,
     )
     for pos in positions:
         sym = pos['symbol']
@@ -83,10 +83,11 @@ def _step1_manage_positions(uid, cfg, positions):
         # Stop-Loss kontrolu
         sl = pos['stopLoss']
         if sl > 0 and cur_price <= sl:
-            _auto_close_position(pos['id'], cur_price, f"Stop-Loss tetiklendi ({sl:.2f})", cfg=cfg)
-            _auto_log_trade(uid, sym, 'SELL_SL', cur_price, pos['quantity'],
-                           f"SL tetiklendi: {cur_price:.2f} <= {sl:.2f}", 0, 0, pos['id'])
-            _sl_cooldown_block(uid, sym, cfg.get('tradeStyle', 'swing'))
+            # #4d: yalniz GERÇEKTEN kapatan thread log+cooldown yazsin (cift SELL_SL onle)
+            if _auto_close_position(pos['id'], cur_price, f"Stop-Loss tetiklendi ({sl:.2f})", cfg=cfg):
+                _auto_log_trade(uid, sym, 'SELL_SL', cur_price, pos['quantity'],
+                               f"SL tetiklendi: {cur_price:.2f} <= {sl:.2f}", 0, 0, pos['id'])
+                _sl_cooldown_block(uid, sym, cfg.get('tradeStyle', 'swing'))
             _panic_clear(pos['id'])
             continue
 
@@ -104,28 +105,24 @@ def _step1_manage_positions(uid, cfg, positions):
         tp2 = pos['takeProfit2']
         tp1 = pos['takeProfit1']
         qty = pos['quantity']
+        # Onaysiz icra YOK — TP hedefi tetiklenince Telegram'dan onay iste.
+        # (_tp_take_profit ayni pozisyon+TP icin tekrar sormaz; dedup iceride.)
         if tp3 > 0 and cur_price >= tp3:
-            _auto_close_position(pos['id'], cur_price, f"TP3 hedef ({tp3:.2f})", cfg=cfg)
-            _auto_log_trade(uid, sym, 'SELL_TP3', cur_price, qty,
-                           f"TP3: {cur_price:.2f} >= {tp3:.2f}", 0, 0, pos['id'])
-            _panic_clear(pos['id'])
-            continue
+            _tp_take_profit(uid, pos['id'], sym, 'full', 'take_profit3', qty, cur_price, tp3)
         elif tp2 > 0 and cur_price >= tp2:
             sell_qty = int(qty * 0.5)
             if sell_qty < 1:
                 sell_qty = qty  # çok az kaldıysa hepsini sat
-            _auto_partial_close(pos['id'], sell_qty, cur_price,
-                               f"TP2 hedef ({tp2:.2f})", clear_tp_field='take_profit2', cfg=cfg)
-            _auto_log_trade(uid, sym, 'SELL_TP2', cur_price, sell_qty,
-                           f"TP2 kısmi: {cur_price:.2f} >= {tp2:.2f}", 0, 0, pos['id'])
+            _tp_take_profit(uid, pos['id'], sym, 'partial', 'take_profit2', sell_qty, cur_price, tp2)
         elif tp1 > 0 and cur_price >= tp1:
-            sell_qty = int(qty * 0.5)
-            if sell_qty < 1:
-                sell_qty = qty
-            _auto_partial_close(pos['id'], sell_qty, cur_price,
-                               f"TP1 hedef ({tp1:.2f})", clear_tp_field='take_profit1', cfg=cfg)
-            _auto_log_trade(uid, sym, 'SELL_TP1', cur_price, sell_qty,
-                           f"TP1 kısmi: {cur_price:.2f} >= {tp1:.2f}", 0, 0, pos['id'])
+            # tp_strategy='all_at_tp1' → TP1'de TAMAMINI sat (RT-monitör ile tutarlı, Kemal #4-3).
+            if (pos.get('tpStrategy') or 'staged') == 'all_at_tp1':
+                _tp_take_profit(uid, pos['id'], sym, 'full', 'take_profit1', qty, cur_price, tp1)
+            else:
+                sell_qty = int(qty * 0.5)
+                if sell_qty < 1:
+                    sell_qty = qty
+                _tp_take_profit(uid, pos['id'], sym, 'partial', 'take_profit1', sell_qty, cur_price, tp1)
 
         # TP yaklasma bildirimi (%2 icinde, henuz tetiklenmemis)
         try:
@@ -198,11 +195,10 @@ def _step1_manage_positions(uid, cfg, positions):
                                    _tr_now.hour == 10 and _tr_now.minute < 15)
                 trailing_sl = pos['trailingStop']
                 if (not _opening_window) and trailing_sl > 0 and cur_price <= trailing_sl:
-                    _auto_close_position(pos['id'], cur_price, f"Trailing-Stop ({trailing_sl:.2f})", cfg=cfg)
-                    _auto_log_trade(uid, sym, 'SELL_TRAIL', cur_price, pos['quantity'],
-                                   f"Trailing SL: {cur_price:.2f} <= {trailing_sl:.2f}", 0, 0, pos['id'])
-                    _sl_cooldown_block(uid, sym, cfg.get('tradeStyle', 'swing'))
-                    _panic_clear(pos['id'])
+                    # Kullanıcı isteği: trailing-stop SATIŞI artık onaya tabi (hard-SL otomatik kalır).
+                    # Onaysız satış YOK — Telegram'dan onay iste; onaylanınca execute_tp_exec kapatır.
+                    _tp_take_profit(uid, pos['id'], sym, 'full', 'trailing',
+                                    pos['quantity'], cur_price, trailing_sl)
                     continue
                 if _opening_window and trailing_sl > 0 and cur_price <= trailing_sl:
                     print(f"[AUTO-TRADE] {sym} trailing stop tetiklendi fakat acilis penceresinde (ilk 15dk) — atlaniyor")

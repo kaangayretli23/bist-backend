@@ -64,7 +64,8 @@ def auto_trade_config():
                 panic_sell_enabled=?, panic_drop_pct=?, panic_window_min=?,
                 commission_pct=?, bsmv_pct=?, tight_trailing_pct=?, max_per_sector=?,
                 min_turnover_tl=?, tp_strategy=?,
-                drawdown_freeze_pct=?, drawdown_freeze_window_days=?
+                drawdown_freeze_pct=?, drawdown_freeze_window_days=?,
+                max_consecutive_losses=?
                 WHERE user_id=?""",
                 (int(data.get('enabled', existing['enabled'])),
                  int(data.get('maxPositions', existing['max_positions'])),
@@ -89,6 +90,7 @@ def auto_trade_config():
                  float(data.get('minTurnoverTL', _row_get(existing, 'min_turnover_tl', 1_000_000) or 1_000_000)),
                  _new_tp,
                  _dd_pct, _dd_win,
+                 int(data.get('maxConsecutiveLosses', _row_get(existing, 'max_consecutive_losses', 3) or 3)),
                  uid))
         else:
             _allowed_tp = ('auto', 'staged', 'all_at_tp1')

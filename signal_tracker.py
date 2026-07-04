@@ -43,13 +43,21 @@ def log_signals_batch(results, timeframe):
             # Indikatörler (hem düz alan hem nested indicators dict)
             ind = r.get('indicators') or {}
             rsi_val  = r.get('rsi')  or ind.get('rsi')
-            macd_val = r.get('macd') or ind.get('macd')
             try:
                 rsi_val  = float(rsi_val)  if rsi_val  is not None else None
             except Exception:
                 rsi_val = None
+            # macd: SAYISAL histogram (momentum) çıkar. Eskiden `ind['macd']` bir DICT
+            # olduğu için float() patlıyor, except yutuyor, macd HEP NULL kalıyordu.
+            macd_raw = r.get('macdHistogram')
+            if macd_raw is None:
+                macd_raw = r.get('macd')
+            if isinstance(macd_raw, dict):
+                macd_raw = macd_raw.get('histogram')
+            if macd_raw is None and isinstance(ind.get('macd'), dict):
+                macd_raw = ind['macd'].get('histogram')
             try:
-                macd_val = float(macd_val) if macd_val is not None else None
+                macd_val = float(macd_raw) if macd_raw is not None else None
             except Exception:
                 macd_val = None
 
@@ -61,11 +69,27 @@ def log_signals_batch(results, timeframe):
             if existing:
                 continue
 
+            # Faktör breakdown'ı JSON olarak sakla (diverjans vb. katkı analizi için)
+            import json as _json
+            _br = r.get('scoreBreakdown')
+            factors_json = None
+            if isinstance(_br, dict) and _br:
+                try:
+                    factors_json = _json.dumps(_br, ensure_ascii=False)
+                except Exception:
+                    factors_json = None
+
+            # ortogonal ml_confidence (türev güven = skor kopyası ile kıyas için — Kemal #1)
+            try:
+                ml_conf_val = float(r.get('mlConfidence')) if r.get('mlConfidence') is not None else None
+            except Exception:
+                ml_conf_val = None
+
             db.execute(
                 """INSERT INTO signal_log
-                   (symbol, timeframe, action, score, price_at_signal, rsi, macd, logged_at)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (sym, timeframe, action, score, price, rsi_val, macd_val, time.time())
+                   (symbol, timeframe, action, score, price_at_signal, rsi, macd, factors, ml_confidence, logged_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (sym, timeframe, action, score, price, rsi_val, macd_val, factors_json, ml_conf_val, time.time())
             )
             logged += 1
 

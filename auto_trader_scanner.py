@@ -80,6 +80,27 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             print(f"[AUTO-TRADE] {uid} DD freeze HATA — scanner durduruldu (guvenli): {_dd_err}")
             return
 
+    # Kemal #4a: Ardışık-zarar kill-switch — bugün üst üste M zarar → o gün yeni pozisyon yok.
+    # DD freeze toplam PnL'e bakar; bu seri bazlı (kötü-gün erken durdurucu). Hata olursa FAIL-OPEN
+    # (ikincil koruma; DD freeze + diğer kapılar zaten devrede, tüm trading'i kilitlemeyelim).
+    try:
+        from auto_trader_risk import _consecutive_loss_freeze
+        _kill, _streak = _consecutive_loss_freeze(uid, int(cfg.get('maxConsecutiveLosses', 3) or 3))
+        if _kill:
+            _log_decision(uid, 'PORTFOLIO', 'SKIP', 'consecutive_loss_freeze',
+                          detail=f"bugun ardışık {_streak} zarar — scanner gun sonuna kadar donduruldu")
+            print(f"[AUTO-TRADE] {uid} ardışık {_streak} zarar — kill-switch aktif, bugun yeni pozisyon yok")
+            return
+    except Exception as _kl_err:
+        print(f"[AUTO-TRADE] {uid} kill-switch kontrol hatasi (devam): {_kl_err}")
+
+    # #4c: Açık pozisyon korelasyonunu ÖLÇ (limit yok, throttle 30dk) — beta/endeks konsantrasyonu.
+    try:
+        from auto_trader_risk import _log_portfolio_correlation
+        _log_portfolio_correlation(uid, open_positions)
+    except Exception:
+        pass
+
     candidates = []
     stocks = _get_stocks()
     _on_demand_fetches = 0
@@ -235,22 +256,36 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             pass
 
         # A4: Anti-FOMO — bugun ATR'nin 1.5x'i kadar zaten yukselmisse, gec kaldik (tepe alimi riski).
+        # NOT (Kemal #2a): hist son bari BUGÜNE ait degilse hist['Open'].iloc[-1] dunun acilisidir →
+        # 'open→now' = live_price - dunku_acilis ANLAMSIZ cikar (ya hep FOMO der ya hic). Bu durumda
+        # anti-FOMO'yu UYGULAMA; 'fomo_stale_open' olarak logla ki kac kez stale oldugunu olcebilelim.
         try:
             from indicators_basic import calc_atr
-            _h_arr = hist['High'].values.astype(float)
-            _l_arr = hist['Low'].values.astype(float)
-            _c_arr = hist['Close'].values.astype(float)
-            _atr_data = calc_atr(_h_arr, _l_arr, _c_arr)
-            _atr_val = float(_atr_data.get('value', 0))
-            if _atr_val > 0 and len(hist) >= 2:
-                _today_open = float(hist['Open'].iloc[-1])
-                _open_to_now = live_price - _today_open
-                # Acılıstan simdiye 1.5 ATR uzeri yuksellis = tepe alimi
-                if _open_to_now > _atr_val * 1.5:
-                    _log_decision(uid, sym, 'SKIP', 'fomo',
-                                  detail=f"open→now={_open_to_now:.2f} > 1.5×ATR={_atr_val*1.5:.2f}",
-                                  tf=_tf_now, price=live_price, score=score, confidence=confidence)
-                    continue
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            _ist_today = (_dt.now(_tz.utc) + _td(hours=3)).date()
+            try:
+                _last_bar_date = hist.index[-1].date()
+            except Exception:
+                _last_bar_date = None
+            if _last_bar_date is not None and _last_bar_date != _ist_today:
+                _log_decision(uid, sym, 'INFO', 'fomo_stale_open',
+                              detail=f"son bar {_last_bar_date} != bugun {_ist_today} — anti-FOMO atlandi",
+                              tf=_tf_now, price=live_price, score=score, confidence=confidence)
+            else:
+                _h_arr = hist['High'].values.astype(float)
+                _l_arr = hist['Low'].values.astype(float)
+                _c_arr = hist['Close'].values.astype(float)
+                _atr_data = calc_atr(_h_arr, _l_arr, _c_arr)
+                _atr_val = float(_atr_data.get('value', 0))
+                if _atr_val > 0 and len(hist) >= 2:
+                    _today_open = float(hist['Open'].iloc[-1])
+                    _open_to_now = live_price - _today_open
+                    # Acılıstan simdiye 1.5 ATR uzeri yuksellis = tepe alimi
+                    if _open_to_now > _atr_val * 1.5:
+                        _log_decision(uid, sym, 'SKIP', 'fomo',
+                                      detail=f"open→now={_open_to_now:.2f} > 1.5×ATR={_atr_val*1.5:.2f}",
+                                      tf=_tf_now, price=live_price, score=score, confidence=confidence)
+                        continue
         except Exception:
             pass
 
@@ -451,6 +486,16 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                   f"(serbest={free_capital:.0f} TL)")
             quantity = affordable_qty
             position_cost = quantity * price
+            # #4b: kırpma risk-parity'yi bozar (artık bütçe-bazlı, risk-bazlı değil). Efektif
+            # risk'i logla ki hedeften sapma görünsün; çok küçükse trade anlamsız.
+            try:
+                _eff_risk = (quantity * sl_distance / cfg['capital'] * 100) if cfg.get('capital') else 0
+                _log_decision(uid, sym, 'INFO', 'risk_clipped',
+                              detail=f"adet={quantity} (kırpıldı), efektif risk=%{_eff_risk:.2f} "
+                                     f"vs hedef=%{cfg['riskPerTrade']:.2f} (serbest sermaye sınırı)",
+                              tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
+            except Exception:
+                pass
 
         _tg_sent = False
         _already_pending = False

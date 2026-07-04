@@ -72,6 +72,15 @@ _pending_trailing_lock = threading.Lock()
 _pending_sl_change = {}
 _pending_sl_change_lock = threading.Lock()
 
+# Bekleyen TP icra onaylari — TP hedefine ulasinca OTOMATIK icra YOK; kullanici
+# Telegram'dan onaylayinca kismi sat / tam kapat yapilir. Onaysiz pozisyon+TP dokunulmaz.
+#   {tp_id: {position_id, uid, symbol, kind('partial'|'full'), tp_field, sell_qty,
+#            price, tp_target, reason, expires_at}}
+_pending_tp_exec = {}
+# Ayni pozisyon+TP seviyesi icin tekrar tekrar sormayi onler: {f"{position_id}_{tp_field}"}
+_tp_exec_asked: set = set()
+_pending_tp_exec_lock = threading.Lock()
+
 # =====================================================================
 # WARNING COOLDOWNS (aynı hisse için tekrar spam önleme)
 # =====================================================================

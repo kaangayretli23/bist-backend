@@ -81,6 +81,8 @@ def _reject_cooldown_check(uid: str, sym: str) -> bool:
 _panic_price_history: dict = {}
 _PANIC_MAX_WINDOW_SECS = 15 * 60  # Ring-buffer'ı 15 dk ile sınırla (config en fazla 15 olsa da)
 _PANIC_MAX_SAMPLES = 120          # 30sn aralıkla 60dk tampon (aşırı büyümeyi engeller)
+_PROCESS_START = time.time()      # restart-ısınma tespiti için (Kemal #2b-a)
+_panic_warmup_logged: set = set() # pozisyon başına bir kez log (spam önle)
 
 
 def _panic_track_and_check(pos_id: int, cur_price: float, entry_price: float,
@@ -101,6 +103,14 @@ def _panic_track_and_check(pos_id: int, cur_price: float, entry_price: float,
         hist.popleft()
 
     if len(hist) < 3:  # Anlamlı bir pencere oluşmadı
+        # Kemal #2b(a): panic ısınma süresini ÖLÇ. Restart sonrası ya da yeni pozisyonda
+        # pencere dolana kadar panic kör kalır. process uptime kısaysa muhtemelen restart-ısınma.
+        if pos_id not in _panic_warmup_logged:
+            _panic_warmup_logged.add(pos_id)
+            _uptime = time.time() - _PROCESS_START
+            _tag = '(muhtemelen restart-isinma)' if _uptime < 180 else '(yeni pozisyon)'
+            print(f"[PANIC-WARMUP] pos #{pos_id}: panic penceresi dolmadi ({len(hist)} ornek), "
+                  f"uptime={_uptime:.0f}s {_tag} — flash-crash korumasi henuz aktif degil")
         return False, 0.0, 0.0
 
     peak = max(p for _, p in hist)
@@ -116,6 +126,83 @@ def _panic_track_and_check(pos_id: int, cur_price: float, entry_price: float,
 
 def _panic_clear(pos_id: int) -> None:
     _panic_price_history.pop(pos_id, None)
+
+
+# Kemal #4a: Ardışık-zarar kill-switch — bugün üst üste M zarar olursa o gün scanner durur.
+_MAX_CONSECUTIVE_LOSSES = 3
+
+
+def _consecutive_loss_freeze(uid: str, max_losses: int = _MAX_CONSECUTIVE_LOSSES) -> tuple[bool, int]:
+    """Bugün kapanan pozisyonlarda, en son işlemden geriye doğru ARDIŞIK zarar say.
+    streak >= max_losses ise freeze=True. Sadece BUGÜNÜN kapanışlarına bakar → yeni günde
+    otomatik sıfırlanır. DD freeze'in tamamlayıcısı (toplam değil, seri bazlı kötü-gün durdurucu).
+    Returns: (freeze_mi, streak)
+    """
+    if not uid or max_losses <= 0:
+        return False, 0
+    try:
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        _today = (_dt.now(_tz.utc) + _td(hours=3)).strftime('%Y-%m-%d')
+        db = get_db()
+        try:
+            rows = db.execute(
+                "SELECT pnl, closed_at FROM auto_positions "
+                "WHERE user_id=? AND status='closed' ORDER BY closed_at DESC LIMIT ?",
+                (uid, max(max_losses * 4, 12)),
+            ).fetchall()
+        finally:
+            db.close()
+        streak = 0
+        for r in rows:
+            if str(r['closed_at'] or '')[:10] != _today:
+                break  # bugünden eski kapanış → bugünün serisi bitti
+            if float(r['pnl'] or 0) < 0:
+                streak += 1
+            else:
+                break  # kazanç/başabaş → seri kırıldı
+        return (streak >= max_losses), streak
+    except Exception:
+        return False, 0
+
+
+# Kemal #4c: Açık pozisyon korelasyon ölçümü (limit YOK — sadece gözlem; throttle 30dk/uid).
+_corr_log_throttle: dict = {}
+
+
+def _log_portfolio_correlation(uid: str, open_positions: list, min_interval_sec: int = 1800) -> None:
+    """Açık pozisyonların ortalama ikili korelasyonunu ölç + logla. BIST'te asıl risk beta/endeks
+    korelasyonu; sektör cap'i bunu yakalamaz. Aksiyon YOK, sadece görünürlük (Kemal #4c).
+    Tarih-hizalı (DataFrame index ile); throttle ile log spam'i önlenir."""
+    try:
+        if not open_positions or len(open_positions) < 2:
+            return
+        _now = time.time()
+        if _now - _corr_log_throttle.get(uid, 0) < min_interval_sec:
+            return
+        from config import _cget_hist
+        import pandas as _pd
+        import numpy as _np
+        ret = {}
+        for p in open_positions:
+            h = _cget_hist(f"{p['symbol']}_1y")
+            if h is not None and len(h) >= 21:
+                ret[p['symbol']] = h['Close'].astype(float).pct_change().iloc[-20:]
+        if len(ret) < 2:
+            return
+        df = _pd.DataFrame(ret).dropna()
+        if len(df) < 10:
+            return
+        cm = df.corr().values
+        vals = cm[_np.triu_indices_from(cm, k=1)]
+        vals = vals[~_np.isnan(vals)]
+        if len(vals) == 0:
+            return
+        _corr_log_throttle[uid] = _now
+        _log_decision(uid, 'PORTFOLIO', 'INFO', 'correlation',
+                      detail=f"acik {len(ret)} poz ort.korelasyon={float(_np.mean(vals)):.2f}, "
+                             f"max={float(_np.max(vals)):.2f} (>0.7 yuksek konsantrasyon)")
+    except Exception:
+        pass
 
 
 # Trade style'a göre SL cooldown süreleri (saniye)

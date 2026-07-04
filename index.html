@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BIST Pro — Borsa Analiz Platformu</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,800&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,800&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.1/dist/chartjs-chart-financial.min.js" defer></script>
 <style>
@@ -1405,6 +1405,72 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
   .signal-verdict { grid-template-columns: 1fr; gap: 12px; }
 }
 </style>
+<style id="cyberpunk-theme">
+/* ============================================================
+   BIST//PRO — CYBERPUNK HUD TEMA  (global override)
+   Tek bloktan kontrol. Geri almak icin bu <style>'i sil.
+   Renk kodu: cyan=yapi · yesil=kar/alis · magenta=sat/zarar · amber=onay
+   ============================================================ */
+:root{
+  /* --- font: serif Fraunces kaldirildi, techno-ama-okunur Chakra Petch --- */
+  --font-body: 'Chakra Petch', sans-serif;
+  --font-display: 'Chakra Petch', sans-serif;
+  /* --- palet punch --- */
+  --accent:#00e5d4; --accent-dim:rgba(0,229,212,.14); --accent-glow:rgba(0,229,212,.45);
+  --green:#2bf5a0;  --green-bg:rgba(43,245,160,.12);
+  --red:#ff2e88;    --red-bg:rgba(255,46,136,.12);
+  --yellow:#ffb020; --yellow-bg:rgba(255,176,32,.12);
+  --ink:#ffb020;    --ink-soft:rgba(255,176,32,.14);
+  --bg-primary:#070a10; --bg-secondary:#0b101a;
+  --bg-card:#0e1420; --bg-card-hover:#121b2a; --bg-input:#0a0f18;
+  --border:rgba(120,160,200,.16); --border-hover:rgba(0,229,212,.40);
+  --grid-color:rgba(0,229,212,.055); --scan-color:rgba(0,229,212,.05);
+  --text-primary:#e9f3ff; --text-secondary:#90a6bf; --text-muted:#54667d;
+}
+/* --- atmosfer: cift glow (cyan + magenta) --- */
+body::after{
+  background:
+    radial-gradient(760px 460px at 12% -8%, rgba(0,229,212,.10), transparent 60%),
+    radial-gradient(680px 420px at 96% 0%, rgba(255,46,136,.07), transparent 55%);
+}
+/* --- navbar = HUD bar --- */
+.navbar{ border-bottom:1px solid rgba(0,229,212,.28); backdrop-filter:blur(10px);
+  background:linear-gradient(180deg, rgba(7,10,16,.96), rgba(7,10,16,.72)); }
+.navbar-brand{ letter-spacing:1px; text-shadow:0 0 14px rgba(0,229,212,.5); }
+/* --- nav/tab aktif = neon alt cizgi --- */
+.nav-link.active, .tab.active{ box-shadow:inset 0 -2px 0 var(--accent); }
+/* --- card = HUD panel (neon kenar; clip-path YOK -> popup/grafik tasma riski yok) --- */
+.card{
+  border:1px solid var(--border);
+  border-top-color:rgba(0,229,212,.26);
+  border-radius:5px;
+  background:linear-gradient(180deg, var(--bg-card), var(--bg-secondary));
+}
+.card:hover{
+  border-color:var(--border-hover);
+  box-shadow:0 0 0 1px rgba(0,229,212,.10), 0 16px 44px -26px rgba(0,229,212,.55);
+}
+/* --- birincil buton = neon (kucuk eleman, clip kose guvenli) --- */
+.btn-primary{
+  background:var(--accent); color:#04181a; font-weight:700; letter-spacing:.4px;
+  box-shadow:0 0 16px -2px var(--accent-glow);
+  clip-path:polygon(0 0,100% 0,100% 70%,calc(100% - 8px) 100%,0 100%);
+}
+.btn-primary:hover{ box-shadow:0 0 26px 0 var(--accent-glow); }
+.btn-secondary{ border:1px solid var(--border); }
+.btn-secondary:hover{ border-color:var(--border-hover); color:var(--accent); }
+/* --- panel (Terminal Editorial konteyner) neon kenar --- */
+.panel:hover{ border-color:var(--border-hover); }
+/* --- input focus = neon --- */
+input:focus, select:focus, textarea:focus{ border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-dim); }
+.badge{ letter-spacing:.5px; }
+h1,h2{ letter-spacing:.3px; }
+/* --- gelecek bolumler icin yardimci HUD siniflari --- */
+.hud{ position:relative; background:linear-gradient(180deg, var(--bg-card), var(--bg-secondary));
+  border:1px solid var(--border);
+  clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px)); }
+.cyber-lbl{ font-size:11px; font-weight:600; letter-spacing:1.5px; text-transform:uppercase; color:var(--accent); }
+</style>
 </head>
 <body>
 
@@ -2463,6 +2529,9 @@ tr:hover td { background: rgba(0,212,170,0.04) !important; }
       </label>
       <label style="font-size:12px;color:var(--text-dim);" title="Son N gündeki realized + unrealized PnL toplamı sermayenin bu yüzdesi kadar negatife düşerse scanner yeni pozisyon açmaz. 0 = devre dışı.">Drawdown Freeze (%)
         <input id="atDrawdownFreezePct" type="number" value="0" step="0.5" min="0" max="50" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
+      </label>
+      <label style="font-size:12px;color:var(--text-dim);" title="Bugün üst üste bu kadar zararla kapanış olursa scanner gün sonuna kadar yeni pozisyon açmaz (kötü-gün durdurucu).">Üst Üste Zarar Limiti
+        <input id="atMaxConsecLosses" type="number" value="3" step="1" min="1" max="20" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
       </label>
       <label style="font-size:12px;color:var(--text-dim);" title="Drawdown'u bu kaç günlük pencerede hesapla (kapanmış pozisyon PnL'leri).">Freeze Penceresi (gün)
         <input id="atDrawdownFreezeWindow" type="number" value="7" step="1" min="1" max="30" style="width:100%;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);margin-top:4px;">
@@ -8106,6 +8175,8 @@ async function loadAutoTrade() {
       if (_tpSel) _tpSel.value = cfg.tpStrategy || 'auto';
       const _ddPct = document.getElementById('atDrawdownFreezePct');
       if (_ddPct) _ddPct.value = cfg.drawdownFreezePct ?? 0;
+      const _mcl = document.getElementById('atMaxConsecLosses');
+      if (_mcl) _mcl.value = cfg.maxConsecutiveLosses ?? 3;
       const _ddWin = document.getElementById('atDrawdownFreezeWindow');
       if (_ddWin) _ddWin.value = cfg.drawdownFreezeWindowDays ?? 7;
     }
@@ -8338,9 +8409,11 @@ async function loadAutoTrade() {
           const isBuy = t.action === 'BUY';
           const color = isBuy ? 'var(--green)' : 'var(--red)';
           const label = isBuy ? 'ALIŞ' : t.action.replace('SELL_', 'SATIŞ-');
+          const isPartial = (t.action === 'SELL_TP1' || t.action === 'SELL_TP2');
+          const undoBtn = (isPartial && t.id) ? `<button onclick="undoPartial(${t.id}, '${t.symbol}')" title="Midas'ta gerçekte satmadıysan bu kısmi satışı geri al" style="background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:2px 6px;cursor:pointer;font-size:10px;margin-left:6px;">↩️ Geri Al</button>` : '';
           return `<div style="padding:7px 0;border-bottom:1px solid var(--border);font-size:12px;">
             <div style="display:flex;justify-content:space-between;align-items:center;">
-              <div><span style="color:${color};font-weight:600;">${label}</span> <strong>${t.symbol}</strong> @ ${t.price.toFixed(2)} × ${t.quantity}</div>
+              <div><span style="color:${color};font-weight:600;">${label}</span> <strong>${t.symbol}</strong> @ ${t.price.toFixed(2)} × ${t.quantity}${undoBtn}</div>
               <div style="font-size:10px;color:var(--text-dim);">🕐 ${_fmtDt(t.createdAt)}</div>
             </div>
             <div style="color:var(--text-dim);font-size:11px;margin-top:2px;">${t.reason || ''}</div>
@@ -8607,6 +8680,7 @@ async function saveAutoTradeConfig() {
       tpStrategy: (document.getElementById('atTpStrategy')?.value) || 'auto',
       drawdownFreezePct: parseFloat(document.getElementById('atDrawdownFreezePct')?.value) || 0,
       drawdownFreezeWindowDays: parseInt(document.getElementById('atDrawdownFreezeWindow')?.value) || 7,
+      maxConsecutiveLosses: parseInt(document.getElementById('atMaxConsecLosses')?.value) || 3,
     };
     const res = await fetch(`${API_BASE}/auto-trade/config`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -8957,6 +9031,21 @@ async function reopenPosition(posId, symbol) {
     if (data.success) loadAutoTrade();
     else alert(data.error || 'Hata');
   } catch(e) { console.error('Pozisyon geri alma hatasi:', e); alert('İstek başarısız'); }
+}
+
+async function undoPartial(tradeId, symbol) {
+  const uid = _getUid();
+  if (!uid) return;
+  if (!confirm(`${symbol} kısmi satışını geri almak istediğine emin misin?\n\nSADECE Midas'ta gerçekten satmadıysan kullan. Satılan adet pozisyona geri eklenir ve ilgili TP yeniden devreye girer.`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/auto-trade/undo-partial`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ userId: uid, tradeId: tradeId })
+    });
+    const data = await res.json();
+    if (data.success) { if (data.message) alert(data.message); loadAutoTrade(); }
+    else alert(data.error || 'Hata');
+  } catch(e) { console.error('Kısmi satış geri alma hatasi:', e); alert('İstek başarısız'); }
 }
 
 // Vergi/yillik islem ozeti PDF indir

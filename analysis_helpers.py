@@ -236,6 +236,7 @@ def _compute_signal_for_stock(stock, timeframe):
             'reasons': tf_rec.get('reasons', [])[:5],
             'reason': tf_rec.get('reason', ''),
             'indicatorBreakdown': tf_rec.get('indicatorBreakdown', {}),
+            'scoreBreakdown': tf_rec.get('scoreBreakdown', {}),
             'strategy': tf_rec.get('strategy', ''),
             'candlestickPatterns': candle_patterns[:3],
             'dynamicThresholds': ind.get('dynamicThresholds', {}),

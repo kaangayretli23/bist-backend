@@ -78,6 +78,7 @@ def _auto_get_config(user_id):
                 'tpStrategy': str(_row_get(row, 'tp_strategy', 'auto') or 'auto'),
                 'drawdownFreezePct': float(_row_get(row, 'drawdown_freeze_pct', 0) or 0),
                 'drawdownFreezeWindowDays': int(_row_get(row, 'drawdown_freeze_window_days', 7) or 7),
+                'maxConsecutiveLosses': int(_row_get(row, 'max_consecutive_losses', 3) or 3),
             }
         return None
     except Exception as e:
@@ -99,6 +100,7 @@ def _auto_get_open_positions(user_id):
                 'takeProfit2': float(r['take_profit2'] or 0), 'takeProfit3': float(r['take_profit3'] or 0),
                 'trailingStop': float(r['trailing_stop'] or 0), 'highestPrice': float(r['highest_price'] or 0),
                 'openedAt': r['opened_at'],
+                'tpStrategy': (r['tp_strategy'] if 'tp_strategy' in r.keys() else 'staged') or 'staged',
             })
         return positions
     except Exception as e:
@@ -298,7 +300,12 @@ def _auto_close_position(position_id, close_price, reason, cfg=None):
         row = db.execute("SELECT * FROM auto_positions WHERE id=?", (position_id,)).fetchone()
         if not row:
             db.close()
-            return
+            return False
+        # #4d Idempotency: RT-monitor + step1 ayni pozisyonu ayni anda SL'de gorebilir (iki thread).
+        # Zaten kapanmissa tekrar kapatma → cift portfoy-sat / cift bildirim / cift log olmasin.
+        if (row['status'] if 'status' in row.keys() else 'open') != 'open':
+            db.close()
+            return False
         entry = float(row['entry_price'])
         qty = float(row['quantity'])
         gross = (close_price - entry) * qty
@@ -308,10 +315,16 @@ def _auto_close_position(position_id, close_price, reason, cfg=None):
         if entry > 0 and qty > 0 and costs > 0:
             pnl_pct = (pnl / (entry * qty)) * 100
         now_str = _now_ist().isoformat()
-        db.execute(
-            "UPDATE auto_positions SET status='closed', closed_at=?, close_price=?, close_reason=?, pnl=?, pnl_pct=? WHERE id=?",
+        # CAS: yalniz hala 'open' ise kapat. rowcount==0 → baska thread bizden once kapatmis,
+        # yan etkileri (portfoy/bildirim/log) TEKRAR calistirma.
+        cur = db.execute(
+            "UPDATE auto_positions SET status='closed', closed_at=?, close_price=?, close_reason=?, pnl=?, pnl_pct=? "
+            "WHERE id=? AND status='open'",
             (now_str, close_price, reason, round(pnl, 2), round(pnl_pct, 2), position_id)
         )
+        if cur.rowcount == 0:
+            db.close()
+            return False
         db.commit()
         db.close()
         # Portfoy senkronu: SELL -> portfolios'tan dus
@@ -324,6 +337,15 @@ def _auto_close_position(position_id, close_price, reason, cfg=None):
         try:
             from realtime_prices import clear_alert_state as _rt_clear
             _rt_clear(row['symbol'], row['user_id'], position_id)
+        except Exception:
+            pass
+        # TP icra 'asked' dedup kayitlarini temizle (reopen ayni pos_id'yi kullanir;
+        # stale key sonraki TP onay istegini bloklamasin)
+        try:
+            import telegram_state as _ts
+            with _ts._pending_tp_exec_lock:
+                for _f in ('take_profit1', 'take_profit2', 'take_profit3', 'trailing'):
+                    _ts._tp_exec_asked.discard(f"{position_id}_{_f}")
         except Exception:
             pass
         # Realtime takibi durdur — başka açık pozisyon yoksa
@@ -348,8 +370,10 @@ def _auto_close_position(position_id, close_price, reason, cfg=None):
             send_position_closed_notification(row['symbol'], close_price, round(pnl, 2), round(pnl_pct, 2), reason)
         except Exception:
             pass
+        return True   # gerçekten KAPATILDI → caller log/cooldown bir kez çalışsın (#4d)
     except Exception as e:
         print(f"[AUTO-TRADE] Pozisyon kapatma hatasi: {e}")
+        return False
 
 def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=None, cfg=None):
     """Pozisyonun bir kısmını sat (TP1/TP2 kademeli kâr alma).
@@ -486,13 +510,24 @@ def _auto_partial_close(position_id, sell_qty, price, reason, clear_tp_field=Non
 
 
 def _auto_update_trailing(position_id, new_trailing, new_highest):
-    """Trailing stop + highest price güncelle (onay sonrası çağrılır)"""
+    """Trailing stop + highest price güncelle (onay sonrası çağrılır).
+    B#3: trailing SADECE YUKARI çekilir — stale/eski bir onay stop'u geriye çekemez.
+    highest_price de yalnız yukarı. DB-agnostik (max Python'da)."""
     try:
         db = get_db()
-        db.execute(
-            "UPDATE auto_positions SET trailing_stop=?, highest_price=? WHERE id=?",
-            (new_trailing, new_highest, position_id)
-        )
+        row = db.execute("SELECT trailing_stop, highest_price FROM auto_positions WHERE id=?",
+                         (position_id,)).fetchone()
+        _cur = float(row['trailing_stop'] or 0) if row else 0
+        _cur_hi = float(row['highest_price'] or 0) if row else 0
+        _new_hi = max(_cur_hi, float(new_highest or 0))
+        if new_trailing is None or (_cur > 0 and float(new_trailing) <= _cur):
+            # Trailing iyileşmiyor (stale onay) → stop'a DOKUNMA, sadece zirveyi güncelle.
+            db.execute("UPDATE auto_positions SET highest_price=? WHERE id=?", (_new_hi, position_id))
+            print(f"[AUTO-TRADE] #{position_id} trailing geriye çekilmedi (stale onay): "
+                  f"yeni {new_trailing} <= mevcut {_cur:.2f}")
+        else:
+            db.execute("UPDATE auto_positions SET trailing_stop=?, highest_price=? WHERE id=?",
+                       (float(new_trailing), _new_hi, position_id))
         db.commit()
         db.close()
     except Exception as e:
@@ -537,3 +572,92 @@ def _auto_update_level(position_id, field, new_val):
         print(f"[AUTO-TRADE] Pozisyon #{position_id} {field} -> {float(new_val):.2f} (onay sonrasi)")
     except Exception as e:
         print(f"[AUTO-TRADE] Seviye guncelleme hatasi ({field}): {e}")
+
+
+# =====================================================================
+# TP ICRA ONAYI — TP hedefine ulasinca otomatik satis/TP-degisimi YOK.
+# Kullanici Telegram'dan onaylar; iki monitor de (RT + motor) bu kapidan gecer.
+# =====================================================================
+
+_TP_FIELD_LABEL = {'take_profit1': 'TP1', 'take_profit2': 'TP2', 'take_profit3': 'TP3',
+                   'trailing': 'Trailing-Stop'}
+
+
+def _tp_take_profit(uid, position_id, symbol, kind, tp_field, sell_qty, price, tp_target):
+    """TP hedefi tetiklendi — ONAYSIZ icra YOK. Telegram'dan onay iste; kullanici
+    onaylayinca execute_tp_exec() kismi/tam satisi yapar. Telegram yoksa pozisyon
+    dokunulmaz (kullanici elle yonetir).
+
+    kind: 'partial' (TP1/TP2 %50 sat + ilgili TP'yi kapat) | 'full' (TP3 / all-at-tp1 tam kapat).
+    """
+    label = _TP_FIELD_LABEL.get(tp_field, tp_field)
+    reason = (f"{label} tetiklendi ({float(tp_target):.2f})" if tp_field == 'trailing'
+              else f"{label} hedef ({float(tp_target):.2f})")
+    try:
+        from telegram_notifications import send_tp_exec_request
+        send_tp_exec_request(position_id, uid, symbol, kind, tp_field,
+                             sell_qty, price, tp_target, reason)
+    except Exception as e:
+        print(f"[AUTO-TRADE] {symbol} {label} onay istegi gonderilemedi: {e}")
+
+
+def execute_tp_exec(chg):
+    """Telegram onayi gelince TP icrasini gerceklestir (kismi sat veya tam kapat).
+    chg: telegram_state._pending_tp_exec kaydi. Onay handler'i cagirir.
+    Returns (ok: bool, human_msg: str)."""
+    pos_id = chg.get('position_id')
+    uid = chg.get('uid', '')
+    sym = chg.get('symbol', '')
+    tp_field = chg.get('tp_field', '')
+    kind = chg.get('kind', 'partial')
+    reason = chg.get('reason') or f"{_TP_FIELD_LABEL.get(tp_field, tp_field)} hedef"
+
+    # Icra fiyati: onay anindaki canli fiyat daha dogru; yoksa istek anindaki fiyat
+    price = float(chg.get('price') or 0)
+    try:
+        from realtime_prices import get_price
+        live = get_price(sym)
+        if live and live > 0:
+            price = float(live)
+    except Exception:
+        pass
+
+    action = {'take_profit1': 'SELL_TP1', 'take_profit2': 'SELL_TP2',
+              'take_profit3': 'SELL_TP3', 'trailing': 'SELL_TRAIL'}.get(tp_field, 'SELL_TP')
+    sell_qty = float(chg.get('sell_qty') or 0)
+    try:
+        if kind == 'full':
+            _auto_close_position(pos_id, price, f"{reason} (onayli)")
+            _auto_log_trade(uid, sym, action, price, sell_qty,
+                            f"{reason} — onayli tam kapat", 0, 0, pos_id)
+            try:
+                from auto_trader_risk import _panic_clear
+                _panic_clear(pos_id)
+            except Exception:
+                pass
+        else:
+            _auto_partial_close(pos_id, sell_qty, price,
+                                f"{reason} (onayli)", clear_tp_field=tp_field)
+            _auto_log_trade(uid, sym, action, price, sell_qty,
+                            f"{reason} — onayli kismi", 0, 0, pos_id)
+        # RT monitor alert state'ini sifirla (flag'ler tazelensin)
+        try:
+            from realtime_prices import clear_alert_state
+            clear_alert_state(sym, uid, pos_id)
+        except Exception:
+            pass
+        # 'asked' dedup kaydini temizle
+        try:
+            import telegram_state as _ts
+            with _ts._pending_tp_exec_lock:
+                _ts._tp_exec_asked.discard(f"{pos_id}_{tp_field}")
+        except Exception:
+            pass
+        human = (f"{sym}: tamamı kapatıldı @ {price:.2f}" if kind == 'full'
+                 else f"{sym}: {sell_qty:.0f} lot satıldı @ {price:.2f} "
+                      f"({_TP_FIELD_LABEL.get(tp_field, tp_field)} kapandı)")
+        print(f"[AUTO-TRADE] TP icra (onayli): {human}")
+        return True, human
+    except Exception as e:
+        print(f"[AUTO-TRADE] TP icra hatasi ({sym} {tp_field}): {e}")
+        return False, str(e)

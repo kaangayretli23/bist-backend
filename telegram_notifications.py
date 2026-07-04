@@ -15,6 +15,7 @@ from telegram_state import (
     _pending_signals, _pending_lock,
     _pending_trailing, _pending_trailing_lock,
     _pending_sl_change, _pending_sl_change_lock,
+    _pending_tp_exec, _tp_exec_asked, _pending_tp_exec_lock,
     _warning_cooldown, _warning_lock,
     _last_trailing_notified,
     SL_WARNING_COOLDOWN, TP_WARNING_COOLDOWN,
@@ -368,6 +369,12 @@ def send_trailing_update(symbol, new_trailing, highest_price, entry_price=None,
 
     trail_id = str(uuid.uuid4())[:8]
     with _pending_trailing_lock:
+        # B#3 dedup: aynı pozisyon için eski bekleyen trailing önerilerini KALDIR — sadece
+        # EN GÜNCEL kalsın. Aksi halde uptrend'de eskiler birikir, kullanıcı eski (daha düşük)
+        # bir onaya basınca stop geriye çekilebilirdi. (Ayrıca _auto_update_trailing only-up guard'lı.)
+        for _old in [tid for tid, t in _pending_trailing.items()
+                     if t.get('position_id') == position_id]:
+            _pending_trailing.pop(_old, None)
         _pending_trailing[trail_id] = {
             'position_id': position_id,
             'symbol': symbol,
@@ -441,3 +448,59 @@ def send_sl_change_request(position_id, symbol, field, old_val, new_val, reason,
         {'text': '❌ Geç',    'callback_data': f'slchg_reject_{sl_id}'}
     ]]
     return send_telegram_with_keyboard(msg, keyboard)
+
+
+def send_tp_exec_request(position_id, uid, symbol, kind, tp_field, sell_qty,
+                         price, tp_target, reason, expires_min=180):
+    """TP hedefine ulasinca OTOMATIK icra yerine Telegram onayi iste.
+    Onaylaninca execute_tp_exec() kismi/tam satisi yapar; reddedilir/suresi dolarsa
+    pozisyon ve TP dokunulmaz. Ayni pozisyon+tp_field icin tekrar sormaz (dedup).
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    ask_key = f"{position_id}_{tp_field}"
+    tp_id = str(uuid.uuid4())[:8]
+    with _pending_tp_exec_lock:
+        if ask_key in _tp_exec_asked:
+            return True  # zaten soruldu — tekrar gonderme (spam onleme)
+        _tp_exec_asked.add(ask_key)
+        _pending_tp_exec[tp_id] = {
+            'position_id': position_id, 'uid': uid, 'symbol': symbol,
+            'kind': kind, 'tp_field': tp_field, 'sell_qty': float(sell_qty or 0),
+            'price': float(price or 0), 'tp_target': float(tp_target or 0),
+            'reason': reason or '',
+            'expires_at': datetime.now() + timedelta(minutes=expires_min),
+        }
+
+    _is_stop = tp_field == 'trailing'
+    label = {'take_profit1': '🎯 TP1', 'take_profit2': '🎯 TP2', 'take_profit3': '🎯 TP3',
+             'trailing': '🛑 Trailing-Stop'}.get(tp_field, tp_field)
+    short = label.split()[-1]
+    if price and tp_target:
+        _op = '≤' if _is_stop else '≥'
+        _lbl2 = 'stop' if _is_stop else short
+        price_line = f"\n💰 Fiyat: {float(price):.2f} {_op} {_lbl2}: {float(tp_target):.2f}"
+    else:
+        price_line = ""
+    if kind == 'full':
+        action_line = f"Öneri: <b>tamamını sat</b> ({float(sell_qty or 0):.0f} lot) + pozisyonu kapat"
+    else:
+        action_line = f"Öneri: <b>%50 sat</b> ({float(sell_qty or 0):.0f} lot) + {short} kapat"
+    _suffix = '' if _is_stop else ' HEDEFİ'
+    msg = (
+        f"<b>{label}{_suffix} — {symbol}</b>{price_line}\n"
+        f"{action_line}\n"
+        f"⚠️ <b>Onayın olmadan işlem YAPILMAZ.</b>\n"
+        f"⏱ {expires_min} dk içinde yanıt yoksa iptal — pozisyon aynen kalır."
+    )
+    keyboard = [[
+        {'text': '✅ Onayla & Uygula', 'callback_data': f'tpexec_approve_{tp_id}'},
+        {'text': '❌ Geç',             'callback_data': f'tpexec_reject_{tp_id}'}
+    ]]
+    ok = send_telegram_with_keyboard(msg, keyboard)
+    if not ok:
+        # Gonderim basarisiz — kaydi geri al ki sonraki cycle tekrar denesin
+        with _pending_tp_exec_lock:
+            _pending_tp_exec.pop(tp_id, None)
+            _tp_exec_asked.discard(ask_key)
+    return True

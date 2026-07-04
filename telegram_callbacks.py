@@ -13,6 +13,7 @@ from telegram_state import (
     _pending_signals, _pending_lock,
     _pending_trailing, _pending_trailing_lock,
     _pending_sl_change, _pending_sl_change_lock,
+    _pending_tp_exec, _tp_exec_asked, _pending_tp_exec_lock,
     _telegram_thread_lock,
 )
 from telegram_notifications import send_telegram, edit_telegram_message
@@ -331,6 +332,59 @@ def _handle_sl_change_reject(sl_id, message_id):
         )
 
 
+def _handle_tp_exec_approve(tp_id, message_id):
+    """TP icra onaylandi -> kismi sat / tam kapat (execute_tp_exec)."""
+    with _pending_tp_exec_lock:
+        chg = _pending_tp_exec.pop(tp_id, None)
+
+    if not chg:
+        edit_telegram_message(message_id, "⚠️ TP icra önerisi bulunamadı veya süresi dolmuş.")
+        return
+
+    if datetime.now() > chg['expires_at']:
+        with _pending_tp_exec_lock:
+            _tp_exec_asked.discard(f"{chg['position_id']}_{chg['tp_field']}")
+        edit_telegram_message(
+            message_id,
+            f"⏰ <b>{chg['symbol']}</b> TP icra önerisinin süresi dolmuş.\n"
+            f"Pozisyon aynen korunuyor."
+        )
+        return
+
+    try:
+        from auto_trader import execute_tp_exec
+        ok, human = execute_tp_exec(chg)
+        if ok:
+            edit_telegram_message(
+                message_id,
+                f"✅ <b>{chg['symbol']} TP UYGULANDI</b>\n{human}\n"
+                f"⚡ Midas'ta da bu işlemi yap."
+            )
+        else:
+            # Icra hatasi — 'asked'i temizle ki tekrar denenebilsin
+            with _pending_tp_exec_lock:
+                _tp_exec_asked.discard(f"{chg['position_id']}_{chg['tp_field']}")
+            edit_telegram_message(message_id, f"❌ TP icra hatası: {human}")
+    except Exception as e:
+        edit_telegram_message(message_id, f"❌ TP icra hatası: {e}")
+        print(f"[TELEGRAM] TP exec approve hatasi: {e}")
+
+
+def _handle_tp_exec_reject(tp_id, message_id):
+    """TP icra reddedildi -> pozisyon ve TP dokunulmaz. Tekrar sorulmaz (asked kaydi kalir)."""
+    with _pending_tp_exec_lock:
+        chg = _pending_tp_exec.pop(tp_id, None)
+        # 'asked' KAYDI KALIR — reddedilen TP icin bu cycle'da tekrar nag etme
+
+    if chg:
+        label = _SL_CHG_FIELD_LABELS.get(chg['tp_field'], chg['tp_field'])
+        edit_telegram_message(
+            message_id,
+            f"❌ <b>{chg['symbol']} {label}</b> icrası geçildi.\n"
+            f"Pozisyon ve TP aynen korunuyor."
+        )
+
+
 def _process_update(update):
     """Tek bir Telegram update'i islemi.
 
@@ -368,6 +422,10 @@ def _process_update(update):
         _handle_sl_change_approve(data.replace('slchg_approve_', ''), message_id)
     elif data.startswith('slchg_reject_'):
         _handle_sl_change_reject(data.replace('slchg_reject_', ''), message_id)
+    elif data.startswith('tpexec_approve_'):
+        _handle_tp_exec_approve(data.replace('tpexec_approve_', ''), message_id)
+    elif data.startswith('tpexec_reject_'):
+        _handle_tp_exec_reject(data.replace('tpexec_reject_', ''), message_id)
     elif data.startswith('approve_'):
         _handle_approve(data.replace('approve_', ''), message_id)
     elif data.startswith('reject_'):
@@ -483,17 +541,22 @@ def _cleanup_expired_signals():
                     print(f"[TELEGRAM] Expired reject cooldown hatasi: {_rc_err}")
                 send_telegram(f"⏰ <b>{sig['symbol']}</b> sinyali yanıtlanmadı, iptal edildi.\n<i>Bu hisse 45 dk tekrar önerilmeyecek.</i>")
 
-            # Trailing güncellemelerini temizle (süresi dolanlar otomatik onaylanır)
+            # Trailing güncellemelerini temizle — süresi dolanlar artık REDDEDİLİR (eski stop korunur).
+            # ÖNCEDEN otomatik onaylanıyordu → kullanıcı onayı OLMADAN stop değişiyordu (bug; SL/TP
+            # bloğuyla da tutarsızdı). Kullanıcı yanıt vermezse stop AYNEN kalır.
             expired_trails = []
             with _pending_trailing_lock:
                 exp_ids = [tid for tid, t in _pending_trailing.items() if now > t['expires_at']]
                 for tid in exp_ids:
                     expired_trails.append(_pending_trailing.pop(tid))
             for trail in expired_trails:
+                print(f"[TELEGRAM] Trailing onayı yanıtlanmadı, İPTAL — eski stop korunuyor: "
+                      f"{trail['symbol']} (önerilen {trail.get('new_trailing', 0):.2f} UYGULANMADI)")
                 try:
-                    from auto_trader import _auto_update_trailing
-                    _auto_update_trailing(trail['position_id'], trail['new_trailing'], trail['new_highest'])
-                    print(f"[TELEGRAM] Trailing süresi doldu, otomatik onaylandı: {trail['symbol']} → {trail['new_trailing']:.2f}")
+                    send_telegram(
+                        f"⏰ <b>{trail['symbol']}</b> trailing-stop önerisi yanıtlanmadı, iptal edildi.\n"
+                        f"<i>Mevcut stop değiştirilmedi — aynen korunuyor.</i>"
+                    )
                 except Exception:
                     pass
 
@@ -512,6 +575,26 @@ def _cleanup_expired_signals():
                     send_telegram(
                         f"⏰ <b>{chg['symbol']}</b> {label} degisim onerisi yanitlanmadi, iptal edildi.\n"
                         f"<i>Mevcut seviye ({chg['old_val']:.2f}) korunuyor.</i>"
+                    )
+                except Exception:
+                    pass
+
+            # TP icra onaylarini temizle (suresi dolanlar IPTAL — pozisyon dokunulmaz).
+            # 'asked' kaydi da silinir ki fiyat yine TP'deyse ileride tekrar sorulabilsin.
+            expired_tps = []
+            with _pending_tp_exec_lock:
+                exp_ids = [tid for tid, c in _pending_tp_exec.items() if now > c['expires_at']]
+                for tid in exp_ids:
+                    c = _pending_tp_exec.pop(tid)
+                    _tp_exec_asked.discard(f"{c['position_id']}_{c['tp_field']}")
+                    expired_tps.append(c)
+            for c in expired_tps:
+                label = _SL_CHG_FIELD_LABELS.get(c['tp_field'], c['tp_field'])
+                print(f"[TELEGRAM] {c['symbol']} {label} icra onerisi suresi doldu, IPTAL")
+                try:
+                    send_telegram(
+                        f"⏰ <b>{c['symbol']}</b> {label} icra önerisi yanıtlanmadı, iptal edildi.\n"
+                        f"<i>Pozisyon ve TP aynen korunuyor.</i>"
                     )
                 except Exception:
                     pass
