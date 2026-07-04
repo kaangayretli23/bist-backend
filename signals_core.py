@@ -150,6 +150,7 @@ def calc_recommendation(hist, indicators, symbol=None):
 
             score=0; reasons=[]; strategy_parts=[]
             buy_indicators = 0; sell_indicators = 0; total_indicators = 0
+            contrib = {}; _cs = 0.0   # faktör katkı takibi (skor mantığını DEĞİŞTİRMEZ — sadece delta okur)
 
             # 1. Trend (SMA) - tek bir gösterge sayılır (3 alt-check birleşik, consensus'u şişirmesin)
             ps, pm, pl = p['sma']
@@ -182,6 +183,7 @@ def calc_recommendation(hist, indicators, symbol=None):
             elif sma_sell_sub > sma_buy_sub:
                 sell_indicators += 1
 
+            contrib['trend'] = round(score - _cs, 3); _cs = score
             # 2. RSI (dinamik eşiklere göre bucket sınırları — süreksizlik yok)
             rsi_val=calc_rsi(c, period=p['rsi'])
             rsi_v = rsi_val.get('value', 50)
@@ -207,6 +209,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                 score-=0.5; sell_indicators+=1
                 reasons.append(f'RSI={sf(rsi_v)}: Notr-negatif')
 
+            contrib['rsi'] = round(score - _cs, 3); _cs = score
             # 3. MACD
             macd=calc_macd(c, *p['macd'])
             macd_type = macd.get('signalType', 'neutral')
@@ -219,6 +222,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                 score-=1.5; sell_indicators+=1
                 reasons.append(f'MACD satis sinyali (histogram: {macd_hist})')
 
+            contrib['macd'] = round(score - _cs, 3); _cs = score
             # 4. Bollinger — sadece band dışı sinyal consensus'a sayılır; orta bant sadece bilgi
             if bb_lower > 0 and cur < bb_lower:
                 total_indicators += 1
@@ -235,6 +239,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                 else:
                     reasons.append(f'Fiyat Bollinger orta bant ({sf(bb_middle)}) altinda')
 
+            _d_bb = score - _cs; _cs = score   # bollinger delta'si formasyon kovasina eklenecek (kod sirasi degismedi)
             # 5. Hacim trendi — son kısa pencere vs daha önceki uzun pencere (overlap yok)
             _vol_recent_n = min(5, len(sv))
             _vol_base_n   = max(p['vol'], _vol_recent_n + 5)
@@ -258,6 +263,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                 elif vol_ratio < 0.5:
                     reasons.append(f'Hacim ortalamanin altinda ({sf(vol_ratio)}x) → Dusuk ilgi, sinyal gucsuslesiyor')
 
+            contrib['hacim'] = round(score - _cs, 3); _cs = score
             # 6. Momentum (periyoda gore)
             if len(sc)>=days and sc[0] > 0:
                 period_return=sf(((c[-1]-sc[0])/sc[0])*100)
@@ -267,6 +273,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                 elif period_return<-10: score-=1.5; sell_indicators+=1; reasons.append(f'{label} getiri: %{period_return} (sert dusus)')
                 elif period_return<-5: score-=1; sell_indicators+=1; reasons.append(f'{label} getiri: %{period_return} (negatif)')
 
+            contrib['momentum'] = round(score - _cs, 3); _cs = score
             # 7. Stochastic
             stoch=calc_stochastic(c,h,l, period=p['stoch'])
             stoch_k = stoch.get('k', 50)
@@ -287,6 +294,7 @@ def calc_recommendation(hist, indicators, symbol=None):
             else:
                 reasons.append(f'ADX={sf(adx_val)}: Zayif trend (<25), yatay piyasa - sinyaller zayifliyor')
 
+            contrib['osilator'] = round(score - _cs, 3); _cs = score   # stochastic + adx
             # 9. Ichimoku (eger yeterli veri varsa)
             if n >= 52:
                 ichi = calc_ichimoku(c, h, l)
@@ -322,6 +330,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                         sell_indicators += 1
                         reasons.append(f'Mum: {pat["name"]} → {pat["description"][:60]}')
 
+            contrib['formasyon'] = round(score - _cs + _d_bb, 3); _cs = score   # bollinger + ichimoku + psar + mum (eski 'orta' kovasi 4'e bolundu)
             # 12. Diverjans sinyali (±2.0 puan - guclu ve nadir sinyal)
             if n >= 50:
                 total_indicators += 1
@@ -336,6 +345,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                     recent_labels = [d['label'] for d in div_recent if d['signal'] == 'sell'][:2]
                     reasons.append(f'Ayi diverjans{"i (son 20 bar icinde)" if div_has_recent else ""}: {", ".join(recent_labels) if recent_labels else "RSI/MACD uyumsuzlugu"}')
 
+            contrib['divergence'] = round(score - _cs, 3); _cs = score
             # 13. MTF (Coklu Zaman Dilimi) uyum sinyali (±1.5 puan)
             if mtf_strength != 'Uyumsuz':
                 total_indicators += 1
@@ -348,6 +358,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                     score -= mtf_pts; sell_indicators += 1
                     reasons.append(f'MTF uyumu: {mtf_data.get("description", "")} → {mtf_strength} satis')
 
+            contrib['mtf'] = round(score - _cs, 3); _cs = score
             # 14. Piyasa rejimi etkisi (final clamp 394'te score'u ±14'e sınırlar; sentiment muted olmasın)
             if regime_type in REGIMES_BULLISH and score > 0:
                 score = score * 1.15
@@ -359,6 +370,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                 score = score * 0.85
                 reasons.append(f'Piyasa rejimi: {regime.get("description", "")} → Alis sinyali zayifliyor (ayi piyasasi)')
 
+            contrib['regime'] = round(score - _cs, 3); _cs = score   # rejim çarpanı İZOLE (multiplicative)
             # 15. Destek/Direnc bazli yorumlar
             if supports:
                 nearest_sup = supports[0]
@@ -380,6 +392,7 @@ def calc_recommendation(hist, indicators, symbol=None):
                 elif float(res_dist) < 5:
                     strategy_parts.append(f'{sf(nearest_res)} TL direncini kirarsa alis guclenir')
 
+            contrib['seviye'] = round(score - _cs, 3); _cs = score   # S/R yakinligi (eski seviye_sentiment'ten ayrildi)
             # 16. Fibonacci bazli yorumlar
             if fib_sup and fib_sup.get('price'):
                 fib_sup_dist = sf(((cur - fib_sup['price']) / cur) * 100)
@@ -406,9 +419,11 @@ def calc_recommendation(hist, indicators, symbol=None):
                 except Exception:
                     pass
 
+            contrib['sentiment'] = round(score - _cs, 3); _cs = score   # haber sentiment (eski seviye_sentiment'ten ayrildi)
             # Sonuc
             max_score = 14.0
             score = max(-14.0, min(14.0, score))  # skor siniri
+            contrib['clamp'] = round(score - _cs, 3); _cs = score   # clamp etkisi ayri kovada — faktor kovalarini kirletmesin
             conf = min(abs(score) / max_score * 100, 100)
 
             # Confluence filtresi: AL/SAT icin en az %40 gosterge uyumu gerekli
@@ -452,6 +467,7 @@ def calc_recommendation(hist, indicators, symbol=None):
 
             recommendations[label]={
                 'action':action,'score':sf(score),'confidence':sf(conf),
+                'scoreBreakdown': contrib,
                 'reasons':reasons[:10],
                 'reason': reason_summary,
                 'strategy': ' | '.join(strategy_parts[:4]),
