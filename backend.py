@@ -74,6 +74,7 @@ from routes_stock     import stock_bp
 from routes_analysis         import analysis_bp
 from routes_analysis_reports import analysis_reports_bp
 from routes_news             import news_bp
+from routes_ai               import ai_bp
 
 app.register_blueprint(system_bp)
 app.register_blueprint(market_bp)
@@ -84,6 +85,7 @@ app.register_blueprint(stock_bp)
 app.register_blueprint(analysis_bp)
 app.register_blueprint(analysis_reports_bp)
 app.register_blueprint(news_bp)
+app.register_blueprint(ai_bp)
 
 # Initialize database
 init_db()

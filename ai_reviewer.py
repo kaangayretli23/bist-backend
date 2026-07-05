@@ -141,18 +141,25 @@ def _log_review(symbol, signal, score, confidence, verdict, usd):
 # =====================================================================
 # LİMİT / COOLDOWN / CACHE
 # =====================================================================
+def _within_budget():
+    """(bool, sebep) — günlük çağrı + aylık USD limiti kontrolü (sembol-bağımsız)."""
+    daily_limit = _env_int('AI_DAILY_CALL_LIMIT', 50)
+    if daily_limit > 0 and get_ai_usage_today()['calls'] >= daily_limit:
+        return (False, f'gunluk_cagri_limiti ({daily_limit})')
+    monthly_usd = _env_float('AI_MONTHLY_USD_LIMIT', 10.0)
+    if monthly_usd > 0 and get_ai_usage_month()['usd'] >= monthly_usd:
+        return (False, f'aylik_usd_limiti (${monthly_usd:.2f})')
+    return (True, 'ok')
+
+
 def can_call_ai(symbol, purpose='trade_review'):
     """(bool, sebep) — AI çağrısı yapılabilir mi? Limit/cooldown kontrolü."""
     if not is_ai_review_enabled():
         return (False, 'ai_disabled')
 
-    daily_limit = _env_int('AI_DAILY_CALL_LIMIT', 50)
-    if daily_limit > 0 and get_ai_usage_today()['calls'] >= daily_limit:
-        return (False, f'gunluk_cagri_limiti ({daily_limit})')
-
-    monthly_usd = _env_float('AI_MONTHLY_USD_LIMIT', 10.0)
-    if monthly_usd > 0 and get_ai_usage_month()['usd'] >= monthly_usd:
-        return (False, f'aylik_usd_limiti (${monthly_usd:.2f})')
+    ok, reason = _within_budget()
+    if not ok:
+        return (False, reason)
 
     cooldown_min = _env_int('AI_COOLDOWN_SAME_SYMBOL_MIN', 60)
     if cooldown_min > 0:
@@ -373,3 +380,57 @@ def review_trade_candidate(candidate):
         print(f"[AI-REVIEW] {symbol} OpenAI çağrı hatası: {e}")
         _log_usage(symbol, purpose, model, 0, 0, 0.0, False, e)
         return fallback_review(f'hata:{type(e).__name__}')
+
+
+# =====================================================================
+# READ-ONLY ASİSTAN (web chat) — emir vermez, sadece sistem verisini açıklar
+# =====================================================================
+_ASSISTANT_SYSTEM = (
+    "Sen BIST Pro sisteminin READ-ONLY yardımcı asistanısın. Kullanıcının kendi lokal trading "
+    "sistemindeki verileri (sinyaller, skorlar, açık pozisyonlar, kararlar) açıklarsın. "
+    "KURALLAR: Sadece sana verilen SİSTEM VERİLERİNE dayan; veri yoksa 'elimde veri yok' de, uydurma. "
+    "Emir OLUŞTURMA, Midas'a/broker'a bağlanma, şifre/2FA isteme. Kesin al/sat tavsiyesi verme; "
+    "riskleri ve sistemin gerekçesini açıkla. Kısa, net, Türkçe yanıt ver. Nihai karar kullanıcınındır."
+)
+
+
+def ask_assistant(question, context_data, symbol=None):
+    """Read-only web asistanı. (ok/answer/error) döner. Emir vermez, sadece açıklar."""
+    if not is_ai_review_enabled():
+        return {'ok': False, 'error': 'AI kapalı (AI_REVIEW_ENABLED=1 ve OPENAI_API_KEY gerekli).'}
+    ok, reason = _within_budget()
+    if not ok:
+        return {'ok': False, 'error': f'Limit doldu: {reason}'}
+
+    model = _model()
+    timeout_sec = _env_int('AI_REVIEW_TIMEOUT_SEC', 15)
+    max_out = _env_int('AI_MAX_OUTPUT_TOKENS', 700)
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=_env('OPENAI_API_KEY'), timeout=timeout_sec)
+        user = (f"SORU: {question}\n\nSİSTEM VERİLERİ (JSON):\n"
+                f"{json.dumps(context_data, ensure_ascii=False, default=str)}")
+        base = dict(
+            model=model,
+            messages=[{"role": "system", "content": _ASSISTANT_SYSTEM},
+                      {"role": "user", "content": user}],
+            temperature=0.3,
+        )
+        try:
+            resp = client.chat.completions.create(max_completion_tokens=max_out, **base)
+        except Exception as e1:
+            if 'token' in str(e1).lower() or 'Unsupported' in str(e1):
+                resp = client.chat.completions.create(max_tokens=max_out, **base)
+            else:
+                raise
+        answer = resp.choices[0].message.content or ''
+        usage = getattr(resp, 'usage', None)
+        in_tok = getattr(usage, 'prompt_tokens', 0) if usage else 0
+        out_tok = getattr(usage, 'completion_tokens', 0) if usage else 0
+        usd = estimate_ai_cost(model, in_tok, out_tok)
+        _log_usage(symbol or 'ASSISTANT', 'assistant', model, in_tok, out_tok, usd, True, None)
+        return {'ok': True, 'answer': answer, 'usd': usd}
+    except Exception as e:
+        print(f"[AI-ASSISTANT] hata: {e}")
+        _log_usage(symbol or 'ASSISTANT', 'assistant', model, 0, 0, 0.0, False, e)
+        return {'ok': False, 'error': f'AI hata: {type(e).__name__}'}
