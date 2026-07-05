@@ -393,7 +393,14 @@ def _process_update(update):
     yollarsa, pozisyon acma/SL degisme/trail onaylama gibi para etkili
     aksiyonlar bloklanir.
     """
+    # Düz metin mesajı mı? (buton değil) → read-only AI asistanına yönlendir.
     if 'callback_query' not in update:
+        if 'message' in update or 'edited_message' in update:
+            try:
+                from telegram_ai_chat import handle_text_message
+                handle_text_message(update)
+            except Exception as e:
+                print(f"[TELEGRAM] AI chat isleme hatasi: {e}")
         return
 
     cq = update['callback_query']
@@ -453,7 +460,7 @@ def _sync_last_update_id():
         resp = req.get(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
             params={'offset': -1, 'limit': 1, 'timeout': 0,
-                    'allowed_updates': ['callback_query']},
+                    'allowed_updates': ['callback_query', 'message']},
             timeout=10
         )
         if resp.status_code != 200:
@@ -489,7 +496,7 @@ def _telegram_polling():
                 params={
                     'offset': _state._last_update_id + 1,
                     'timeout': 30,
-                    'allowed_updates': ['callback_query']
+                    'allowed_updates': ['callback_query', 'message']
                 },
                 timeout=35
             )
