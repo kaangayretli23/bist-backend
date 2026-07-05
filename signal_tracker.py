@@ -75,7 +75,18 @@ def log_signals_batch(results, timeframe):
             factors_json = None
             if isinstance(_br, dict) and _br:
                 try:
-                    factors_json = _json.dumps(_br, ensure_ascii=False)
+                    _factors = dict(_br)
+                    # MTF SHADOW (Kemal raund 5 #4): skora katilmaz ama yon/guc loglanir.
+                    # Altcizgi onekli anahtar → sayisal kova (edge) analizinde atlanir.
+                    _mtf_dir = r.get('mtfDirection')
+                    if _mtf_dir is not None:
+                        _factors['_mtf'] = {
+                            'dir': _mtf_dir,
+                            'score': r.get('mtfScore', 0),
+                            'align': r.get('mtfAlignment', ''),
+                            'strength': r.get('mtfStrength', ''),
+                        }
+                    factors_json = _json.dumps(_factors, ensure_ascii=False)
                 except Exception:
                     factors_json = None
 

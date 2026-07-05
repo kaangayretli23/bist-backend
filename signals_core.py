@@ -346,19 +346,15 @@ def calc_recommendation(hist, indicators, symbol=None):
                     reasons.append(f'Ayi diverjans{"i (son 20 bar icinde)" if div_has_recent else ""}: {", ".join(recent_labels) if recent_labels else "RSI/MACD uyumsuzlugu"}')
 
             contrib['divergence'] = round(score - _cs, 3); _cs = score
-            # 13. MTF (Coklu Zaman Dilimi) uyum sinyali (±1.5 puan)
+            # 13. MTF (Coklu Zaman Dilimi) — SHADOW MODE (Kemal raund 5 #4).
+            # Skora KATILMAZ; yalnizca olculur/loglanir. 3 hafta edge birikince karar verilecek.
+            # (Eski hali ±1.5 puan ekliyordu ama aylik bacak yapisal olarak oluydu — hic atesLEMEDI.)
             if mtf_strength != 'Uyumsuz':
-                total_indicators += 1
                 if mtf_direction == 'buy':
-                    mtf_pts = 1.5 if mtf_score_val == 3 else 1.0
-                    score += mtf_pts; buy_indicators += 1
-                    reasons.append(f'MTF uyumu: {mtf_data.get("description", "")} → {mtf_strength} alis')
+                    reasons.append(f'[shadow] MTF uyumu: {mtf_data.get("description", "")} → {mtf_strength} alis (skora katilmaz)')
                 elif mtf_direction == 'sell':
-                    mtf_pts = 1.5 if mtf_score_val == 3 else 1.0
-                    score -= mtf_pts; sell_indicators += 1
-                    reasons.append(f'MTF uyumu: {mtf_data.get("description", "")} → {mtf_strength} satis')
-
-            contrib['mtf'] = round(score - _cs, 3); _cs = score
+                    reasons.append(f'[shadow] MTF uyumu: {mtf_data.get("description", "")} → {mtf_strength} satis (skora katilmaz)')
+            contrib['mtf'] = 0.0   # shadow — skor etkisi yok
             # 14. Piyasa rejimi etkisi (final clamp 394'te score'u ±14'e sınırlar; sentiment muted olmasın)
             if regime_type in REGIMES_BULLISH and score > 0:
                 score = score * 1.15

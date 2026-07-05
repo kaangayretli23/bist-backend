@@ -55,46 +55,43 @@ def _find_troughs(arr, window=5):
 # MTF (Multi-TimeFrame) SİNYAL
 # =====================================================================
 def calc_mtf_signal(hist_daily):
-    """Gercek coklu zaman dilimi sinyali: daily/weekly/monthly"""
+    """Coklu zaman dilimi TREND uyumu: gunluk + haftalik.
+
+    SHADOW MODE (Kemal raund 5 #4): calc_recommendation skoruna KATILMAZ, olcum amaclidir.
+    Eski surum 3 bacakliydi (gunluk/haftalik/aylik) ama:
+      (1) aylik bacak 1y veriyle ~11 bara dusuyor → MACD/EMA/BB hesaplanamiyor → hep neutral;
+      (2) _tf_signal ic puanlamasi celiskiliydi: RSI KONTRA (asiri satim=+2) iken MACD/EMA TREND
+          yonlu → birbirini soforduyor, sinyal nadiren ±2'ye ulasip 'buy/sell' uretiyordu.
+    Burada aylik atildi (iki saglikli bacak kaldi) ve _tf_signal tamamen TREND-uyumlu okunuyor
+    (RSI momentum yonunde, MACD/EMA trend yonunde) — MTF'nin amaci "zaman dilimleri ayni yone mi
+    trend ediyor" oldugundan bu tutarli."""
     def _tf_signal(hist):
-        if hist is None or len(hist) < 10:
+        if hist is None or len(hist) < 15:
             return {'signal': 'neutral', 'score': 0, 'rsi': 50,
                     'macd': 'neutral', 'ema': 'neutral', 'bars': 0}
         try:
             c = hist['Close'].values.astype(float)
-            h = hist['High'].values.astype(float) if 'High' in hist.columns else c.copy()
-            l = hist['Low'].values.astype(float) if 'Low' in hist.columns else c.copy()
-            h = np.where(np.isnan(h), c, h)
-            l = np.where(np.isnan(l), c, l)
             n = len(c)
-            score = 0
-            rsi_d = calc_rsi(c)
-            rsi_val = float(rsi_d.get('value', 50))
-            if   rsi_val < 35: score += 2
-            elif rsi_val < 45: score += 1
-            elif rsi_val > 65: score -= 2
-            elif rsi_val > 55: score -= 1
+            score = 0.0
+            # RSI — momentum/trend teyidi yonunde (kontra DEGIL)
+            rsi_val = float(calc_rsi(c).get('value', 50))
+            if   rsi_val >= 55: score += 1
+            elif rsi_val <= 45: score -= 1
+            # MACD histogram — trend yonu
             macd_sig = 'neutral'
             if n >= 26:
-                md = calc_macd(c)
-                hist_val = float(md.get('histogram', 0))
+                hist_val = float(calc_macd(c).get('histogram', 0))
                 if   hist_val > 0: score += 1; macd_sig = 'buy'
                 elif hist_val < 0: score -= 1; macd_sig = 'sell'
+            # EMA dizilimi — trend yonu
             ema_sig = 'neutral'
             if n >= 50:
                 s = pd.Series(c)
                 e20 = float(s.ewm(span=20, adjust=False).mean().iloc[-1])
                 e50 = float(s.ewm(span=50, adjust=False).mean().iloc[-1])
                 cur = float(c[-1])
-                if   cur > e20 and e20 > e50: score += 1; ema_sig = 'buy'
-                elif cur < e20 and e20 < e50: score -= 1; ema_sig = 'sell'
-            if n >= 20:
-                bb = calc_bollinger(c, float(c[-1]))
-                bbl = float(bb.get('lower', 0))
-                bbu = float(bb.get('upper', 0))
-                cp = float(c[-1])
-                if bbl > 0 and cp < bbl: score += 1
-                elif bbu > 0 and cp > bbu: score -= 1
+                if   cur > e20 > e50: score += 1; ema_sig = 'buy'
+                elif cur < e20 < e50: score -= 1; ema_sig = 'sell'
             signal = 'buy' if score >= 2 else ('sell' if score <= -2 else 'neutral')
             return {
                 'signal': signal, 'score': sf(score),
@@ -106,26 +103,27 @@ def calc_mtf_signal(hist_daily):
                     'macd': 'neutral', 'ema': 'neutral', 'bars': 0, 'error': str(e)}
 
     try:
-        daily_sig   = _tf_signal(hist_daily)
-        weekly_sig  = _tf_signal(_resample_to_tf(hist_daily, 'weekly'))
-        monthly_sig = _tf_signal(_resample_to_tf(hist_daily, 'monthly'))
-        sigs = [daily_sig['signal'], weekly_sig['signal'], monthly_sig['signal']]
+        daily_sig  = _tf_signal(hist_daily)
+        weekly_sig = _tf_signal(_resample_to_tf(hist_daily, 'weekly'))
+        sigs = [daily_sig['signal'], weekly_sig['signal']]
         buy_c  = sigs.count('buy')
         sell_c = sigs.count('sell')
-        if   buy_c >= 2:  dominant = 'buy';  mtf_score = buy_c
-        elif sell_c >= 2: dominant = 'sell'; mtf_score = sell_c
+        # MTF sadece IKI bacak da ayni yone baktiginda ateSler (gercek uyum).
+        if   buy_c == 2:  dominant = 'buy';  mtf_score = 2
+        elif sell_c == 2: dominant = 'sell'; mtf_score = 2
         else:             dominant = 'neutral'; mtf_score = 0
-        alignment = f'{max(buy_c, sell_c)}/3'
-        strength  = ('Guclu' if max(buy_c, sell_c) == 3
-                     else ('Orta' if max(buy_c, sell_c) == 2 else 'Uyumsuz'))
+        aligned = max(buy_c, sell_c)
+        alignment = f'{aligned}/2'
+        strength  = 'Guclu' if aligned == 2 else 'Uyumsuz'
+        # monthly: geriye-uyum icin cikti sozlugunde tutulur ama 1y veriyle guvenilir degil → neutral
+        monthly_sig = {'signal': 'neutral', 'score': 0, 'bars': 0, 'note': 'shadow: aylik bacak devre disi'}
         return {
             'daily': daily_sig, 'weekly': weekly_sig, 'monthly': monthly_sig,
             'mtfScore': mtf_score, 'mtfAlignment': alignment,
             'mtfDirection': dominant, 'mtfStrength': strength,
             'description': (
                 f'Gunluk: {daily_sig["signal"]} | '
-                f'Haftalik: {weekly_sig["signal"]} | '
-                f'Aylik: {monthly_sig["signal"]} '
+                f'Haftalik: {weekly_sig["signal"]} '
                 f'→ {alignment} uyum ({strength})'
             ),
         }
@@ -134,7 +132,7 @@ def calc_mtf_signal(hist_daily):
         return {
             'daily': {'signal': 'neutral'}, 'weekly': {'signal': 'neutral'},
             'monthly': {'signal': 'neutral'}, 'mtfScore': 0,
-            'mtfAlignment': '0/3', 'mtfDirection': 'neutral',
+            'mtfAlignment': '0/2', 'mtfDirection': 'neutral',
             'mtfStrength': 'Uyumsuz', 'error': str(e),
         }
 

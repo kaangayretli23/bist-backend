@@ -100,10 +100,9 @@ def _compute_signal_for_stock(stock, timeframe):
             mtf = {'mtfScore': 0, 'mtfAlignment': '0/3', 'mtfDirection': 'neutral', 'mtfStrength': 'Uyumsuz'}
 
         mtf_direction = mtf.get('mtfDirection', 'neutral')
-        if mtf_direction != 'neutral' and mtf_direction != sig_type:
-            composite = composite * 0.6
-        elif mtf_direction == sig_type and mtf.get('mtfScore', 0) == 3:
-            composite = min(100, composite * 1.2)
+        # SHADOW MODE (Kemal raund 5 #4): MTF composite'i ETKILEMEZ — sadece olculur/loglanir.
+        # (Eski ×0.6/×1.2 ayari MTF aylik bacagi oluyken zaten hic tetiklenmiyordu; MTF
+        #  duzeltildikten sonra canli secime sizmasin diye devre disi birakildi.)
 
         try:
             div = calc_divergence(hist)
