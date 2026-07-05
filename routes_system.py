@@ -3,7 +3,7 @@ System & diagnostic routes: health, debug, ping, network-info, index page, docs.
 """
 import os, gzip, io, shutil, socket, time
 from datetime import datetime
-from flask import Blueprint, jsonify, request, make_response
+from flask import Blueprint, jsonify, request, make_response, send_from_directory
 from config import (
     BASE_DIR, YF_OK,
     BIST100_STOCKS, CACHE_TTL, CACHE_STALE_TTL,
@@ -312,6 +312,39 @@ def index():
     resp.headers['Cache-Control'] = 'public, max-age=300'
     resp.headers['Vary'] = 'Accept-Encoding'
     return resp
+
+
+# ===== PWA (Progressive Web App) — telefonda "ana ekrana ekle" =====
+@system_bp.route('/manifest.json')
+def pwa_manifest():
+    resp = make_response(send_from_directory(BASE_DIR, 'manifest.json'))
+    resp.headers['Content-Type'] = 'application/manifest+json'
+    resp.headers['Cache-Control'] = 'public, max-age=3600'
+    return resp
+
+
+@system_bp.route('/sw.js')
+def pwa_service_worker():
+    resp = make_response(send_from_directory(BASE_DIR, 'sw.js'))
+    resp.headers['Content-Type'] = 'application/javascript'
+    # SW kök scope'u kontrol edebilsin + tarayıcı eski SW'yi hızlı güncellesin
+    resp.headers['Service-Worker-Allowed'] = '/'
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
+
+@system_bp.route('/pwa/<path:filename>')
+def pwa_asset(filename):
+    resp = make_response(send_from_directory(os.path.join(BASE_DIR, 'pwa'), filename))
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
+
+
+@system_bp.route('/apple-touch-icon.png')
+@system_bp.route('/apple-touch-icon-precomposed.png')
+def apple_touch_icon():
+    # iOS bazı sürümlerde bu kök yolları otomatik ister
+    return send_from_directory(os.path.join(BASE_DIR, 'pwa'), 'apple-touch-icon.png')
 
 
 @system_bp.route('/api/docs')
