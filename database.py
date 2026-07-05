@@ -380,6 +380,9 @@ def init_db():
         ("ALTER TABLE signal_log ADD COLUMN factors TEXT", True),
         # ortogonal ml_confidence — türev güven (skor kopyası) ile kıyas için (Kemal #1)
         ("ALTER TABLE signal_log ADD COLUMN ml_confidence REAL", True),
+        # Kemal raund 5 #3: XU100 excess return — faktör edge'ini piyasa betasından ayırmak için
+        # aynı horizonda XU100 getirisi. excess = return_pct - index_return_pct.
+        ("ALTER TABLE signal_outcomes ADD COLUMN index_return_pct REAL", True),
         # Kemal #4a: ardışık-zarar kill-switch eşiği — ayarlanabilir (default 3)
         ("ALTER TABLE auto_config ADD COLUMN max_consecutive_losses INTEGER DEFAULT 3", True),
         # outcome checker: WHERE outcome_checked=0

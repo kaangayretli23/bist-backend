@@ -115,6 +115,27 @@ def check_pending_outcomes():
         db = _get_db()
         now_ts = time.time()
 
+        # XU100 endeksi (excess return için) — bir kez çek, tüm sinyaller paylaşsın.
+        # index_at(dt): verilen tarihteki (ya da öncesi en yakın) XU100 kapanışı.
+        xu_df = _cget_hist("XU100_1y")
+        xu_idx = None
+        if xu_df is not None and len(xu_df) >= 5:
+            xu_idx = xu_df.index
+            if hasattr(xu_idx, 'tz') and xu_idx.tz is not None:
+                xu_idx = xu_idx.tz_convert(None)
+
+        def _index_close_at(target_dt):
+            """target_dt tarihindeki XU100 kapanışı (searchsorted ile hizalı). Yoksa None."""
+            if xu_df is None or xu_idx is None:
+                return None
+            try:
+                pos = xu_idx.searchsorted(target_dt)
+                if pos >= len(xu_df):
+                    pos = len(xu_df) - 1
+                return float(xu_df.iloc[pos]['Close'])
+            except Exception:
+                return None
+
         rows = db.execute(
             "SELECT id, symbol, action, price_at_signal, logged_at "
             "FROM signal_log WHERE outcome_checked=0"
@@ -166,11 +187,22 @@ def check_pending_outcomes():
                             pct = -pct  # SAT için kazanç → fiyat düşünce pozitif
                         win = 1 if pct > 0 else 0
 
+                        # XU100 excess return: aynı pencerede endeks getirisi (yön-düzeltilmiş).
+                        # Sinyal fiyat tarihi ile horizon tarihi arasındaki XU100 hareketi.
+                        idx_pct = None
+                        idx_start = _index_close_at(sig_dt)
+                        idx_end = _index_close_at(target_dt)
+                        if idx_start and idx_start > 0 and idx_end is not None:
+                            idx_pct = (idx_end - idx_start) / idx_start * 100.0
+                            if action == 'SAT':
+                                idx_pct = -idx_pct  # SAT sinyalinde endeks de ters (excess anlamlı kalsın)
+                            idx_pct = round(idx_pct, 3)
+
                         db.execute(
                             """INSERT OR REPLACE INTO signal_outcomes
-                               (signal_id, horizon_days, price_at_horizon, return_pct, win)
-                               VALUES (?,?,?,?,?)""",
-                            (sig_id, horizon, target_price, round(pct, 3), win)
+                               (signal_id, horizon_days, price_at_horizon, return_pct, win, index_return_pct)
+                               VALUES (?,?,?,?,?,?)""",
+                            (sig_id, horizon, target_price, round(pct, 3), win, idx_pct)
                         )
                         updated += 1
                         any_new = True
