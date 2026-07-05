@@ -187,6 +187,12 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             print(f"[AUTO-TRADE] {sym} sinyal hesaplama hatasi: {_rec_err}")
             continue
 
+        # NOT (minScore vs minConfidence): burada `confidence`, calc_recommendation'da
+        # skordan TÜRETİLİR → conf = min(abs(score)/14*100, 100). Yani ikisi monotonik ilişkili;
+        # hangisi daha sıkıysa BAĞLAYICI kapı odur (çoğu ayarda minConfidence baskın çıkar).
+        # Bu bir çifte-sayım DEĞİL ama iki ayrı bağımsız eşik gibi de DEĞİL — aynı büyüklüğün
+        # iki görünümü. Gerçek ayrıştırma (gate'i bağımsız ml_confidence'a taşımak) Kemal raund 6
+        # işidir; şimdilik davranış korunuyor, sadece niyet belgeleniyor.
         if signal not in ('AL', 'GÜÇLÜ AL') or score < _min_score_eff or confidence < cfg['minConfidence']:
             _log_decision(uid, sym, 'SKIP', 'score',
                           detail=f"sig={signal}, sc={score:.1f}/{_min_score_eff:.1f}, conf={confidence:.0f}/{cfg['minConfidence']}",
@@ -361,6 +367,10 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             'symbol': sym, 'price': live_price,
             'score': score, 'confidence': confidence,
             'name': s.get('name', sym),
+            'signal': signal,          # AL / GÜÇLÜ AL (AI review + telegram için)
+            'hist': hist,              # BUG FIX: bu sembolün DOĞRU hist'i (cached DataFrame ref).
+                                       # Eskiden 2. döngüde ATR-SL, döngüden sızan son sembolün
+                                       # hist'ini kullanıyordu → yanlış SL. Artık candidate taşıyor.
         })
 
     candidates.sort(key=lambda x: x['score'], reverse=True)
@@ -377,6 +387,13 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         price = cand['price']
         if price <= 0:
             continue
+
+        # BUG FIX: bu adayın DOĞRU hist'ini candidate'ten al (döngüden sızan stale hist DEĞİL).
+        # ATR-SL ve trade-plan hesabı bunu kullanır. Yoksa cache'ten tazele; o da yoksa
+        # ATR atlanır, sabit %SL fallback devrede kalır.
+        hist = cand.get('hist')
+        if hist is None or len(hist) < 20:
+            hist = _cget_hist(f"{sym}_1y")
 
         # A1: ATR-based dinamik SL — sabit %3 yerine volatiliteye gore.
         # Volatil hisselerde geniş SL (eskiden anında tetikleniyordu),
@@ -407,8 +424,7 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         tp3 = round(price * (1 + cfg['takeProfitPct'] * 2 / 100), 2)
         trailing_sl = round(price * (1 - cfg['trailingPct'] / 100), 2) if cfg['trailingStop'] else 0
 
-        # Trade planini kontrol et (daha iyi SL/TP varsa kullan)
-        hist = _cget_hist(f"{sym}_1y")
+        # Trade planini kontrol et (daha iyi SL/TP varsa kullan) — hist yukarida (döngü başı) yüklendi
         if hist is not None and len(hist) >= 20:
             try:
                 plan = calc_trade_plan(hist, symbol=sym)
@@ -474,7 +490,21 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         # Serbest sermayeye gore quantity'i kirp — "100 TL kaldi, 2000 TL'lik al" demesin
         used_capital = sum(p['entryPrice'] * p['quantity'] for p in open_positions)
         free_capital = max(0, cfg['capital'] - used_capital)
+
+        # AUTO_STRICT_CAPITAL=1: kısmi (clip'lenmiş) pozisyon AÇMA. Tam pozisyon serbest
+        # sermayeye sığmıyorsa işlemi ENGELLE — sadece uyarı yazıp devam etme. Risk-parity
+        # bozulmasın + "para yetmiyor ama yine de bir şeyler al" davranışı olmasın.
+        import os as _os_cap
+        _strict_capital = _os_cap.environ.get('AUTO_STRICT_CAPITAL', '0') == '1'
         if position_cost > free_capital:
+            if _strict_capital:
+                print(f"[AUTO-TRADE] {sym} atlandi — STRICT sermaye: maliyet {position_cost:.0f} TL "
+                      f"> serbest {free_capital:.0f} TL (clip yok, pozisyon acilmadi)")
+                _log_decision(uid, sym, 'SKIP', 'budget_strict',
+                              detail=f"maliyet={position_cost:.0f} > serbest={free_capital:.0f} TL "
+                                     f"(AUTO_STRICT_CAPITAL=1 → clip yok, engellendi)",
+                              tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
+                continue
             affordable_qty = int(free_capital / price) if price > 0 else 0
             if affordable_qty < 1:
                 print(f"[AUTO-TRADE] {sym} atlandi — serbest sermaye {free_capital:.0f} TL (1 lot {price:.2f} TL)")
@@ -496,6 +526,15 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                               tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
             except Exception:
                 pass
+
+        # SON EMNİYET GUARD'ı (strict/non-strict fark etmez): hiçbir koşulda serbest
+        # sermayeyi aşan pozisyon açma. Yukarıdaki mantıkta bir kaçak olsa bile burada durur.
+        if position_cost > free_capital + 0.01:
+            print(f"[AUTO-TRADE] {sym} atlandi — sermaye guard: maliyet {position_cost:.0f} > serbest {free_capital:.0f} TL")
+            _log_decision(uid, sym, 'SKIP', 'budget_overflow',
+                          detail=f"son guard: maliyet={position_cost:.0f} > serbest={free_capital:.0f} TL",
+                          tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
+            continue
 
         _tg_sent = False
         _already_pending = False
