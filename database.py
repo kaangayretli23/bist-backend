@@ -391,6 +391,23 @@ def init_db():
         # pending signals cleanup: WHERE expires_at < ?
         ("CREATE INDEX IF NOT EXISTS idx_pending_signals_expires "
          "ON pending_signals(expires_at)", True),
+        # === AI ikincil filtre (OpenAI) — kullanim + inceleme loglari (Kaan lokal) ===
+        # created_at: epoch (REAL) — DB-agnostik (PG NOW()/SQLite strftime farkindan kacinmak icin).
+        ("CREATE TABLE IF NOT EXISTS ai_usage_log ("
+         f"  id {'SERIAL PRIMARY KEY' if USE_POSTGRES else 'INTEGER PRIMARY KEY AUTOINCREMENT'},"
+         "  created_at REAL NOT NULL,"
+         "  symbol TEXT, purpose TEXT, model TEXT,"
+         "  input_tokens INTEGER, output_tokens INTEGER,"
+         "  estimated_usd REAL, success INTEGER DEFAULT 0, error TEXT)", True),
+        ("CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage_log(created_at)", True),
+        ("CREATE TABLE IF NOT EXISTS ai_trade_reviews ("
+         f"  id {'SERIAL PRIMARY KEY' if USE_POSTGRES else 'INTEGER PRIMARY KEY AUTOINCREMENT'},"
+         "  created_at REAL NOT NULL,"
+         "  symbol TEXT, signal TEXT, score REAL, confidence REAL,"
+         "  ai_decision TEXT, ai_confidence REAL, ai_summary TEXT,"
+         "  risk_flags_json TEXT, raw_json TEXT, estimated_usd REAL)", True),
+        ("CREATE INDEX IF NOT EXISTS idx_ai_reviews_symbol_created "
+         "ON ai_trade_reviews(symbol, created_at)", True),
     ]
     for _mig, _idempotent in _migrations:
         try:

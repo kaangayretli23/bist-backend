@@ -16,3 +16,7 @@ borsapy
 
 # reportlab: yillik vergi raporu PDF uretimi (routes_tax_report.py)
 reportlab
+
+# openai: ikincil AI filtre/inceleme katmani (ai_reviewer.py, routes_ai.py). Sadece analiz/yorum;
+# emir vermez. OPENAI_API_KEY .env'de. Key yoksa/AI_REVIEW_ENABLED=0 ise sistem etkilenmez.
+openai
