@@ -156,8 +156,12 @@ def edit_telegram_message(message_id, new_text):
 # SINYAL BILDIRIMlERI
 # =====================================================================
 
-def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, tp2, tp3, trailing_sl):
+def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, tp2, tp3, trailing_sl,
+                      ai_verdict=None):
     """Al sinyali bildirimi — Midas uyumlu format, onay/red butonlu.
+
+    ai_verdict (opsiyonel): ai_reviewer.review_trade_candidate() çıktısı. Verilirse
+    Telegram kartına 'AI 2. Göz' bölümü eklenir. None ise kart eskisi gibi (geriye uyumlu).
 
     Y1: Duplicate check + signal_id reserve + insert atomik blok icinde.
     Eski kodda iki ayri 'with _pending_lock' arasinda race vardi:
@@ -221,6 +225,22 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
     sig_time_str = sig_time.strftime('%H:%M')
     expire_time_str = (sig_time + timedelta(minutes=15)).strftime('%H:%M')
 
+    # AI 2. Göz bölümü (opsiyonel) — ai_verdict verildiyse
+    ai_section = ""
+    if ai_verdict:
+        _dec = ai_verdict.get('decision', '')
+        _emoji = {'APPROVE_CANDIDATE': '🟢', 'WAIT': '🟡', 'REJECT': '🔴'}.get(_dec, '🤖')
+        _sum = (ai_verdict.get('summary') or ai_verdict.get('telegram_text') or '').strip()
+        _flags = ai_verdict.get('risk_flags') or []
+        _flags_txt = ("\n⚠️ Riskler: " + " • ".join(str(f) for f in _flags[:3])) if _flags else ""
+        _note = "\n<i>⚠️ AI incelemesi yapılamadı — sistem sinyali.</i>" if ai_verdict.get('_fallback') else ""
+        ai_section = (
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🤖 <b>AI 2. Göz:</b> {_emoji} <b>{_dec or 'YOK'}</b>  <i>(%{int(ai_verdict.get('confidence', 0) or 0)})</i>\n"
+            f"{_sum}{_flags_txt}{_note}\n"
+            f"<i>Nihai karar sana ait — AI sadece yorum.</i>\n"
+        )
+
     msg = (
         f"🟢 <b>AL SİNYALİ — {symbol}</b>  <i>({sig_time_str})</i>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -235,6 +255,7 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🎯 TP2: {tp2:.2f} TL  (+%{tp2_pct})\n"
         f"🎯 TP3: {tp3:.2f} TL  (+%{tp3_pct})\n"
+        f"{ai_section}"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⛔ <b>ALMA:</b> fiyat <b>{chase_above:.2f}</b> üstüne çıkarsa "
         f"veya <b>{abandon_below:.2f}</b> altına inerse\n"

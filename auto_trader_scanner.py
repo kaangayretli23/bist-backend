@@ -5,8 +5,23 @@ auto_trader_engine.py'dan ayrıştırıldı (600 satır kuralı).
 """
 # Not: config, auto_trader, signals, indicators, signals_core, routes_telegram,
 # realtime_prices, data_fetcher, trade_plans fonksiyon içinde lazy import edilir.
+import os as _os_mod
 from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check, _log_decision
 from signals_market import REGIMES_BEARISH
+
+
+def _int_env(key, default):
+    try:
+        return int(_os_mod.environ.get(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_env(key, default):
+    try:
+        return float(_os_mod.environ.get(key, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_symbols, allowed, blocked):
@@ -371,6 +386,8 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             'hist': hist,              # BUG FIX: bu sembolün DOĞRU hist'i (cached DataFrame ref).
                                        # Eskiden 2. döngüde ATR-SL, döngüden sızan son sembolün
                                        # hist'ini kullanıyordu → yanlış SL. Artık candidate taşıyor.
+            'score_breakdown': rec.get('scoreBreakdown'),  # AI bağlamı için faktör kovaları
+            'reason': rec.get('reason'),                   # sistemin kendi kısa gerekçesi
         })
 
     candidates.sort(key=lambda x: x['score'], reverse=True)
@@ -381,6 +398,24 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
     except Exception:
         _daily_cap_eff = int(cfg['maxDailyTrades'])
     daily_remaining = _daily_cap_eff - _auto_get_daily_trade_count(uid)
+
+    # ===== AI ikincil filtre kurulumu (opsiyonel) =====
+    # ENABLED=0 veya key yok → _ai_enabled False, eski akış hiç değişmez.
+    # AI yalnızca EN GÜÇLÜ top-N adayda ve skor >= eşik olduğunda çalışır (tüm BIST'e DEĞİL).
+    import os as _os_ai
+    _ai_enabled = False
+    try:
+        import ai_reviewer as _air
+        _ai_enabled = _air.is_ai_review_enabled()
+    except Exception as _ai_imp_err:
+        print(f"[AUTO-TRADE] ai_reviewer yuklenemedi (AI atlandi): {_ai_imp_err}")
+    _ai_top_n = _int_env('AI_REVIEW_TOP_N', 5)
+    _ai_min_score = _float_env('AI_MIN_SCORE_FOR_REVIEW', 7.0)
+    _ai_fail_mode = _os_ai.environ.get('AI_REVIEW_FAIL_MODE', 'manual_review')
+    _tg_ok = bool(_os_ai.environ.get('TELEGRAM_BOT_TOKEN') and _os_ai.environ.get('TELEGRAM_CHAT_ID'))
+    _ai_reviews_done = 0
+    if _ai_enabled:
+        print(f"[AUTO-TRADE] AI ikincil filtre AKTIF (top_n={_ai_top_n}, min_score={_ai_min_score}, fail={_ai_fail_mode})")
 
     for cand in candidates[:min(slots, daily_remaining)]:
         sym = cand['symbol']
@@ -536,6 +571,57 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                           tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
             continue
 
+        # ===== AI İKİNCİL İNCELEME (opsiyonel, sadece top-N güçlü aday) =====
+        # AI pozisyon AÇMAZ; sadece yorumlar. WAIT/REJECT → aday bloklanır (açılmaz).
+        # APPROVE → normal akış + Telegram kartına AI özeti eklenir. Hata → fail-mode.
+        ai_verdict = None
+        if _ai_enabled and _ai_reviews_done < _ai_top_n and cand['score'] >= _ai_min_score:
+            _ai_reviews_done += 1
+            try:
+                _rr_val = round((tp1 - price) / (price - stop_loss), 2) if (price - stop_loss) > 0 else None
+                _regime_ctx = None
+                try:
+                    from signals import calc_market_regime as _cmr2
+                    _rg = _cmr2()
+                    _regime_ctx = f"{_rg.get('regime')}/{_rg.get('strength')}"
+                except Exception:
+                    pass
+                ai_verdict = _air.review_trade_candidate({
+                    'symbol': sym, 'name': cand.get('name'), 'signal': cand.get('signal'),
+                    'price': price, 'score': cand['score'], 'confidence': cand['confidence'],
+                    'stop_loss': stop_loss, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
+                    'rr': _rr_val, 'quantity': quantity, 'position_cost': position_cost,
+                    'regime': _regime_ctx, 'score_breakdown': cand.get('score_breakdown'),
+                })
+            except Exception as _ai_err:
+                print(f"[AUTO-TRADE] {sym} AI review beklenmeyen hata: {_ai_err}")
+                ai_verdict = None
+
+            if ai_verdict is not None:
+                _dec = ai_verdict.get('decision', 'WAIT')
+                _is_fallback = bool(ai_verdict.get('_fallback'))
+                # Devam koşulu: APPROVE ya da (AI çağrılamadı + fail_mode=manual_review → insana bırak)
+                _proceed = (_dec == 'APPROVE_CANDIDATE') or (_is_fallback and _ai_fail_mode == 'manual_review')
+                if not _proceed:
+                    print(f"[AUTO-TRADE] {sym} AI vetosu: {_dec} — pozisyon acilmadi")
+                    _log_decision(uid, sym, 'SKIP', 'ai_review',
+                                  detail=f"AI={_dec} conf={ai_verdict.get('confidence')} "
+                                         f"ozet={(ai_verdict.get('summary') or '')[:120]}",
+                                  tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
+                    # Bilgi amaçlı Telegram (BUTON YOK — sadece "AI önermedi", sessiz değil)
+                    if _tg_ok:
+                        try:
+                            from telegram_notifications import send_telegram as _st_info
+                            _st_info(f"🤖 <b>{sym}</b> AI ikinci-göz: <b>{_dec}</b>\n"
+                                     f"{ai_verdict.get('telegram_text') or ai_verdict.get('summary') or ''}\n"
+                                     f"<i>Pozisyon açılmadı — istersen manuel değerlendir.</i>")
+                        except Exception:
+                            pass
+                    continue
+                # Limit nedeniyle atlandıysa kullanıcıya not düş (manuel akışa devam ediyoruz)
+                if _is_fallback:
+                    print(f"[AUTO-TRADE] {sym} AI atlandi ({ai_verdict.get('_reason')}) — manuel incelemeye gonderiliyor")
+
         _tg_sent = False
         _already_pending = False
         _tg_configured = False
@@ -553,7 +639,8 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                     _tg_sent = send_trade_signal(
                         uid, sym, price, quantity,
                         cand['score'], cand['confidence'],
-                        stop_loss, tp1, tp2, tp3, trailing_sl
+                        stop_loss, tp1, tp2, tp3, trailing_sl,
+                        ai_verdict=ai_verdict,  # APPROVE ise AI özeti karta eklenir (None ise eski kart)
                     )
         except Exception as _tg_err:
             print(f"[AUTO-TRADE] Telegram sinyal hatası: {_tg_err}")
