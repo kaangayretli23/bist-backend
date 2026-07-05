@@ -331,16 +331,17 @@ def calc_recommendation(hist, indicators, symbol=None):
                         reasons.append(f'Mum: {pat["name"]} → {pat["description"][:60]}')
 
             contrib['formasyon'] = round(score - _cs + _d_bb, 3); _cs = score   # bollinger + ichimoku + psar + mum (eski 'orta' kovasi 4'e bolundu)
-            # 12. Diverjans sinyali (±2.0 puan - guclu ve nadir sinyal)
+            # 12. Diverjans sinyali (±1.0 puan - Kemal raund 5 #5: eski ±2.0 idi ama en yuksek
+            #     tekil agirlikti ve edge kaniti YOKtu (poz katki sifir kovasindan kotu) → yariya indirildi)
             if n >= 50:
                 total_indicators += 1
                 if div_signal == 'buy':
-                    div_pts = 2.0 if div_has_recent else 1.0
+                    div_pts = 1.0 if div_has_recent else 0.5
                     score += div_pts; buy_indicators += 1
                     recent_labels = [d['label'] for d in div_recent if d['signal'] == 'buy'][:2]
                     reasons.append(f'Boga diverjans{"i (son 20 bar icinde)" if div_has_recent else ""}: {", ".join(recent_labels) if recent_labels else "RSI/MACD uyumsuzlugu"}')
                 elif div_signal == 'sell':
-                    div_pts = 2.0 if div_has_recent else 1.0
+                    div_pts = 1.0 if div_has_recent else 0.5
                     score -= div_pts; sell_indicators += 1
                     recent_labels = [d['label'] for d in div_recent if d['signal'] == 'sell'][:2]
                     reasons.append(f'Ayi diverjans{"i (son 20 bar icinde)" if div_has_recent else ""}: {", ".join(recent_labels) if recent_labels else "RSI/MACD uyumsuzlugu"}')
