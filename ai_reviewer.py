@@ -52,13 +52,25 @@ def is_ai_review_enabled():
 # =====================================================================
 # MALİYET
 # =====================================================================
-def estimate_ai_cost(model, input_tokens, output_tokens):
-    """Tahmini USD maliyet. Fiyat env'den (1M token başına USD). Default: konservatif mini-model."""
-    price_in = _env_float('AI_PRICE_INPUT_PER_1M', 0.15)
-    price_out = _env_float('AI_PRICE_OUTPUT_PER_1M', 0.60)
+def estimate_ai_cost(model, input_tokens, output_tokens, cached_tokens=0):
+    """Tahmini USD maliyet. Fiyat env'den (1M token başına USD).
+
+    OpenAI'da prompt_tokens cached token'ları DA içerir; cached kısım daha ucuza fatura edilir.
+    Bu yüzden: non_cached_input = input - cached, cached ayrı (indirimli) fiyattan hesaplanır.
+    """
+    price_in = _env_float('AI_PRICE_INPUT_PER_1M', 0.75)
+    price_cached = _env_float('AI_PRICE_CACHED_INPUT_PER_1M', price_in)  # yoksa normal input fiyatı
+    price_out = _env_float('AI_PRICE_OUTPUT_PER_1M', 4.50)
     inp = int(input_tokens or 0)
     out = int(output_tokens or 0)
-    return round((inp / 1_000_000.0) * price_in + (out / 1_000_000.0) * price_out, 6)
+    cached = max(0, min(int(cached_tokens or 0), inp))  # cached, input'un alt kümesi
+    non_cached = inp - cached
+    return round(
+        (non_cached / 1_000_000.0) * price_in
+        + (cached / 1_000_000.0) * price_cached
+        + (out / 1_000_000.0) * price_out,
+        6,
+    )
 
 
 # =====================================================================
@@ -333,10 +345,23 @@ def _call_openai(system_prompt, user_payload, timeout_sec, max_out):
         else:
             raise
     content = resp.choices[0].message.content or '{}'
+    return json.loads(content), _usage_tokens(resp)
+
+
+def _usage_tokens(resp):
+    """(input, output, cached) token sayıları. cached: prompt_tokens_details.cached_tokens."""
     usage = getattr(resp, 'usage', None)
-    in_tok = getattr(usage, 'prompt_tokens', 0) if usage else 0
-    out_tok = getattr(usage, 'completion_tokens', 0) if usage else 0
-    return json.loads(content), (in_tok, out_tok)
+    if not usage:
+        return (0, 0, 0)
+    in_tok = getattr(usage, 'prompt_tokens', 0) or 0
+    out_tok = getattr(usage, 'completion_tokens', 0) or 0
+    details = getattr(usage, 'prompt_tokens_details', None)
+    cached = 0
+    if details is not None:
+        cached = (getattr(details, 'cached_tokens', None)
+                  or (details.get('cached_tokens') if isinstance(details, dict) else 0)
+                  or 0)
+    return (in_tok, out_tok, cached)
 
 
 # =====================================================================
@@ -367,8 +392,8 @@ def review_trade_candidate(candidate):
     max_out = _env_int('AI_MAX_OUTPUT_TOKENS', 700)
     ctx = build_candidate_context(candidate)
     try:
-        raw, (in_tok, out_tok) = _call_openai(_SYSTEM_PROMPT, ctx, timeout_sec, max_out)
-        usd = estimate_ai_cost(model, in_tok, out_tok)
+        raw, (in_tok, out_tok, cached_tok) = _call_openai(_SYSTEM_PROMPT, ctx, timeout_sec, max_out)
+        usd = estimate_ai_cost(model, in_tok, out_tok, cached_tok)
         verdict = _normalize_verdict(raw)
         _log_usage(symbol, purpose, model, in_tok, out_tok, usd, True, None)
         _log_review(symbol, candidate.get('signal'), candidate.get('score'),
@@ -424,10 +449,8 @@ def ask_assistant(question, context_data, symbol=None):
             else:
                 raise
         answer = resp.choices[0].message.content or ''
-        usage = getattr(resp, 'usage', None)
-        in_tok = getattr(usage, 'prompt_tokens', 0) if usage else 0
-        out_tok = getattr(usage, 'completion_tokens', 0) if usage else 0
-        usd = estimate_ai_cost(model, in_tok, out_tok)
+        in_tok, out_tok, cached_tok = _usage_tokens(resp)
+        usd = estimate_ai_cost(model, in_tok, out_tok, cached_tok)
         _log_usage(symbol or 'ASSISTANT', 'assistant', model, in_tok, out_tok, usd, True, None)
         return {'ok': True, 'answer': answer, 'usd': usd}
     except Exception as e:
