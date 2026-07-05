@@ -90,6 +90,13 @@ app.register_blueprint(ai_bp)
 # Initialize database
 init_db()
 
+# AI key durumu — GÜVENLİ log (değer yazılmaz, sadece loaded/prefix/length)
+try:
+    import ai_reviewer as _ai_rev
+    _ai_rev.log_key_status()
+except Exception as _aie:
+    print(f"[AI-REVIEW] key durum log hatasi: {_aie}")
+
 # Load market snapshot from DB (cold-start acceleration)
 _db_load_market_snapshot()
 

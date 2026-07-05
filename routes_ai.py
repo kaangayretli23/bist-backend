@@ -145,10 +145,14 @@ def ai_status():
     """AI durum + günlük/aylık kullanım (frontend panel için, key DÖNMEZ)."""
     import ai_reviewer
     try:
+        ks = ai_reviewer.key_status()  # değer DÖNMEZ; sadece loaded/prefix/length
         return jsonify(safe_dict({
             'ok': True,
             'enabled': ai_reviewer.is_ai_review_enabled(),
-            'model': ai_reviewer._model() if ai_reviewer.is_ai_review_enabled() else None,
+            'model': ai_reviewer._model(),
+            'key_loaded': ks['loaded'],
+            'key_prefix': ks['prefix'],
+            'key_length': ks['length'],
             'usage_today': ai_reviewer.get_ai_usage_today(),
             'usage_month': ai_reviewer.get_ai_usage_month(),
         }))

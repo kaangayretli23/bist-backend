@@ -49,6 +49,50 @@ def is_ai_review_enabled():
     return _env('AI_REVIEW_ENABLED', '0') == '1' and bool(_env('OPENAI_API_KEY'))
 
 
+def key_status():
+    """API key'in GÜVENLİ durumu — değer ASLA dönmez, sadece var/yok+prefix+uzunluk."""
+    k = _env('OPENAI_API_KEY')
+    if not k:
+        return {'loaded': False, 'prefix': None, 'length': 0}
+    k = k.strip()
+    return {'loaded': True, 'prefix': k[:8] + '...', 'length': len(k)}
+
+
+def log_key_status():
+    """Başlangıçta güvenli tek satır log (değer yazılmaz)."""
+    s = key_status()
+    if s['loaded']:
+        print(f"[AI-REVIEW] OPENAI_API_KEY loaded: true | prefix: {s['prefix']} | "
+              f"length: {s['length']} | model: {_model()} | enabled: {is_ai_review_enabled()}")
+    else:
+        print("[AI-REVIEW] OPENAI_API_KEY loaded: false — .env kontrol et "
+              "(C:\\Users\\Kaan\\bist-backend\\.env)")
+
+
+# OpenAI hata tipleri (opsiyonel import — paket yoksa None)
+try:
+    from openai import AuthenticationError as _OpenAIAuthError, NotFoundError as _OpenAINotFound
+except Exception:
+    _OpenAIAuthError = _OpenAINotFound = None
+
+
+def _friendly_error(e):
+    """OpenAI exception'ını kullanıcıya gösterilecek kısa Türkçe mesaja çevir."""
+    msg = str(e).lower()
+    if _OpenAIAuthError is not None and isinstance(e, _OpenAIAuthError):
+        return 'API key geçersiz veya okunamadı'
+    if 'invalid_api_key' in msg or 'incorrect api key' in msg or '401' in msg or 'authentication' in msg:
+        return 'API key geçersiz veya okunamadı'
+    if (_OpenAINotFound is not None and isinstance(e, _OpenAINotFound)) or \
+       ('model' in msg and ('not found' in msg or 'does not exist' in msg)):
+        return f'Model bulunamadı: {_model()} (OPENAI_MODEL değerini kontrol et)'
+    if 'rate limit' in msg or '429' in msg:
+        return 'OpenAI hız/kota limiti (rate limit) — biraz sonra tekrar dene'
+    if 'timeout' in msg or 'timed out' in msg:
+        return 'OpenAI zaman aşımı — bağlantı/timeout'
+    return f'AI hata: {type(e).__name__}'
+
+
 # =====================================================================
 # MALİYET
 # =====================================================================
@@ -404,7 +448,7 @@ def review_trade_candidate(candidate):
         # Başarısız çağrı — usage'a hata olarak yaz (maliyet 0), güvenli fallback dön
         print(f"[AI-REVIEW] {symbol} OpenAI çağrı hatası: {e}")
         _log_usage(symbol, purpose, model, 0, 0, 0.0, False, e)
-        return fallback_review(f'hata:{type(e).__name__}')
+        return fallback_review(_friendly_error(e))
 
 
 # =====================================================================
@@ -456,4 +500,4 @@ def ask_assistant(question, context_data, symbol=None):
     except Exception as e:
         print(f"[AI-ASSISTANT] hata: {e}")
         _log_usage(symbol or 'ASSISTANT', 'assistant', model, 0, 0, 0.0, False, e)
-        return {'ok': False, 'error': f'AI hata: {type(e).__name__}'}
+        return {'ok': False, 'error': _friendly_error(e)}
