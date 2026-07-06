@@ -502,14 +502,23 @@ def review_trade_candidate(candidate):
 _ASSISTANT_SYSTEM = (
     "Sen BIST Pro sisteminin READ-ONLY yardımcı asistanısın. Kullanıcının kendi lokal trading "
     "sistemindeki verileri (sinyaller, skorlar, açık pozisyonlar, kararlar) açıklarsın. "
-    "KURALLAR: Sadece sana verilen SİSTEM VERİLERİNE dayan; veri yoksa 'elimde veri yok' de, uydurma. "
-    "Emir OLUŞTURMA, Midas'a/broker'a bağlanma, şifre/2FA isteme. Kesin al/sat tavsiyesi verme; "
-    "riskleri ve sistemin gerekçesini açıkla. Kısa, net, Türkçe yanıt ver. Nihai karar kullanıcınındır."
+    "ARAÇLAR: Canlı veriye ihtiyacın olursa sana verilen araçları KULLAN — fiyat (canli_fiyat), "
+    "teknik özet/stop-loss (teknik_ozet), portföy & stop mesafesi (portfoy_ozeti), en iyi adaylar "
+    "(tarama_onizle), bugünkü kararlar (bugun_kararlar). Bir veriyi araçla çekebiliyorsan 'elimde yok' "
+    "DEME, aracı çağır. Aracın döndürdüğü sonuca dayan; uydurma. "
+    "KURALLAR: Emir OLUŞTURMA, pozisyon açma/kapatma, Midas'a/broker'a bağlanma, şifre/2FA isteme. "
+    "Kesin al/sat tavsiyesi verme; riskleri ve sistemin gerekçesini açıkla. Kısa, net, Türkçe yanıt ver. "
+    "Nihai karar kullanıcınındır."
 )
 
 
 def ask_assistant(question, context_data, symbol=None):
-    """Read-only web asistanı. (ok/answer/error) döner. Emir vermez, sadece açıklar."""
+    """Read-only web/Telegram asistanı — OpenAI function-calling ile canlı veri çekebilir.
+
+    (ok/answer/error) döner. Emir vermez, sadece okur/açıklar. Araçlar ai_tools'ta (hepsi read-only).
+    Maliyet: bir soru araç çağrısı başına birden çok tur olabilir (max AI_MAX_TOOL_ROUNDS);
+    son turda araçlar kapatılır → modelin nihai cevap üretmesi garantilenir. Toplam token loglanır.
+    """
     if not is_ai_review_enabled():
         return {'ok': False, 'error': 'AI kapalı (AI_REVIEW_ENABLED=1 ve OPENAI_API_KEY gerekli).'}
     ok, reason = _within_budget()
@@ -519,28 +528,59 @@ def ask_assistant(question, context_data, symbol=None):
     model = _model()
     timeout_sec = _env_int('AI_REVIEW_TIMEOUT_SEC', 15)
     max_out = _env_int('AI_MAX_OUTPUT_TOKENS', 700)
+    max_rounds = max(2, _env_int('AI_MAX_TOOL_ROUNDS', 4))
     try:
         from openai import OpenAI
+        import ai_tools
         client = OpenAI(api_key=_env('OPENAI_API_KEY'), timeout=timeout_sec)
-        user = (f"SORU: {question}\n\nSİSTEM VERİLERİ (JSON):\n"
+        user = (f"SORU: {question}\n\nBAŞLANGIÇ SİSTEM VERİLERİ (JSON):\n"
                 f"{json.dumps(context_data, ensure_ascii=False, default=str)}")
-        base = dict(
-            model=model,
-            messages=[{"role": "system", "content": _ASSISTANT_SYSTEM},
-                      {"role": "user", "content": user}],
-            temperature=0.3,
-        )
-        try:
-            resp = client.chat.completions.create(max_completion_tokens=max_out, **base)
-        except Exception as e1:
-            if 'token' in str(e1).lower() or 'Unsupported' in str(e1):
-                resp = client.chat.completions.create(max_tokens=max_out, **base)
-            else:
+        messages = [{"role": "system", "content": _ASSISTANT_SYSTEM},
+                    {"role": "user", "content": user}]
+        tot_in = tot_out = tot_cached = 0
+
+        def _create(msgs, use_tools):
+            base = dict(model=model, messages=msgs, temperature=0.3)
+            if use_tools:
+                base['tools'] = ai_tools.TOOL_SCHEMAS
+            try:
+                return client.chat.completions.create(max_completion_tokens=max_out, **base)
+            except Exception as e1:
+                if 'token' in str(e1).lower() or 'Unsupported' in str(e1):
+                    return client.chat.completions.create(max_tokens=max_out, **base)
                 raise
-        answer = resp.choices[0].message.content or ''
-        in_tok, out_tok, cached_tok = _usage_tokens(resp)
-        usd = estimate_ai_cost(model, in_tok, out_tok, cached_tok)
-        _log_usage(symbol or 'ASSISTANT', 'assistant', model, in_tok, out_tok, usd, True, None)
+
+        answer = ''
+        for _round in range(max_rounds):
+            use_tools = _round < max_rounds - 1  # son tur: araç yok → nihai cevaba zorla
+            resp = _create(messages, use_tools)
+            _i, _o, _c = _usage_tokens(resp)
+            tot_in += _i; tot_out += _o; tot_cached += _c
+            msg = resp.choices[0].message
+            tool_calls = getattr(msg, 'tool_calls', None)
+            if tool_calls:
+                messages.append({
+                    "role": "assistant", "content": msg.content or "",
+                    "tool_calls": [{"id": tc.id, "type": "function",
+                                    "function": {"name": tc.function.name,
+                                                 "arguments": tc.function.arguments}} for tc in tool_calls],
+                })
+                for tc in tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments or '{}')
+                    except Exception:
+                        args = {}
+                    result = ai_tools.execute_tool(tc.function.name, args)
+                    messages.append({
+                        "role": "tool", "tool_call_id": tc.id,
+                        "content": json.dumps(result, ensure_ascii=False, default=str)[:4000],
+                    })
+                continue
+            answer = msg.content or ''
+            break
+
+        usd = estimate_ai_cost(model, tot_in, tot_out, tot_cached)
+        _log_usage(symbol or 'ASSISTANT', 'assistant', model, tot_in, tot_out, usd, True, None)
         return {'ok': True, 'answer': answer, 'usd': usd}
     except Exception as e:
         print(f"[AI-ASSISTANT] hata: {e}")
