@@ -9247,6 +9247,13 @@ const _DECISION_LABELS = {
   'plan_expired': '⏰ Plan süresi dolmuş', 'deviation': '📐 Fiyat sapması',
   'score_unavailable': '❓ Skor hesaplanamadı',
   'opened': '✅ Pozisyon açıldı', 'telegram_approve': '📨 Telegram onayda',
+  // Scanner'ın loglaydığı diğer sebepler (etiketsiz kalmasın)
+  'stale_data': '🕰 Veri bayat (freshness)', 'kap_negative': '📰 KAP negatif haber',
+  'kap_announcement': '📢 KAP açıklama günü', 'sector_momentum': '🏭 Sektör momentum zayıf',
+  'mtf_misalign': '🧭 Çoklu-TF uyumsuz', 'fomo': '🚀 Anti-FOMO (tepe alımı)',
+  'fomo_stale_open': 'ℹ️ Anti-FOMO atlandı (bayat bar)', 'volume_weak': '📉 Zayıf hacim onayı',
+  'turnover': '💧 Düşük likidite (ciro)', 'budget_strict': '💸 Sermaye yetmez (strict)',
+  'budget_overflow': '💸 Sermaye taşması', 'consecutive_loss_freeze': '🧊 Ardışık zarar freeze',
 };
 async function openDecisionsModal(filter='') {
   const uid = (currentUser && currentUser.userId) || '';
@@ -9364,7 +9371,10 @@ async function openAnalyticsModal(days=30) {
     const js = await r.json();
     if (!js.success) { body.innerHTML = `<div style="color:var(--red);">Hata: ${js.error||''}</div>`; return; }
     if (js.summary.totalTrades === 0) {
-      body.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-dim);">Son ${days} günde kapanmış işlem yok. Daha geniş periyot deneyin.</div>`;
+      // Kapanmış işlem yok ama sinyal backtest'i (tüm AL sinyalleri) yine gösterilebilir — bağımsız.
+      body.innerHTML = `<div style="padding:16px;text-align:center;color:var(--text-dim);">Son ${days} günde kapanmış işlem yok. Daha geniş periyot deneyin.</div>
+        <div id="sigBacktest" style="margin-top:8px;border-top:1px solid var(--border);padding-top:12px;"><div style="color:var(--text-dim);font-size:11px;">Sinyal backtest yükleniyor…</div></div>`;
+      loadSignalBacktest(10);
       return;
     }
     const s = js.summary;
@@ -9441,9 +9451,60 @@ async function openAnalyticsModal(days=30) {
     } else { html += '<div style="color:var(--text-dim);">Veri yok</div>'; }
     html += '</div></div>';
 
+    // #4 Sinyal Kalitesi (backtest) — skor bandına göre başarı; ayrı endpoint, lazy yüklenir
+    html += `<div id="sigBacktest" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">
+      <div style="font-weight:600;margin-bottom:6px;font-size:13px;">🔬 Sinyal Kalitesi — skor bandı başarısı (backtest, tüm AL sinyalleri)</div>
+      <div style="color:var(--text-dim);font-size:11px;">Yükleniyor…</div>
+    </div>`;
+
     body.innerHTML = html;
+    loadSignalBacktest(10);
   } catch(e) {
     body.innerHTML = `<div style="color:var(--red);">İstek hatası: ${e.message}</div>`;
+  }
+}
+
+// #4 Sinyal backtest bölümü — skor kovası win-rate + AI karar dağılımı (openAnalyticsModal içine gömülür)
+async function loadSignalBacktest(horizon=10) {
+  const el = document.getElementById('sigBacktest');
+  if (!el) return;
+  const _col = (n) => n > 0 ? 'var(--green)' : n < 0 ? 'var(--red)' : 'var(--text-dim)';
+  const hbtn = (h) => `<button onclick="loadSignalBacktest(${h})" style="background:${h===horizon?'var(--accent,#3b82f6)':'transparent'};border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px;">${h}g</button>`;
+  try {
+    const r = await fetch(`/api/auto-trade/signal-backtest?horizon=${horizon}&days=365`);
+    const js = await r.json();
+    if (!js.success) { el.innerHTML = `<div style="color:var(--red);">Backtest hatası: ${js.error||''}</div>`; return; }
+    let h = `<div style="font-weight:600;margin-bottom:6px;font-size:13px;">🔬 Sinyal Kalitesi — skor bandı başarısı <span style="color:var(--text-dim);font-weight:400;">(tüm AL sinyalleri, ${js.totalSignals} sinyal)</span></div>`;
+    h += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:12px;color:var(--text-dim);">Ufuk: ${hbtn(5)}${hbtn(10)}${hbtn(20)} <span style="margin-left:4px;">(gün sonrası getiri)</span></div>`;
+    h += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    h += '<thead><tr style="border-bottom:1px solid var(--border);color:var(--text-dim);"><th style="text-align:left;padding:6px;">Skor</th><th style="text-align:right;padding:6px;">n</th><th style="text-align:right;padding:6px;">Win-Rate</th><th style="text-align:right;padding:6px;">Avg Getiri</th><th style="text-align:right;padding:6px;" title="Getiri − XU100 (aynı ufuk)">Excess</th></tr></thead><tbody>';
+    for (const b of js.scoreBuckets) {
+      if (b.n === 0) continue;
+      const wrCol = b.winRate >= 50 ? 'var(--green)' : b.winRate >= 45 ? 'var(--text)' : 'var(--red)';
+      const exTxt = (b.avgExcess === null) ? '<span style="color:var(--text-dim);">—</span>'
+        : `<span style="color:${_col(b.avgExcess)};">${b.avgExcess>=0?'+':''}${b.avgExcess}%</span> <span style="color:var(--text-dim);font-size:10px;">(n=${b.excessN})</span>`;
+      h += `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 6px;font-weight:600;">${b.bucket}</td>
+        <td style="padding:5px 6px;text-align:right;">${b.n}</td>
+        <td style="padding:5px 6px;text-align:right;color:${wrCol};font-weight:600;">%${b.winRate}</td>
+        <td style="padding:5px 6px;text-align:right;color:${_col(b.avgReturn)};">${b.avgReturn>=0?'+':''}${b.avgReturn}%</td>
+        <td style="padding:5px 6px;text-align:right;">${exTxt}</td>
+      </tr>`;
+    }
+    h += '</tbody></table>';
+    // AI karar dağılımı
+    if (js.aiDecisions && js.aiDecisions.length) {
+      h += `<div style="font-weight:600;margin:12px 0 6px;font-size:13px;">🤖 AI Karar Dağılımı</div>`;
+      h += '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tbody>';
+      for (const a of js.aiDecisions) {
+        h += `<tr style="border-bottom:1px solid var(--border);"><td style="padding:4px 6px;font-weight:600;">${a.decision}</td><td style="padding:4px 6px;text-align:right;">${a.n}x</td><td style="padding:4px 6px;text-align:right;color:var(--text-dim);">skor ${a.avgScore??'—'}</td><td style="padding:4px 6px;text-align:right;color:var(--text-dim);">güven ${a.avgConfidence??'—'}</td></tr>`;
+      }
+      h += '</tbody></table>';
+    }
+    if (js.aiNote) h += `<div style="color:var(--text-dim);font-size:10px;margin-top:6px;font-style:italic;">${js.aiNote}</div>`;
+    el.innerHTML = h;
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--red);">Backtest istek hatası: ${e.message}</div>`;
   }
 }
 

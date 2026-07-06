@@ -6,7 +6,7 @@ auto_trader_engine.py'dan ayrıştırıldı (600 satır kuralı).
 # Not: config, auto_trader, signals, indicators, signals_core, routes_telegram,
 # realtime_prices, data_fetcher, trade_plans fonksiyon içinde lazy import edilir.
 import os as _os_mod
-from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check, _log_decision
+from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check, _log_decision, _data_age_sec
 from signals_market import REGIMES_BEARISH
 
 
@@ -131,6 +131,9 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
     _tf_map = {'daily': 'daily', 'swing': 'weekly', 'monthly': 'monthly'}
     _tf_now = _tf_map.get(cfg.get('tradeStyle', 'swing'), 'weekly')
 
+    # #7 Data freshness eşiği (dk→sn). Varsayılan 15 dk; 0 = gate kapalı.
+    _max_data_age_sec = _int_env('AUTO_MAX_DATA_AGE_MIN', 15) * 60
+
     # Piyasa rejim filtresi: neutral mod'da min_score'a +1 bonus (sadece A+ sinyaller)
     try:
         from auto_trader_regime import regime_score_threshold_bonus
@@ -166,6 +169,16 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             pass
         if not _signals_ok:
             continue
+
+        # #7 Data freshness gate: fiyat/hacim verisi bayatsa (feed kesintisi vb.) sinyal ÜRETME.
+        # AUTO_MAX_DATA_AGE_MIN=0 → kapali. Yaş bilinmiyorsa (kaynak yok) gate karar vermez.
+        if _max_data_age_sec > 0:
+            _age = _data_age_sec(sym)
+            if _age is not None and _age > _max_data_age_sec:
+                _log_decision(uid, sym, 'SKIP', 'stale_data',
+                              detail=f"veri {int(_age // 60)}dk eski (>{_max_data_age_sec // 60}dk)",
+                              tf=_tf_now)
+                continue
 
         hist = _cget_hist(f"{sym}_1y")
         if hist is None or len(hist) < 30:

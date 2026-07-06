@@ -9,6 +9,7 @@ modüllerine bölündü.
 backend.py bu modülü `import auto_trader` ile yükler; routes için ayrıca
 `import auto_trader_routes` eklenmiştir.
 """
+import os
 import threading
 from datetime import datetime
 try:
@@ -222,8 +223,17 @@ def _auto_open_position(user_id, symbol, price, quantity, stop_loss, tp1, tp2, t
                         print(f"[AUTO-TRADE] Pozisyon açılmadı — max_positions sınırına ulaşıldı ({cur_count}/{max_pos})")
                         db.close()
                         return 0
-                    # Sermaye kontrolu: artik gercek alim Midas'ta yapildigi icin BLOK degil sadece UYARI
+                    # Sermaye kontrolu (K3 — tek cikis noktasi): AUTO_STRICT_CAPITAL=1 ise burada
+                    # HARD BLOCK. _auto_open_position 4 yoldan cagriliyor (scanner, plan, Telegram
+                    # approve); strict guard sadece scanner'daydi — approve/plan yollari bypass ediyordu.
+                    # Blogu tek cokus noktasina koyarak 3 yolu da koruyoruz.
                     if capital > 0 and (used_capital + cost) > capital * 1.001:
+                        if os.environ.get('AUTO_STRICT_CAPITAL', '0') == '1':
+                            print(f"[AUTO-TRADE] Pozisyon açılmadı — sermaye limiti aşıldı "
+                                  f"(kullanılan={used_capital:.0f} + yeni={cost:.0f} > kapital={capital:.0f}, "
+                                  "AUTO_STRICT_CAPITAL=1 → engellendi)")
+                            db.close()
+                            return 0
                         print(f"[AUTO-TRADE] UYARI — sermaye limiti asildi ama yine de aciliyor "
                               f"(kullanılan={used_capital:.0f} + yeni={cost:.0f} > kapital={capital:.0f}). "
                               "Risk takibi icin capital ayarini guncelleyin.")

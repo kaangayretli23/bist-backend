@@ -34,6 +34,36 @@ def _log_decision(uid: str, sym: str, decision: str, reason: str = '',
     except Exception as _le:
         print(f"[DECISION-LOG] Yazilamadi {sym}/{reason}: {_le}")
 
+def _data_age_sec(sym: str):
+    """#7 Data freshness: sembolün EN TAZE veri kaynağının yaşı (saniye).
+
+    İki kaynak birleştirilir; en tazesi (min yaş) döner:
+      • batch _stock_cache[sym]['ts'] — loader (borsapy/yf) son yazımı
+      • realtime get_quote(sym)['ts'] — son WebSocket tick'i
+    Hiç kaynak yoksa None (yaş bilinmiyor → gate karar vermez, veri yok başka yerde elenir).
+    """
+    now = time.time()
+    ages = []
+    try:
+        from config import _stock_cache, _lock
+        with _lock:
+            it = _stock_cache.get(sym)
+        if it and it.get('ts'):
+            ages.append(now - float(it['ts']))
+    except Exception:
+        pass
+    try:
+        from realtime_prices import get_quote
+        q = get_quote(sym)
+        if q and q.get('ts'):
+            ages.append(now - float(q['ts']))
+    except Exception:
+        pass
+    if not ages:
+        return None
+    return min(ages)
+
+
 # SL sonrası yeniden giriş engeli: {uid_sym: (timestamp, trade_style)}
 _sl_cooldown: dict = {}
 

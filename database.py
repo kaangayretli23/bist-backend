@@ -408,6 +408,8 @@ def init_db():
          "  risk_flags_json TEXT, raw_json TEXT, estimated_usd REAL)", True),
         ("CREATE INDEX IF NOT EXISTS idx_ai_reviews_symbol_created "
          "ON ai_trade_reviews(symbol, created_at)", True),
+        # K3: cache/cooldown'un fiyat band'ine gore gecersizlestirilmesi icin fiyat sutunu
+        ("ALTER TABLE ai_trade_reviews ADD COLUMN price REAL", True),
     ]
     for _mig, _idempotent in _migrations:
         try:

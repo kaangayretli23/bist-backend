@@ -172,20 +172,21 @@ def _log_usage(symbol, purpose, model, in_tok, out_tok, usd, success, error):
         print(f"[AI-REVIEW] usage log hatasi: {e}")
 
 
-def _log_review(symbol, signal, score, confidence, verdict, usd):
+def _log_review(symbol, signal, score, confidence, verdict, usd, price=None):
     try:
         db = get_db()
         try:
             db.execute(
                 "INSERT INTO ai_trade_reviews "
                 "(created_at, symbol, signal, score, confidence, ai_decision, ai_confidence, "
-                " ai_summary, risk_flags_json, raw_json, estimated_usd) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " ai_summary, risk_flags_json, raw_json, estimated_usd, price) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (time.time(), symbol, signal, float(score or 0), float(confidence or 0),
                  verdict.get('decision', 'WAIT'), float(verdict.get('confidence', 0) or 0),
                  (verdict.get('summary', '') or '')[:1000],
                  json.dumps(verdict.get('risk_flags', []), ensure_ascii=False),
-                 json.dumps(verdict, ensure_ascii=False), float(usd or 0.0)),
+                 json.dumps(verdict, ensure_ascii=False), float(usd or 0.0),
+                 (float(price) if price is not None else None)),
             )
             db.commit()
         finally:
@@ -208,8 +209,13 @@ def _within_budget():
     return (True, 'ok')
 
 
-def can_call_ai(symbol, purpose='trade_review'):
-    """(bool, sebep) — AI çağrısı yapılabilir mi? Limit/cooldown kontrolü."""
+def can_call_ai(symbol, purpose='trade_review', signal=None, score=None, price=None):
+    """(bool, sebep) — AI çağrısı yapılabilir mi? Limit/cooldown kontrolü.
+
+    K3: cooldown da bağlam-duyarlı — sinyal/skor/fiyat MATERYAL değiştiyse cooldown içinde
+    olsa bile taze inceleme serbest (yoksa cache-miss'i cooldown bloklar, bayat WAIT döner).
+    Toplam maliyet yine AI_DAILY_CALL_LIMIT + AI_MONTHLY_USD_LIMIT ile sınırlı.
+    """
     if not is_ai_review_enabled():
         return (False, 'ai_disabled')
 
@@ -222,10 +228,12 @@ def can_call_ai(symbol, purpose='trade_review'):
         db = get_db()
         try:
             row = db.execute(
-                "SELECT created_at FROM ai_trade_reviews WHERE symbol=? ORDER BY created_at DESC LIMIT 1",
+                "SELECT created_at, signal, score, price FROM ai_trade_reviews "
+                "WHERE symbol=? ORDER BY created_at DESC LIMIT 1",
                 (symbol,),
             ).fetchone()
-            if row and (time.time() - float(row['created_at'])) < cooldown_min * 60:
+            if (row and (time.time() - float(row['created_at'])) < cooldown_min * 60
+                    and _cache_context_matches(row, signal, score, price)):
                 return (False, f'cooldown ({cooldown_min}dk)')
         except Exception:
             pass
@@ -235,18 +243,51 @@ def can_call_ai(symbol, purpose='trade_review'):
     return (True, 'ok')
 
 
-def _get_cached_review(symbol):
-    """Cache TTL içinde aynı sembol için taze inceleme varsa onu döndür (çağrı yapma)."""
+def _cache_context_matches(row, signal, score, price):
+    """K3: Son kayit ile mevcut aday MATERYAL olarak ayni mi? (cache/cooldown gecerliligi)
+
+    Sadece sembol yeterli degil — sinyal/skor/fiyat degistiyse eski AI yorumu bayattir.
+    Kaba band'ler kullaniriz (maliyet korunur, materyal degisimde yenilenir):
+      • signal: tam eslesme (AL→GÜÇLÜ AL degisince yenile)
+      • score:  tam sayiya yuvarla (1.0 puanlik band)
+      • price:  ~%2 band
+    None gecilen kriter (veya kayitta NULL) atlanir → geriye donuk uyumlu.
+    """
+    try:
+        if signal is not None and (row['signal'] or '') != signal:
+            return False
+        if score is not None and row['score'] is not None:
+            if round(float(row['score'])) != round(float(score)):
+                return False
+        if price is not None and row['price'] is not None:
+            rp = float(row['price'])
+            if rp > 0 and abs(float(price) - rp) / rp > 0.02:
+                return False
+    except Exception:
+        # Karsilastirma yapilamazsa "eslesmiyor" say — guvenli taraf (taze inceleme yapilir)
+        return False
+    return True
+
+
+def _get_cached_review(symbol, signal=None, score=None, price=None):
+    """Cache TTL içinde aynı sembol+bağlam için taze inceleme varsa onu döndür (çağrı yapma).
+
+    Bağlam (signal/score/price) verilirse ve son kayıttan MATERYAL farklıysa cache MISS →
+    bayat yorum reuse edilmez (K3). Bağlam None ise eski davranış (sembol-bazlı).
+    """
     ttl_min = _env_int('AI_CACHE_TTL_MIN', 60)
     if ttl_min <= 0:
         return None
     db = get_db()
     try:
         row = db.execute(
-            "SELECT raw_json, created_at FROM ai_trade_reviews WHERE symbol=? ORDER BY created_at DESC LIMIT 1",
+            "SELECT raw_json, created_at, signal, score, price FROM ai_trade_reviews "
+            "WHERE symbol=? ORDER BY created_at DESC LIMIT 1",
             (symbol,),
         ).fetchone()
         if row and (time.time() - float(row['created_at'])) < ttl_min * 60:
+            if not _cache_context_matches(row, signal, score, price):
+                return None
             try:
                 v = json.loads(row['raw_json'])
                 v['_cached'] = True
@@ -418,14 +459,18 @@ def review_trade_candidate(candidate):
     """
     symbol = candidate.get('symbol', '?')
     purpose = 'trade_review'
+    # K3: bağlam — sinyal/skor/fiyat değişince bayat cache/cooldown reuse edilmesin
+    c_signal = candidate.get('signal')
+    c_score = candidate.get('score')
+    c_price = candidate.get('price')
 
-    # 1) Cache — cooldown/TTL içinde taze inceleme varsa tekrar çağırma
-    cached = _get_cached_review(symbol)
+    # 1) Cache — TTL içinde AYNI bağlamlı taze inceleme varsa tekrar çağırma
+    cached = _get_cached_review(symbol, c_signal, c_score, c_price)
     if cached is not None:
         return cached
 
-    # 2) Limit/cooldown kontrolü
-    ok, reason = can_call_ai(symbol, purpose)
+    # 2) Limit/cooldown kontrolü (bağlam-duyarlı cooldown)
+    ok, reason = can_call_ai(symbol, purpose, c_signal, c_score, c_price)
     if not ok:
         # Limit/cooldown/disabled → fallback (çağrı yapılmaz, para harcanmaz)
         return fallback_review(reason)
@@ -440,8 +485,8 @@ def review_trade_candidate(candidate):
         usd = estimate_ai_cost(model, in_tok, out_tok, cached_tok)
         verdict = _normalize_verdict(raw)
         _log_usage(symbol, purpose, model, in_tok, out_tok, usd, True, None)
-        _log_review(symbol, candidate.get('signal'), candidate.get('score'),
-                    candidate.get('confidence'), verdict, usd)
+        _log_review(symbol, c_signal, c_score,
+                    candidate.get('confidence'), verdict, usd, c_price)
         verdict['_usd'] = usd
         return verdict
     except Exception as e:

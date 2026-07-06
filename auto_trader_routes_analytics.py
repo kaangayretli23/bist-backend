@@ -177,3 +177,113 @@ def auto_trade_analytics():
         }))
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/auto-trade/signal-backtest')
+@require_user
+def auto_trade_signal_backtest():
+    """#4 Sinyal backtest: skor kovasına göre başarı oranı (TÜM AL sinyalleri, sadece açılanlar değil).
+
+    Kaynak: signal_log (üretilen her AL sinyali) ⨝ signal_outcomes (horizon sonrası sonuç).
+    Bu, /analytics'ten farklı — orası GERÇEKLEŞEN trade'leri ölçer, burası sistemin SİNYAL
+    kalitesini ölçer (skor yükseldikçe başarı artıyor mu?).
+
+    Query:
+      horizon: 1|3|5|10|20 gün (default 10)
+      days:    geriye bakış penceresi (default 365, 7..1095)
+
+    Returns:
+      scoreBuckets: [{bucket:'3-5'|'5-7'|'7+'|'<3', n, wins, winRate,
+                      avgReturn, avgExcess, excessN}]   (excess = getiri - XU100)
+      aiDecisions:  [{decision:'APPROVE_CANDIDATE'|'WAIT'|'REJECT', n, avgScore, avgConfidence}]
+      aiNote: AI kararı-outcome bağı için not (henüz az veri / bağlantı yok).
+    """
+    try:
+        import time as _t
+        try:
+            horizon = int(request.args.get('horizon', 10))
+        except (TypeError, ValueError):
+            horizon = 10
+        if horizon not in (1, 3, 5, 10, 20):
+            horizon = 10
+        try:
+            days = min(max(int(request.args.get('days', 365)), 7), 1095)
+        except (TypeError, ValueError):
+            days = 365
+        cutoff_epoch = _t.time() - days * 86400
+
+        db = get_db()
+        rows = db.execute(
+            "SELECT s.score AS score, o.return_pct AS ret, o.win AS win, o.index_return_pct AS idx "
+            "FROM signal_log s JOIN signal_outcomes o ON o.signal_id = s.id "
+            "WHERE o.horizon_days=? AND s.action='AL' AND s.logged_at >= ? "
+            "      AND o.return_pct IS NOT NULL",
+            (horizon, cutoff_epoch)
+        ).fetchall()
+        ai_rows = db.execute(
+            "SELECT ai_decision AS dec, COUNT(*) AS n, AVG(score) AS avg_score, "
+            "       AVG(ai_confidence) AS avg_conf "
+            "FROM ai_trade_reviews GROUP BY ai_decision"
+        ).fetchall()
+        db.close()
+
+        # Skor kovaları — düşükten yükseğe gradient (yüksek skor = yüksek başarı mı?)
+        order = ['<3', '3-5', '5-7', '7+']
+        buckets = {k: {'n': 0, 'wins': 0, 'rets': [], 'excess': []} for k in order}
+
+        def _bucket_of(sc):
+            if sc < 3:
+                return '<3'
+            if sc < 5:
+                return '3-5'
+            if sc < 7:
+                return '5-7'
+            return '7+'
+
+        for r in rows:
+            sc = float(r['score'] or 0)
+            ret = float(r['ret'] or 0)
+            d = buckets[_bucket_of(sc)]
+            d['n'] += 1
+            d['wins'] += int(r['win'] or 0)
+            d['rets'].append(ret)
+            if r['idx'] is not None:
+                d['excess'].append(ret - float(r['idx']))
+
+        score_buckets = []
+        for b in order:
+            d = buckets[b]
+            n = d['n']
+            score_buckets.append({
+                'bucket': b,
+                'n': n,
+                'wins': d['wins'],
+                'winRate': round(d['wins'] / n * 100, 1) if n else 0,
+                'avgReturn': round(sum(d['rets']) / len(d['rets']), 2) if d['rets'] else 0,
+                'avgExcess': round(sum(d['excess']) / len(d['excess']), 2) if d['excess'] else None,
+                'excessN': len(d['excess']),
+            })
+
+        ai_decisions = [{
+            'decision': r['dec'] or '?',
+            'n': int(r['n'] or 0),
+            'avgScore': round(float(r['avg_score']), 1) if r['avg_score'] is not None else None,
+            'avgConfidence': round(float(r['avg_conf']), 0) if r['avg_conf'] is not None else None,
+        } for r in ai_rows]
+        ai_total = sum(a['n'] for a in ai_decisions)
+
+        return jsonify(safe_dict({
+            'success': True,
+            'horizon': horizon,
+            'days': days,
+            'totalSignals': sum(b['n'] for b in score_buckets),
+            'scoreBuckets': score_buckets,
+            'aiDecisions': ai_decisions,
+            'aiNote': (
+                f"AI kararı sayısı: {ai_total}. AI kararları henüz outcome'a bağlı değil "
+                "(ai_trade_reviews ↔ signal_outcomes join yok); yeterli veri birikince "
+                "APPROVE/WAIT/REJECT başarı oranı eklenecek. Şimdilik sadece dağılım."
+            ),
+        }))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
