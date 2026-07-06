@@ -19,6 +19,55 @@ import json
 
 
 # =====================================================================
+# TEMEL VERİ SANITY FİLTRESİ (yfinance BIST verisi bozuk olabilir)
+# =====================================================================
+# BIST için makul aralıklar; dışı 'güvenilmez' sayılır → None yapılır + AI uyarılır.
+# NOT: Bu SADECE AI-tool katmanı içindir; fundamental_data.py'ye DOKUNMAZ (canlı veri bozulmaz).
+_FUND_SANE = {
+    'fk': (0, 100),          # F/K > 100 → genelde zarar/çok düşük kâr, değerleme anlamsız
+    'pd_dd': (0, 30),        # PD/DD
+    'temettu_pct': (0, 30),  # temettü verimi % (137% = bozuk)
+    'roe_pct': (-200, 300),
+}
+
+
+def sanitize_fundamentals(raw):
+    """RAW fetch_fundamentals dict → normalize + BIST-sanity filtresi.
+
+    Mantıksız değerler (F/K=593, temettü=%137 gibi yfinance bozuklukları) None yapılır ve
+    'veri_kalitesi' notuna eklenir; AI bozuk veriye 'pahalı/ucuz' demesin.
+    fundamental_data.py'nin paylaşılan fonksiyonlarını DEĞİŞTİRMEZ (canlı akış korunur).
+    Döner: (temiz_dict, elendi_mi_bool).
+    """
+    roe = raw.get('roe')
+    fields = {
+        'fk': raw.get('fk'),
+        'pd_dd': raw.get('pd_dd'),
+        'roe_pct': round(roe * 100, 1) if roe else None,
+        'borc_oz_kaynak': raw.get('borc_oz_kaynak'),
+        'temettu_pct': raw.get('temettü_verimi_pct'),
+        'temel_skor_0_3': raw.get('temel_skor'),
+    }
+    suspicious = []
+    for key, (lo, hi) in _FUND_SANE.items():
+        v = fields.get(key)
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if fv < lo or fv > hi:
+            suspicious.append(f"{key}={fv:g}")
+            fields[key] = None
+    clean = {k: v for k, v in fields.items() if v is not None}
+    if suspicious:
+        clean['veri_kalitesi'] = ('güvenilmez_değer_elendi: ' + ', '.join(suspicious)
+                                  + ' (yfinance BIST verisi hatalı olabilir — bu alanlara güvenme)')
+    return clean, bool(suspicious)
+
+
+# =====================================================================
 # ARAÇ HANDLER'LARI (hepsi read-only)
 # =====================================================================
 def _tool_canli_fiyat(symbol=None):
@@ -225,6 +274,40 @@ def _tool_bugun_kararlar():
             'dagilim': [{'karar': r['decision'], 'sebep': r['reason'] or '', 'adet': int(r['c'])} for r in rows]}
 
 
+def _tool_temel_analiz(symbol=None):
+    """Temel (fundamental) analiz: F/K, PD/DD, ROE, borçluluk, temettü, piyasa değeri + temel skor + değerleme."""
+    sym = (symbol or '').strip().upper()
+    if not sym:
+        return {'error': 'symbol gerekli'}
+    try:
+        from fundamental_data import fetch_fundamentals, get_valuation_label
+    except Exception as e:
+        return {'error': f'temel veri modülü yüklenemedi: {e}'}
+    data = fetch_fundamentals(sym)
+    if not data:
+        return {'symbol': sym, 'error': 'temel veri bulunamadı (yfinance kapsama dışı olabilir)'}
+
+    clean, suspicious = sanitize_fundamentals(data)
+    out = {
+        'symbol': sym,
+        'sirket': data.get('sirket_adi'),
+        'sektor': data.get('sektor'),
+        'cari_oran': data.get('cari_oran'),
+        'piyasa_degeri_milyar_tl': data.get('piyasa_degeri_milyar'),
+    }
+    out.update(clean)  # sane fk/pd_dd/roe_pct/... (+ veri_kalitesi notu, varsa)
+    # Değerleme etiketi SADECE F/K güvenilirse — yoksa bozuk veriye 'pahalı' dememeli
+    if 'fk' in clean:
+        try:
+            out['degerleme'] = get_valuation_label(sym)  # ucuz | makul | pahalı
+        except Exception:
+            pass
+        out['ozet'] = data.get('temel_ozet')
+    else:
+        out['degerleme'] = 'bilinmiyor (F/K güvenilmez)'
+    return out
+
+
 # =====================================================================
 # KAYIT DEFTERİ (OpenAI şema + handler eşlemesi)
 # =====================================================================
@@ -260,6 +343,13 @@ TOOL_SCHEMAS = [
         "description": "Bugün otomatik trader'ın verdiği kararların (BUY/PENDING/SKIP) sebep dağılımı. 'bugün neden işlem açmadı' gibi sorular için.",
         "parameters": {"type": "object", "properties": {}},
     }},
+    {"type": "function", "function": {
+        "name": "temel_analiz",
+        "description": "Bir hissenin TEMEL (fundamental) analizi: F/K, PD/DD, ROE, borç/özkaynak, temettü verimi, piyasa değeri, temel skor (0-3) ve değerleme etiketi (ucuz/makul/pahalı). Teknik değil, şirketin mali verisi. 'ucuz mu', 'F/K kaç', 'temel olarak nasıl', 'pahalı mı' gibi sorular için.",
+        "parameters": {"type": "object", "properties": {
+            "symbol": {"type": "string", "description": "BIST hisse kodu, örn: EREGL"}
+        }, "required": ["symbol"]},
+    }},
 ]
 
 TOOL_HANDLERS = {
@@ -268,6 +358,7 @@ TOOL_HANDLERS = {
     "portfoy_ozeti": _tool_portfoy_ozeti,
     "tarama_onizle": _tool_tarama_onizle,
     "bugun_kararlar": _tool_bugun_kararlar,
+    "temel_analiz": _tool_temel_analiz,
 }
 
 

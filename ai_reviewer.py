@@ -356,6 +356,19 @@ def build_candidate_context(candidate):
         'turnover_tl': candidate.get('turnover'),
         'kap_sentiment': candidate.get('kap_sentiment'),
     }
+    # TEMEL (fundamental) veri — ikinci-göz değerlemeyi de görsün ("teknik AL ama F/K 45 pahalı").
+    # 24h cache'li, sadece incelenen top-N adaya çekilir → maliyet sınırlı. Hata/veri yoksa atlanır.
+    # Sanity filtresi (ai_tools) bozuk yfinance değerlerini eler → AI'ya güvenilir veri gider.
+    try:
+        from fundamental_data import fetch_fundamentals
+        from ai_tools import sanitize_fundamentals
+        _f = fetch_fundamentals(candidate.get('symbol'))
+        if _f:
+            _clean, _ = sanitize_fundamentals(_f)
+            if _clean:
+                ctx['fundamentals'] = _clean
+    except Exception:
+        pass
     # None alanları at (prompt kısa kalsın)
     return {k: v for k, v in ctx.items() if v is not None}
 
@@ -366,7 +379,8 @@ _SYSTEM_PROMPT = (
     "değerlendirmek. Kesin yatırım tavsiyesi VERME. Sadece verilen veriye dayan, veri yoksa "
     "varsayma. Emin değilsen WAIT ya da REJECT seç. Şunları değerlendir: risk/ödül oranı, "
     "stop-loss mesafesi, hedefler, hacim/likidite, trend ve çoklu zaman dilimi uyumu, sektör "
-    "momentumu, piyasa rejimi ve KAP/haber riski. Nihai karar kullanıcı onayı gerektirir.\n\n"
+    "momentumu, piyasa rejimi, KAP/haber riski ve (varsa) TEMEL veri: F/K/PD/DD/ROE/borçluluk — "
+    "aşırı pahalı (yüksek F/K) veya zayıf temel bir risk bayrağıdır. Nihai karar kullanıcı onayı gerektirir.\n\n"
     "SADECE şu şemada, JSON dışında HİÇBİR metin olmadan yanıt ver:\n"
     "{\n"
     '  "decision": "APPROVE_CANDIDATE | WAIT | REJECT",\n'
@@ -503,9 +517,10 @@ _ASSISTANT_SYSTEM = (
     "Sen BIST Pro sisteminin READ-ONLY yardımcı asistanısın. Kullanıcının kendi lokal trading "
     "sistemindeki verileri (sinyaller, skorlar, açık pozisyonlar, kararlar) açıklarsın. "
     "ARAÇLAR: Canlı veriye ihtiyacın olursa sana verilen araçları KULLAN — fiyat (canli_fiyat), "
-    "teknik özet/stop-loss (teknik_ozet), portföy & stop mesafesi (portfoy_ozeti), en iyi adaylar "
-    "(tarama_onizle), bugünkü kararlar (bugun_kararlar). Bir veriyi araçla çekebiliyorsan 'elimde yok' "
-    "DEME, aracı çağır. Aracın döndürdüğü sonuca dayan; uydurma. "
+    "teknik özet/stop-loss (teknik_ozet), TEMEL/fundamental analiz F/K-PD/DD-ROE (temel_analiz), "
+    "portföy & stop mesafesi (portfoy_ozeti), en iyi adaylar (tarama_onizle), bugünkü kararlar "
+    "(bugun_kararlar). Bir hisseyi değerlendirirken teknik + temel birlikte daha sağlıklı — uygunsa "
+    "ikisine de bak. Bir veriyi araçla çekebiliyorsan 'elimde yok' DEME, aracı çağır; sonuca dayan, uydurma. "
     "KURALLAR: Emir OLUŞTURMA, pozisyon açma/kapatma, Midas'a/broker'a bağlanma, şifre/2FA isteme. "
     "Kesin al/sat tavsiyesi verme; riskleri ve sistemin gerekçesini açıkla. Kısa, net, Türkçe yanıt ver. "
     "Nihai karar kullanıcınındır."
