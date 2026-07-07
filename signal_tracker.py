@@ -73,22 +73,33 @@ def log_signals_batch(results, timeframe):
             import json as _json
             _br = r.get('scoreBreakdown')
             factors_json = None
-            if isinstance(_br, dict) and _br:
-                try:
-                    _factors = dict(_br)
-                    # MTF SHADOW (Kemal raund 5 #4): skora katilmaz ama yon/guc loglanir.
-                    # Altcizgi onekli anahtar → sayisal kova (edge) analizinde atlanir.
-                    _mtf_dir = r.get('mtfDirection')
-                    if _mtf_dir is not None:
-                        _factors['_mtf'] = {
-                            'dir': _mtf_dir,
-                            'score': r.get('mtfScore', 0),
-                            'align': r.get('mtfAlignment', ''),
-                            'strength': r.get('mtfStrength', ''),
-                        }
+            _factors = dict(_br) if (isinstance(_br, dict) and _br) else {}
+            try:
+                # MTF SHADOW (Kemal raund 5 #4): skora katilmaz ama yon/guc loglanir.
+                # Altcizgi onekli anahtar → sayisal kova (edge) analizinde atlanir.
+                _mtf_dir = r.get('mtfDirection')
+                if _mtf_dir is not None:
+                    _factors['_mtf'] = {
+                        'dir': _mtf_dir,
+                        'score': r.get('mtfScore', 0),
+                        'align': r.get('mtfAlignment', ''),
+                        'strength': r.get('mtfStrength', ''),
+                    }
+                # TEMEL SHADOW (Faz 2 point-in-time): sadece AL, CACHE-ONLY (scan API'sini
+                # yavaslatma), sanitized. Gelecekte fundamental edge'i temiz olcmek icin.
+                # _temel de altcizgi onekli → sayisal edge analizinde atlanir.
+                if action == 'AL':
+                    from fundamental_data import get_cached_fundamentals
+                    _fr = get_cached_fundamentals(sym)
+                    if _fr:
+                        from ai_tools import sanitize_fundamentals
+                        _fc, _ = sanitize_fundamentals(_fr)
+                        if _fc:
+                            _factors['_temel'] = _fc
+                if _factors:
                     factors_json = _json.dumps(_factors, ensure_ascii=False)
-                except Exception:
-                    factors_json = None
+            except Exception:
+                factors_json = None
 
             # ortogonal ml_confidence (türev güven = skor kopyası ile kıyas için — Kemal #1)
             try:

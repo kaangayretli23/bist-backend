@@ -127,6 +127,36 @@ def fetch_fundamentals_batch(symbols: list[str], delay: float = 0.3) -> dict[str
     return result
 
 
+def get_cached_fundamentals(symbol: str) -> dict | None:
+    """Cache'te TAZE veri varsa döndür, YOKSA None — ASLA network fetch yapmaz.
+
+    Sıcak-yol (signal_tracker shadow logging) için: scan API'sini yavaşlatmadan, yalnızca
+    warm_fundamentals_cache ile önceden ısıtılmış veriyi okur. (Faz 2 point-in-time shadow.)
+    """
+    with _fund_lock:
+        cached = _fund_cache.get(symbol)
+        if cached and time.time() - cached['fetched_at'] < FUND_CACHE_TTL:
+            return cached['data']
+    return None
+
+
+def warm_fundamentals_cache(symbols: list[str], delay: float = 1.0) -> int:
+    """Verilen sembollerin temel verisini önden çek (cache'i ısıt). Arka plan thread'inden.
+
+    fetch_fundamentals zaten 24h cache'li → pratikte günde bir kez gerçek fetch olur; ara
+    çağrılar cache'ten döner (network yok). Döner: taze veri sayısı.
+    """
+    warmed = 0
+    for sym in symbols:
+        try:
+            if fetch_fundamentals(sym):
+                warmed += 1
+        except Exception:
+            pass
+        time.sleep(delay)
+    return warmed
+
+
 # =====================================================================
 # TEMEL SKOR (0–3 arası, teknik skora eklenebilir)
 # =====================================================================

@@ -174,6 +174,23 @@ def _outcome_checker_loop():
 _oc_thread = threading.Thread(target=_outcome_checker_loop, daemon=True)
 _oc_thread.start()
 
+# Temel veri cache ısıtıcısı (Faz 2 shadow): BIST100 fundamentals'ı önden çek ki
+# signal_tracker cache-only shadow logging'i (scan API'sini yavaşlatmadan) _temel yazabilsin.
+# 24h cache → 12 saatte bir loop ama pratikte günde ~1 gerçek fetch. Daemon, non-blocking.
+def _fundamental_warmer_loop():
+    time.sleep(120)  # startup yoğunluğu geçsin
+    while True:
+        try:
+            from fundamental_data import warm_fundamentals_cache
+            from config import BIST100_STOCKS
+            n = warm_fundamentals_cache(list(BIST100_STOCKS.keys()), delay=1.0)
+            print(f"[FUND-WARMER] {n} sembol temel veri cache ısıtıldı")
+        except Exception as e:
+            print(f"[FUND-WARMER] hata: {e}")
+        time.sleep(12 * 3600)
+
+threading.Thread(target=_fundamental_warmer_loop, daemon=True).start()
+
 # Pre-market watchlist (09:55-10:04 TR — hafta ici, gunde 1 kez)
 try:
     from auto_trader_premarket import start_premarket_thread
