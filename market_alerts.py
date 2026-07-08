@@ -41,9 +41,12 @@ _VEL_WINDOW_SEC    = _env_int('MARKET_VELOCITY_WINDOW_MIN', 15) * 60
 _VEL_DROP_PCT      = _env_float('MARKET_VELOCITY_DROP_PCT', 4.0)     # pencerede ≥%4 düşüş → uyar
 _VEL_COOLDOWN_SEC  = _env_int('MARKET_VELOCITY_COOLDOWN_MIN', 30) * 60
 _VEL_MIN_COVER_SEC = _env_int('MARKET_VELOCITY_MIN_COVER_MIN', 5) * 60   # min geçmiş (restart false-fire önle)
+# Endeks (XU100/XU030) iki-yönlü nabız: her _IDX_STEP_PCT puan hareket → bildir (düşüş+çıkış).
+# L1/L2 sadece düşüşte ŞİDDET işareti (🔴/🔴🔴) + volatil-mod tetiği için kullanılır.
+_IDX_STEP_PCT      = _env_float('INDEX_STEP_PCT', 0.5)
+_IDX_MOVE_COOLDOWN_SEC = _env_int('INDEX_MOVE_COOLDOWN_SEC', 90)
 _IDX_L1_PCT        = _env_float('INDEX_CIRCUIT_L1_PCT', 2.0)
 _IDX_L2_PCT        = _env_float('INDEX_CIRCUIT_L2_PCT', 3.0)
-_IDX_COOLDOWN_SEC  = _env_int('INDEX_CIRCUIT_COOLDOWN_MIN', 60) * 60
 _VOLATILE_HOLD_SEC = _env_int('MARKET_VOLATILE_HOLD_MIN', 5) * 60
 
 # P1 bayat-fiyat koruması
@@ -59,7 +62,7 @@ _POS_STEP_COOLDOWN_SEC = _env_int('PORTFOLIO_STEP_COOLDOWN_SEC', 20)    # aynı 
 _hist: dict = {}          # sym → deque[(ts, price)]
 _hist_lock = threading.Lock()
 _vel_cooldown: dict = {}  # sym → last_alert_ts
-_idx_cooldown: dict = {}  # f"{idx}_L{level}" → last_alert_ts
+_idx_step_ref: dict = {}  # code → {'level': int, 'ts': last_notify_ts}
 _pos_step_ref: dict = {}  # pos_key → {'ref': int_level, 'ts': last_notify_ts}
 _stale_warn_cooldown: dict = {}  # sym → last_warn_ts
 _last_volatile_ts = 0.0
@@ -70,7 +73,7 @@ _MAX_SAMPLES = 240
 
 
 def _open_position_syms() -> set:
-    """Açık pozisyon sembolleri — portföy BIST100 dışı bir hisse olsa bile hız alarmı kapsasın."""
+    """Açık pozisyon sembolleri — hisse bazlı uyarılar (hız + adım) yalnız bunlar için gider."""
     try:
         from realtime_prices import _get_open_positions
         return {p['symbol'] for p in _get_open_positions()}
@@ -78,29 +81,24 @@ def _open_position_syms() -> set:
         return set()
 
 
-def _universe() -> set:
-    """İzlenen evren: BIST100 ∪ BIST30 ∪ açık pozisyonlar (portföy her zaman kapsanır)."""
-    try:
-        from config import BIST100_STOCKS, BIST30
-        base = set(BIST100_STOCKS.keys()) | set(BIST30)
-    except Exception:
-        base = set()
-    return base | _open_position_syms()
-
-
 # =====================================================================
 # FİYAT ÖRNEKLEME (rolling buffer, network yok)
 # =====================================================================
 def record_prices() -> None:
-    """Evrendeki her sembolün anlık fiyatını rolling buffer'a yaz. Batch cache → network YOK."""
+    """Açık pozisyon sembollerinin anlık fiyatını rolling buffer'a yaz (hız alarmı portföy-özel).
+    Batch cache → network YOK."""
     now = time.time()
     try:
         from config import _cget, _stock_cache
     except Exception:
         return
     cutoff = now - _VEL_WINDOW_SEC
-    syms = _universe()
+    syms = _open_position_syms()
+    # Kapanan pozisyonların buffer'ını temizle (RAM sızıntısı önle)
     with _hist_lock:
+        for k in list(_hist.keys()):
+            if k not in syms:
+                _hist.pop(k, None)
         for sym in syms:
             st = _cget(_stock_cache, sym)
             if not st:
@@ -136,23 +134,17 @@ def _velocity(sym):
 # P0-a: HIZ ALARMI
 # =====================================================================
 def check_velocity_alerts() -> list:
-    """Evrende sert düşenleri bul → uyarı mesajları (cooldown'lu). Açık pozisyona SL mesafesi ekler."""
+    """SADECE AÇIK POZİSYONLARDA sert/hızlı düşüşü yakala → uyarı (cooldown'lu, SL mesafeli).
+    Portföyde olmayan hisseler için bildirim GÖNDERMEZ (kullanıcı isteği)."""
     msgs = []
     now = time.time()
-    pos_map = {}
     try:
         from realtime_prices import _get_open_positions
-        for p in _get_open_positions():
-            pos_map[p['symbol']] = p
+        positions = {p['symbol']: p for p in _get_open_positions()}
     except Exception:
-        pass
-    try:
-        from config import BIST30
-        bist30 = set(BIST30)
-    except Exception:
-        bist30 = set()
+        return msgs
 
-    for sym in _universe():
+    for sym, pos in positions.items():
         v = _velocity(sym)
         if not v:
             continue
@@ -164,19 +156,15 @@ def check_velocity_alerts() -> list:
                 continue
             _vel_cooldown[sym] = now
         mins = max(1, int(cover // 60))
-        tag = 'BIST30' if sym in bist30 else 'BIST100'
-        line = (f"⚡️ <b>SERT DÜŞÜŞ — {sym}</b> ({tag})\n"
+        entry = float(pos['entry_price'] or 0)
+        sl = float(pos['stop_loss'] or 0)
+        line = (f"⚡️ <b>SERT DÜŞÜŞ — {sym}</b> (portföy)\n"
                 f"Son ~{mins}dk: <b>%{pct:.1f}</b>  ({ref_p:.2f} → {cur_p:.2f})")
-        pos = pos_map.get(sym)
-        if pos:
-            entry = float(pos['entry_price'] or 0)
-            sl = float(pos['stop_loss'] or 0)
-            line += "\n📌 <b>AÇIK POZİSYONUN</b>"
-            if entry:
-                line += f" — giriş {entry:.2f}, P/L %{(cur_p - entry) / entry * 100:.1f}"
-            if sl > 0:
-                line += f"\nSL {sl:.2f} — mesafe %{(cur_p - sl) / sl * 100:.1f}"
-            line += "\n⚠️ <b>GÖZDEN GEÇİR</b>"
+        if entry:
+            line += f"\nGiriş {entry:.2f}, P/L %{(cur_p - entry) / entry * 100:.1f}"
+        if sl > 0:
+            line += f" | SL {sl:.2f} mesafe %{(cur_p - sl) / sl * 100:.1f}"
+        line += "\n⚠️ <b>GÖZDEN GEÇİR</b>"
         msgs.append(line)
     return msgs
 
@@ -184,8 +172,12 @@ def check_velocity_alerts() -> list:
 # =====================================================================
 # P0-b: ENDEKS DEVRE KESİCİ
 # =====================================================================
-def check_index_circuit() -> list:
-    """XU100/XU030 gün içi düşüşü eşik geçerse uyarı mesajları (seviye + cooldown'lu)."""
+def check_index_moves() -> list:
+    """XU100/XU030 iki-yönlü nabız: gün içi değişim her _IDX_STEP_PCT puan hareket edince bildir.
+
+    DÜŞÜŞ ve ÇIKIŞ ikisini de belirtir (kullanıcı isteği). Düşüşte -%L1/-%L2'yi geçince
+    ayrıca 🔴/🔴🔴 şiddet işareti + volatil-mod tetiği. Sınır-titremesini önlemek için cooldown.
+    """
     msgs = []
     now = time.time()
     try:
@@ -193,6 +185,7 @@ def check_index_circuit() -> list:
         idx = _get_indices()
     except Exception:
         return msgs
+    step = _IDX_STEP_PCT if _IDX_STEP_PCT > 0 else 0.5
     n_open = 0
     try:
         from realtime_prices import _get_open_positions
@@ -211,20 +204,30 @@ def check_index_circuit() -> list:
         if chg is None:
             continue
         chg = float(chg)
-        level = 2 if chg <= -_IDX_L2_PCT else (1 if chg <= -_IDX_L1_PCT else 0)
-        if level == 0:
+        level = math.floor(chg / step)
+        rec = _idx_step_ref.get(code)
+        if rec is None:                       # ilk görüş → baseline, bildirme
+            _idx_step_ref[code] = {'level': level, 'ts': 0.0}
             continue
-        key = f"{code}_L{level}"
-        with _state_lock:
-            if now - _idx_cooldown.get(key, 0) < _IDX_COOLDOWN_SEC:
-                continue
-            _idx_cooldown[key] = now
-        sev = '🔴🔴' if level == 2 else '🔴'
-        msgs.append(
-            f"{sev} <b>ENDEKS DEVRE KESİCİ — {label}</b>\n"
-            f"Gün içi: <b>%{chg:.1f}</b> (seviye {level})\n"
-            f"Piyasa geneli sert satış. {n_open} açık pozisyonun var — gözden geçir."
-        )
+        if level == rec['level']:             # adım değişmedi
+            continue
+        if now - rec['ts'] < _IDX_MOVE_COOLDOWN_SEC:   # sınır titremesi koruması
+            rec['level'] = level
+            continue
+        down = level < rec['level']
+        arrow = '🔻' if down else '🔺'
+        sev = ''
+        if down and chg <= -_IDX_L2_PCT:
+            sev = ' 🔴🔴'
+        elif down and chg <= -_IDX_L1_PCT:
+            sev = ' 🔴'
+        line = f"{arrow} <b>{label}</b> gün içi: <b>%{chg:+.1f}</b>{sev}"
+        if sev:   # belirgin düşüş → pozisyon hatırlat + volatil mod
+            line += f"\nPiyasa geneli satış — {n_open} açık pozisyonun var, gözden geçir."
+            _mark_volatile()
+        msgs.append(line)
+        rec['level'] = level
+        rec['ts'] = now
     return msgs
 
 
@@ -314,20 +317,25 @@ def check_market_alerts_once() -> None:
 
     msgs = []
     try:
-        msgs += check_velocity_alerts()
+        vel = check_velocity_alerts()
+        if vel:
+            _mark_volatile()   # portföyde sert düşüş → volatil mod
+        msgs += vel
     except Exception as e:
         print(f"[MARKET-ALERTS] velocity hata: {e}")
     try:
-        msgs += check_position_step_alerts()
+        step = check_position_step_alerts()
+        if step:
+            _mark_volatile()   # portföyde düşüş adımı → volatil mod
+        msgs += step
     except Exception as e:
         print(f"[MARKET-ALERTS] step hata: {e}")
     try:
-        msgs += check_index_circuit()
+        msgs += check_index_moves()   # volatil mod'u kendi içinde (yalnız belirgin düşüşte) tetikler
     except Exception as e:
         print(f"[MARKET-ALERTS] index hata: {e}")
 
     if msgs:
-        _mark_volatile()
         try:
             from routes_telegram import send_telegram
             for m in msgs:
