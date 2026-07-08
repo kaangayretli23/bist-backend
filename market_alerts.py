@@ -62,13 +62,23 @@ _state_lock = threading.Lock()
 _MAX_SAMPLES = 240
 
 
-def _universe() -> set:
-    """İzlenen evren: BIST100 ∪ BIST30."""
+def _open_position_syms() -> set:
+    """Açık pozisyon sembolleri — portföy BIST100 dışı bir hisse olsa bile hız alarmı kapsasın."""
     try:
-        from config import BIST100_STOCKS, BIST30
-        return set(BIST100_STOCKS.keys()) | set(BIST30)
+        from realtime_prices import _get_open_positions
+        return {p['symbol'] for p in _get_open_positions()}
     except Exception:
         return set()
+
+
+def _universe() -> set:
+    """İzlenen evren: BIST100 ∪ BIST30 ∪ açık pozisyonlar (portföy her zaman kapsanır)."""
+    try:
+        from config import BIST100_STOCKS, BIST30
+        base = set(BIST100_STOCKS.keys()) | set(BIST30)
+    except Exception:
+        base = set()
+    return base | _open_position_syms()
 
 
 # =====================================================================
