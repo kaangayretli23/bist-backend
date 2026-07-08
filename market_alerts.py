@@ -15,6 +15,7 @@ GÜVENLİK: Hepsi READ-ONLY + yalnız Telegram UYARI. Otomatik alım/satım YOK 
 Fiyat örneklemesi batch _stock_cache'ten okunur → network YOK, sıcak yolu yavaşlatmaz.
 """
 import os
+import math
 import time
 import threading
 from collections import deque
@@ -49,11 +50,17 @@ _VOLATILE_HOLD_SEC = _env_int('MARKET_VOLATILE_HOLD_MIN', 5) * 60
 MONITOR_MAX_PRICE_AGE_SEC = _env_int('MONITOR_MAX_PRICE_AGE_SEC', 180)
 _STALE_WARN_COOLDOWN_SEC  = _env_int('MONITOR_STALE_WARN_COOLDOWN_MIN', 30) * 60
 
+# P0-c portföy adım-alarmı: açık pozisyonda günlük değişim her N puan DÜŞÜNCE bilgi ver
+_POS_STEP_ENABLED      = os.environ.get('PORTFOLIO_STEP_ALERTS_ENABLED', '1') == '1'
+_POS_STEP_PCT          = _env_float('PORTFOLIO_STEP_PCT', 1.0)          # her %1 (puan) düşüş
+_POS_STEP_COOLDOWN_SEC = _env_int('PORTFOLIO_STEP_COOLDOWN_SEC', 20)    # aynı poz tekrar-uyarı min aralık
+
 # ── Durum ──
 _hist: dict = {}          # sym → deque[(ts, price)]
 _hist_lock = threading.Lock()
 _vel_cooldown: dict = {}  # sym → last_alert_ts
 _idx_cooldown: dict = {}  # f"{idx}_L{level}" → last_alert_ts
+_pos_step_ref: dict = {}  # pos_key → {'ref': int_level, 'ts': last_notify_ts}
 _stale_warn_cooldown: dict = {}  # sym → last_warn_ts
 _last_volatile_ts = 0.0
 _state_lock = threading.Lock()
@@ -222,6 +229,74 @@ def check_index_circuit() -> list:
 
 
 # =====================================================================
+# P0-c: PORTFÖY ADIM-ALARMI (açık pozisyona özel, ince taneli)
+# =====================================================================
+def check_position_step_alerts() -> list:
+    """Açık pozisyonlar: günlük değişim (changePct) her _POS_STEP_PCT puan DÜŞÜNCE bilgi ver.
+
+    Örn +%8 → +%7 (hisse hâlâ kârda olsa bile) → bilgi. Yükselişte baseline'ı sessizce
+    yukarı çeker (re-arm) — böylece +%7 → +%9 → +%8 tekrar uyarır. Negatifte de simetrik
+    (-%3 → -%4 uyarır). Hız alarmından (sert çöküş) AYRI; bu ince-taneli portföy takibi.
+    """
+    if not _POS_STEP_ENABLED:
+        return []
+    msgs = []
+    now = time.time()
+    try:
+        from config import _cget, _stock_cache
+        from realtime_prices import _get_open_positions
+        positions = _get_open_positions()
+    except Exception:
+        return []
+    step = _POS_STEP_PCT if _POS_STEP_PCT > 0 else 1.0
+    live_keys = set()
+    for p in positions:
+        sym = p['symbol']
+        uid = p['user_id']
+        key = f"{uid}_{sym}"
+        live_keys.add(key)
+        st = _cget(_stock_cache, sym)
+        if not st:
+            continue
+        chg = st.get('changePct')
+        if chg is None:
+            continue
+        chg = float(chg)
+        cur_level = math.floor(chg / step)   # kaçıncı adım (aşağı yuvarlanmış)
+        rec = _pos_step_ref.get(key)
+        if rec is None:                       # ilk görüş → baseline kur, uyarma
+            _pos_step_ref[key] = {'ref': cur_level, 'ts': 0.0}
+            continue
+        ref_level = rec['ref']
+        if cur_level >= ref_level:            # sabit veya yükseliş → baseline'ı takip et, uyarma
+            rec['ref'] = cur_level
+            continue
+        # ---- DÜŞÜŞ ADIMI ----
+        if now - rec['ts'] < _POS_STEP_COOLDOWN_SEC:
+            rec['ref'] = cur_level            # cooldown'da: uyarma ama baseline'ı indir
+            continue
+        prev_chg = ref_level * step
+        drop_pts = (ref_level - cur_level) * step
+        entry = float(p['entry_price'] or 0)
+        cur_price = st.get('price')
+        sl = float(p['stop_loss'] or 0)
+        line = (f"📉 <b>{sym}</b> günlük değişim düştü: "
+                f"%{prev_chg:+.0f} → <b>%{chg:+.1f}</b>  (−{drop_pts:.0f} puan)")
+        if entry and cur_price:
+            line += f"\nPozisyon P/L: %{(cur_price - entry) / entry * 100:+.1f}"
+        if sl > 0 and cur_price:
+            line += f" | SL {sl:.2f} mesafe %{(cur_price - sl) / sl * 100:.1f}"
+        msgs.append(line)
+        rec['ref'] = cur_level
+        rec['ts'] = now
+    # Kapanan pozisyonların state'ini temizle (RAM sızıntısı önle)
+    for k in list(_pos_step_ref.keys()):
+        if k not in live_keys:
+            _pos_step_ref.pop(k, None)
+    return msgs
+
+
+# =====================================================================
 # ORKESTRASYON — realtime_prices._loop her tick çağırır
 # =====================================================================
 def check_market_alerts_once() -> None:
@@ -242,6 +317,10 @@ def check_market_alerts_once() -> None:
         msgs += check_velocity_alerts()
     except Exception as e:
         print(f"[MARKET-ALERTS] velocity hata: {e}")
+    try:
+        msgs += check_position_step_alerts()
+    except Exception as e:
+        print(f"[MARKET-ALERTS] step hata: {e}")
     try:
         msgs += check_index_circuit()
     except Exception as e:
