@@ -3,9 +3,19 @@ BIST Pro - Auto Trading Risk Helpers
 SL cooldown (DB persisted) + panic-sell ring buffer (deque) + karar log helper.
 auto_trader_engine.py'dan ayrıştırıldı (700 satır kuralı).
 """
+import os
 import time
 from collections import deque
 from config import get_db
+
+# Gecikmeli feed (yf fallback) icin varsayilan piyasa gecikmesi (sn).
+# WS (TradingView) ~canli kabul (lag 0); yf ~15dk gecikmeli. 0 = kaynak-ayrimi kapali.
+_DELAYED_FEED_LAG_SEC = int(os.environ.get('AUTO_DELAYED_FEED_LAG_SEC', '900'))
+
+
+def _source_lag_sec(source) -> int:
+    """Kaynak tipine gore ek piyasa gecikmesi. ws=canli→0, yf=gecikmeli→~900, bilinmiyor→0."""
+    return _DELAYED_FEED_LAG_SEC if (source or '').lower() == 'yf' else 0
 
 
 def _log_decision(uid: str, sym: str, decision: str, reason: str = '',
@@ -34,34 +44,47 @@ def _log_decision(uid: str, sym: str, decision: str, reason: str = '',
     except Exception as _le:
         print(f"[DECISION-LOG] Yazilamadi {sym}/{reason}: {_le}")
 
-def _data_age_sec(sym: str):
-    """#7 Data freshness: sembolün EN TAZE veri kaynağının yaşı (saniye).
+def _data_freshness(sym: str):
+    """#1 Data freshness (kaynak-duyarlı): EN TAZE kaynağın ETKİN yaşı.
 
-    İki kaynak birleştirilir; en tazesi (min yaş) döner:
-      • batch _stock_cache[sym]['ts'] — loader (borsapy/yf) son yazımı
-      • realtime get_quote(sym)['ts'] — son WebSocket tick'i
-    Hiç kaynak yoksa None (yaş bilinmiyor → gate karar vermez, veri yok başka yerde elenir).
+    Döner: (effective_age_sec, raw_age_sec, source) — kaynak yoksa (None, None, None).
+
+    ETKİN yaş = yazım yaşı + kaynak gecikmesi. Böylece yf (15dk gecikmeli) fiyat 'şimdi'
+    yazılsa bile canlı sayılmaz — 'veri yeni mi?' yerine 'piyasa verisi ne kadar geride?'
+    ölçülür. İki kaynaktan ETKİN yaşı en küçük olan seçilir:
+      • batch _stock_cache[sym] — loader (borsapy WS / yf) son yazımı
+      • realtime get_quote(sym) — son tick (source='ws'|'yf')
     """
     now = time.time()
-    ages = []
+    cands = []  # (effective_age, raw_age, source)
     try:
         from config import _stock_cache, _lock
         with _lock:
             it = _stock_cache.get(sym)
         if it and it.get('ts'):
-            ages.append(now - float(it['ts']))
+            raw = now - float(it['ts'])
+            data = it.get('data')
+            src = data.get('source') if isinstance(data, dict) else None
+            cands.append((raw + _source_lag_sec(src), raw, src or 'batch'))
     except Exception:
         pass
     try:
         from realtime_prices import get_quote
         q = get_quote(sym)
         if q and q.get('ts'):
-            ages.append(now - float(q['ts']))
+            raw = now - float(q['ts'])
+            src = q.get('source')
+            cands.append((raw + _source_lag_sec(src), raw, src or 'rt'))
     except Exception:
         pass
-    if not ages:
-        return None
-    return min(ages)
+    if not cands:
+        return (None, None, None)
+    return min(cands, key=lambda c: c[0])
+
+
+def _data_age_sec(sym: str):
+    """Geriye-uyum sarmalayıcısı: EN TAZE kaynağın ETKİN yaşı (sn) veya None."""
+    return _data_freshness(sym)[0]
 
 
 # SL sonrası yeniden giriş engeli: {uid_sym: (timestamp, trade_style)}

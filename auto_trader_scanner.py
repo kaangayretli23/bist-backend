@@ -6,7 +6,7 @@ auto_trader_engine.py'dan ayrıştırıldı (600 satır kuralı).
 # Not: config, auto_trader, signals, indicators, signals_core, routes_telegram,
 # realtime_prices, data_fetcher, trade_plans fonksiyon içinde lazy import edilir.
 import os as _os_mod
-from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check, _log_decision, _data_age_sec
+from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check, _log_decision, _data_freshness
 from signals_market import REGIMES_BEARISH
 
 
@@ -173,10 +173,13 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         # #7 Data freshness gate: fiyat/hacim verisi bayatsa (feed kesintisi vb.) sinyal ÜRETME.
         # AUTO_MAX_DATA_AGE_MIN=0 → kapali. Yaş bilinmiyorsa (kaynak yok) gate karar vermez.
         if _max_data_age_sec > 0:
-            _age = _data_age_sec(sym)
-            if _age is not None and _age > _max_data_age_sec:
+            _eff_age, _raw_age, _src = _data_freshness(sym)
+            if _eff_age is not None and _eff_age > _max_data_age_sec:
+                # Kaynak gecikmesi eklendiyse (yf) 'gecikmeli', yoksa gerçekten 'bayat'
+                _delayed = _raw_age is not None and (_eff_age - _raw_age) > 1
+                _lbl = 'gecikmeli' if _delayed else 'bayat'
                 _log_decision(uid, sym, 'SKIP', 'stale_data',
-                              detail=f"veri {int(_age // 60)}dk eski (>{_max_data_age_sec // 60}dk)",
+                              detail=f"veri {_lbl} ({_src}) etkin {int(_eff_age // 60)}dk (>{_max_data_age_sec // 60}dk)",
                               tf=_tf_now)
                 continue
 
