@@ -473,6 +473,13 @@ def start_realtime_monitor():
                 # SL/TP kontrol
                 _check_positions_once()
 
+                # P0: Piyasa-geneli erken uyarı (hız alarmı + endeks devre kesici) — BIST100∪BIST30
+                try:
+                    from market_alerts import check_market_alerts_once
+                    check_market_alerts_once()
+                except Exception as e:
+                    print(f"[MARKET-ALERTS] hata: {e}")
+
                 # Stream bağlantısını her 5 dakikada bir doğrula
                 if tick % 10 == 0:
                     stream = _get_stream()
@@ -533,7 +540,13 @@ def start_realtime_monitor():
                 print(f"[RT-MONITOR] Loop hatası: {e}")
 
             tick += 1
-            time.sleep(30)  # Her 30 saniyede bir kontrol
+            # P2: Volatil seansta (yakın zamanda uyarı çıktıysa) polling hızlanır: 30sn → 10sn.
+            try:
+                from market_alerts import is_volatile_mode
+                _sleep = 10 if is_volatile_mode() else 30
+            except Exception:
+                _sleep = 30
+            time.sleep(_sleep)  # Normal 30sn; volatil modda 10sn
 
     t = threading.Thread(target=_loop, daemon=True, name='rt-monitor')
     t.start()

@@ -64,6 +64,27 @@ def _check_positions_once():
         if not cur or cur <= 0 or not entry:
             continue
 
+        # P1: Bayat-fiyat koruması — canlı fiyat çok eskiyse SL'i donmuş fiyatla KIYASLAMA.
+        # Feed çöküş anında donarsa, eski (çöküş-öncesi) fiyatla SL asla tetiklenmez → sessiz körlük.
+        # Bunu sesli uyarıya çevir; bu tick için SL/TP kararı verme.
+        try:
+            from market_alerts import price_too_stale, should_warn_stale
+            _stale, _age = price_too_stale(sym)
+            if _stale:
+                if send_telegram and should_warn_stale(sym):
+                    _age_txt = f"{int(_age)}sn önce" if _age is not None else "veri yok"
+                    try:
+                        send_telegram(
+                            f"🛑 <b>KORUMASIZ — {sym}</b>\n"
+                            f"Canlı fiyat akmıyor (son veri {_age_txt}).\n"
+                            f"SL/TP otomatik koruması ŞU AN GÜVENİLİR DEĞİL — elle takip et."
+                        )
+                    except Exception:
+                        pass
+                continue
+        except Exception:
+            pass
+
         pnl_pct = (cur - entry) / entry * 100
         pos_key = f"{uid}_{sym}"
 
