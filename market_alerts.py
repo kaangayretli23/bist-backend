@@ -82,6 +82,27 @@ def _open_position_syms() -> set:
 
 
 # =====================================================================
+# ACİLİYET KADEMESİ — bildirimin görsel şiddetini duruma göre tırmandırır
+# =====================================================================
+def _urgency(sl_dist_pct, move_pct):
+    """Durumun ciddiyetine göre (baş_emoji, etiket, alt_satır) döner.
+
+    Birincil ölçü: SL'e uzaklık (mesafe %). İkincil: düşüşün büyüklüğü (move_pct, pozitif).
+    Kademe: 📉 BİLGİ (uzak/hafif) → ⚠️ DİKKAT → 🚨🔴 ACİL → 🆘🔴🔴 KRİTİK (SL altı).
+    Böylece tek bakışta 'sıradan mı, acil mi' anlaşılır.
+    """
+    sd = sl_dist_pct
+    mv = abs(move_pct or 0)
+    if sd is not None and sd <= 0:
+        return ('🆘🔴🔴', 'KRİTİK', '‼️ FİYAT SL ALTINDA — DERHAL KARAR VER ‼️')
+    if (sd is not None and sd <= 1.5) or mv >= 6:
+        return ('🚨🔴', 'ACİL', '‼️ SL çok yakın — HEMEN GÖZDEN GEÇİR')
+    if (sd is not None and sd <= 3) or mv >= 3:
+        return ('⚠️', 'DİKKAT', '⚠️ Zayıflıyor — yakından izle')
+    return ('📉', 'BİLGİ', None)
+
+
+# =====================================================================
 # FİYAT ÖRNEKLEME (rolling buffer, network yok)
 # =====================================================================
 def record_prices() -> None:
@@ -158,13 +179,15 @@ def check_velocity_alerts() -> list:
         mins = max(1, int(cover // 60))
         entry = float(pos['entry_price'] or 0)
         sl = float(pos['stop_loss'] or 0)
-        line = (f"⚡️ <b>SERT DÜŞÜŞ — {sym}</b> (portföy)\n"
+        sl_dist = ((cur_p - sl) / sl * 100) if sl > 0 else None
+        he, hl, tail = _urgency(sl_dist, pct)   # pct negatif → büyüklüğü _urgency içinde alınır
+        line = (f"⚡️{he} <b>SERT DÜŞÜŞ · {hl} — {sym}</b> (portföy)\n"
                 f"Son ~{mins}dk: <b>%{pct:.1f}</b>  ({ref_p:.2f} → {cur_p:.2f})")
         if entry:
             line += f"\nGiriş {entry:.2f}, P/L %{(cur_p - entry) / entry * 100:.1f}"
-        if sl > 0:
-            line += f" | SL {sl:.2f} mesafe %{(cur_p - sl) / sl * 100:.1f}"
-        line += "\n⚠️ <b>GÖZDEN GEÇİR</b>"
+        if sl_dist is not None:
+            line += f" | SL {sl:.2f} mesafe %{sl_dist:.1f}"
+        line += f"\n{tail or '⚠️ <b>GÖZDEN GEÇİR</b>'}"
         msgs.append(line)
     return msgs
 
@@ -217,13 +240,17 @@ def check_index_moves() -> list:
         down = level < rec['level']
         arrow = '🔻' if down else '🔺'
         sev = ''
+        crit = False
         if down and chg <= -_IDX_L2_PCT:
-            sev = ' 🔴🔴'
+            sev = ' 🔴🔴 🚨'
+            crit = True
         elif down and chg <= -_IDX_L1_PCT:
             sev = ' 🔴'
-        line = f"{arrow} <b>{label}</b> gün içi: <b>%{chg:+.1f}</b>{sev}"
+        head = '🆘🔴🔴 <b>PANİK SATIŞI</b> · ' if crit else ''
+        line = f"{head}{arrow} <b>{label}</b> gün içi: <b>%{chg:+.1f}</b>{sev}"
         if sev:   # belirgin düşüş → pozisyon hatırlat + volatil mod
-            line += f"\nPiyasa geneli satış — {n_open} açık pozisyonun var, gözden geçir."
+            urgent = '‼️ ' if crit else ''
+            line += f"\n{urgent}Piyasa geneli satış — {n_open} açık pozisyonun var, gözden geçir."
             _mark_volatile()
         msgs.append(line)
         rec['level'] = level
@@ -283,12 +310,16 @@ def check_position_step_alerts() -> list:
         entry = float(p['entry_price'] or 0)
         cur_price = st.get('price')
         sl = float(p['stop_loss'] or 0)
-        line = (f"📉 <b>{sym}</b> günlük değişim düştü: "
-                f"%{prev_chg:+.0f} → <b>%{chg:+.1f}</b>  (−{drop_pts:.0f} puan)")
+        sl_dist = ((cur_price - sl) / sl * 100) if (sl > 0 and cur_price) else None
+        he, hl, tail = _urgency(sl_dist, (-chg if chg < 0 else 0.0))
+        line = (f"{he} <b>{hl} — {sym}</b>\n"
+                f"Günlük değişim: %{prev_chg:+.0f} → <b>%{chg:+.1f}</b>  (−{drop_pts:.0f} puan)")
         if entry and cur_price:
-            line += f"\nPozisyon P/L: %{(cur_price - entry) / entry * 100:+.1f}"
-        if sl > 0 and cur_price:
-            line += f" | SL {sl:.2f} mesafe %{(cur_price - sl) / sl * 100:.1f}"
+            line += f"\nP/L: %{(cur_price - entry) / entry * 100:+.1f}"
+        if sl_dist is not None:
+            line += f" | SL {sl:.2f} mesafe %{sl_dist:.1f}"
+        if tail:
+            line += f"\n{tail}"
         msgs.append(line)
         rec['ref'] = cur_level
         rec['ts'] = now
