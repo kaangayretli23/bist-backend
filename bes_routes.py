@@ -303,7 +303,7 @@ def bes_debug():
 
 @app.route('/api/bes/top')
 def bes_top():
-    """Kategorilere gore en iyi BES fonlari - background thread ile Render timeout bypass"""
+    """Kategorilere gore en iyi BES fonlari - background thread ile HTTP timeout bypass"""
     global _bes_bg_loading, _bes_bg_error
     try:
         category = request.args.get('category', '')

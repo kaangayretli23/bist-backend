@@ -17,3 +17,6 @@ regime_error.log
 .cursor/
 _bmad/
 _bmad-output/
+
+# Tasarim taslaklari (lokal)
+mockup_cyberpunk.html

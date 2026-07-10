@@ -61,7 +61,7 @@ def _bes_cache_set(key, data):
 
 def _bes_bg_analyze_top():
     from bes_analysis import _analyze_fund_performance, _bes_optimize, _simulate_bes
-    """Arka planda BES fon analizi yap ve cache'e kaydet (Render 30s timeout bypass)
+    """Arka planda BES fon analizi yap ve cache'e kaydet (HTTP timeout bypass)
     Strateji:
     1. TEFAS Compare API ile resmi getirileri cek (en guvenilir)
     2. Basarisizsa broad fetch + manual hesaplama

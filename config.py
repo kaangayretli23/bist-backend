@@ -29,8 +29,8 @@ except ImportError:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Postgres: DATABASE_URL env var (Render Postgres addon otomatik ekler)
-# Fallback: SQLite (lokal gelistirme)
+# Postgres: DATABASE_URL env var set edilirse kullanilir
+# Fallback: SQLite (lokal / ev kullanimi — varsayilan)
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 USE_POSTGRES = bool(DATABASE_URL)
 

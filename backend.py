@@ -54,6 +54,7 @@ try:
     import auto_trader_routes_positions  # noqa: F401
     import auto_trader_routes_analytics  # noqa: F401
     import auto_trader_routes_dashboard  # noqa: F401
+    import auto_trader_routes_reports  # noqa: F401
     import routes_tax_report  # noqa: F401 — yillik islem ozeti PDF
 except ImportError as e:
     print(f"[HATA] auto_trader.py import hatasi: {e}")
