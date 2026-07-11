@@ -451,18 +451,25 @@ def auto_trade_reset():
             "SELECT COUNT(*) as c FROM auto_trades WHERE user_id=?", (uid,)
         ).fetchone()['c']
 
-        # Tüm pozisyon ve trade geçmişini sil
+        # ÖNCE ARŞİVLE — reset geçmişi YOK ETMESİN, taşısın (veri kaybını önler).
+        # trade_journal zaten kalıcı; burada pozisyon/işlem tablolarını da snapshot'larız.
+        db.execute("CREATE TABLE IF NOT EXISTS auto_positions_archive AS SELECT *, strftime('%s','now') AS archived_at FROM auto_positions WHERE 0")
+        db.execute("CREATE TABLE IF NOT EXISTS auto_trades_archive AS SELECT *, strftime('%s','now') AS archived_at FROM auto_trades WHERE 0")
+        db.execute("INSERT INTO auto_positions_archive SELECT *, strftime('%s','now') FROM auto_positions WHERE user_id=?", (uid,))
+        db.execute("INSERT INTO auto_trades_archive SELECT *, strftime('%s','now') FROM auto_trades WHERE user_id=?", (uid,))
+
+        # Sonra aktif geçmişi temizle (arşiv + trade_journal'da KORUNUYOR)
         db.execute("DELETE FROM auto_positions WHERE user_id=?", (uid,))
         db.execute("DELETE FROM auto_trades WHERE user_id=?", (uid,))
         db.commit()
         db.close()
 
-        print(f"[AUTO-TRADE] {uid} sıfırlandı: {pos_count} pozisyon, {trade_count} işlem silindi ({open_count} açık pozisyon vardı)")
+        print(f"[AUTO-TRADE] {uid} sıfırlandı: {pos_count} pozisyon, {trade_count} işlem ARŞİVLENDİ+temizlendi ({open_count} açık pozisyon vardı)")
         return jsonify({
             'success': True,
-            'message': 'Oto-trade gecmisi sıfırlandı. Sermaye ayarı korundu.',
-            'deletedPositions': pos_count,
-            'deletedTrades': trade_count,
+            'message': 'Oto-trade geçmişi sıfırlandı. Kayıtlar arşive + işlem günlüğüne taşındı (silinmedi). Sermaye ayarı korundu.',
+            'archivedPositions': pos_count,
+            'archivedTrades': trade_count,
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

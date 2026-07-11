@@ -135,11 +135,25 @@ def _auto_get_daily_trade_count(user_id):
         return 0
 
 def _auto_log_trade(user_id, symbol, action, price, quantity, reason, score, confidence, position_id=None):
-    """Trade logunu DB'ye kaydet"""
+    """Trade logunu DB'ye kaydet.
+    İKİ yere yazar:
+      - auto_trades: normal log (reset butonu bunu SİLEBİLİR)
+      - trade_journal: KALICI işlem günlüğü — reset DOKUNMAZ (veri kaybını önler).
+    Böylece 'portföye eklenen her şey tüm bilgileriyle' kalıcı tutulur.
+    """
     try:
         db = get_db()
         db.execute(
             "INSERT INTO auto_trades (user_id, symbol, action, price, quantity, reason, signal_score, confidence, position_id) VALUES (?,?,?,?,?,?,?,?,?)",
+            (user_id, symbol, action, price, quantity, reason, score, confidence, position_id)
+        )
+        # KALICI günlük — reset ile SİLİNMEZ. Lazy create (SQLite; ev kurulumu).
+        db.execute("""CREATE TABLE IF NOT EXISTS trade_journal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, symbol TEXT, action TEXT,
+            price REAL, quantity REAL, reason TEXT, signal_score REAL, confidence REAL,
+            position_id INTEGER, logged_at REAL DEFAULT (strftime('%s','now')))""")
+        db.execute(
+            "INSERT INTO trade_journal (user_id, symbol, action, price, quantity, reason, signal_score, confidence, position_id) VALUES (?,?,?,?,?,?,?,?,?)",
             (user_id, symbol, action, price, quantity, reason, score, confidence, position_id)
         )
         db.commit()
