@@ -24,6 +24,55 @@ def _float_env(key, default):
         return default
 
 
+def _quality_position_pct(rr, score, confidence):
+    """KALİTE-BAZLI standalone pozisyon yüzdesi (sermayenin %'si).
+
+    Kullanıcı tasarımı — ÖNCELİK HİYERARŞİSİ (R/R lider DEĞİL):
+      1) BİRİNCİL = conviction: güven/skor'dan hangisi güçlüyse o lider (mode='max').
+      2) İKİNCİL  = R/R sadece tiebreaker: benzer conviction'da yüksek R/R öne geçer
+                    (küçük ALLOC_RR_TILT katkısı → ana sırayı bozmaz, sadece ayırır).
+      3) CEZA     = çok düşük R/R (ALLOC_RR_FLOOR altı) geri plana atılır (×penalty).
+      4) AI 2. göz EN SON bakar (scanner'da tilt olarak, bu fonksiyonun dışında).
+
+    Paylar birbirine NORMALİZE EDİLMEZ → her hisse bağımsız % alır, cherry-pick korunur.
+    Sonuç [floor .. ceil] bandına eşlenir. Tüm parametreler ENV ile ayarlanabilir.
+    """
+    def _c01(x):
+        return 0.0 if x < 0 else (1.0 if x > 1.0 else x)
+    rr_min, rr_max = _float_env('ALLOC_RR_MIN', 1.0), _float_env('ALLOC_RR_MAX', 3.0)
+    sc_min, sc_max = _float_env('ALLOC_SCORE_MIN', 5.0), _float_env('ALLOC_SCORE_MAX', 10.0)
+    rr_n   = _c01((float(rr or 0) - rr_min) / (rr_max - rr_min)) if rr_max > rr_min else 0.0
+    sc_n   = _c01((float(score or 0) - sc_min) / (sc_max - sc_min)) if sc_max > sc_min else 0.0
+    conf_n = _c01(float(confidence or 0) / 100.0)
+
+    # 1) BİRİNCİL conviction — varsayılan 'confidence': skoru lider YAPMA (backtest:
+    # yüksek skor = en kötü forward bucket). 'max'/'score'/'blend' ile değiştirilebilir.
+    mode = _os_mod.environ.get('ALLOC_CONVICTION_MODE', 'confidence').lower()
+    if mode == 'confidence':
+        conviction = conf_n
+    elif mode == 'score':
+        conviction = sc_n
+    elif mode == 'blend':
+        conviction = 0.6 * conf_n + 0.4 * sc_n
+    else:  # 'max' — hangisi güçlüyse o başta
+        conviction = max(conf_n, sc_n)
+
+    # 2) R/R İKİNCİL tiebreaker (küçük katkı → benzer conviction'da ayırır)
+    rr_tilt = _float_env('ALLOC_RR_TILT', 0.15)
+    q = conviction * (1.0 - rr_tilt) + rr_n * rr_tilt
+
+    # 3) Çok düşük R/R → geri plana at
+    rr_floor   = _float_env('ALLOC_RR_FLOOR', 1.3)
+    rr_penalty = _float_env('ALLOC_RR_PENALTY', 0.6)
+    if float(rr or 0) < rr_floor:
+        q *= rr_penalty
+
+    q = _c01(q)
+    floor_pct = _float_env('ALLOC_FLOOR_PCT', 10.0)
+    ceil_pct  = _float_env('ALLOC_CEIL_PCT', 25.0)
+    return floor_pct + (ceil_pct - floor_pct) * q, q
+
+
 def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_symbols, allowed, blocked):
     """Sinyal skoru yüksek adayları tara ve kalan pozisyon slotlarını doldur."""
     from config import _cget_hist, _cset, _get_stocks, _hist_cache
@@ -85,7 +134,7 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                                      f"(cap={_cap:.0f}, win={_dd_win}g, dd={_dd_pct}%)")
                 print(f"[AUTO-TRADE] {uid} drawdown freeze aktif: "
                       f"realized={_realized:.0f}, unrealized={_unrealized:.0f}, "
-                      f"toplam={_total_pnl:.0f} TL ≤ esik={_threshold:.0f} TL "
+                      f"toplam={_total_pnl:.0f} TL <= esik={_threshold:.0f} TL "
                       f"({_dd_win}g, %{_dd_pct})")
                 return
         except Exception as _dd_err:
@@ -406,7 +455,10 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
             'reason': rec.get('reason'),                   # sistemin kendi kısa gerekçesi
         })
 
-    candidates.sort(key=lambda x: x['score'], reverse=True)
+    # Güven (confidence) öncelikli sırala; eşitlikte skor ayırıcı.
+    # Bu sıra hem sınırlı slotlara hangi hisselerin gireceğini, hem AI-review
+    # sırasını, hem de Telegram'a geliş sırasını belirler → en güvenli önce.
+    candidates.sort(key=lambda x: (x['confidence'], x['score']), reverse=True)
     slots = cfg['maxPositions'] - len(open_positions)
     try:
         from auto_trader_regime import regime_daily_trade_factor
@@ -511,7 +563,7 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         _tp_default_3 = round(price * (1 + cfg['takeProfitPct'] * 2 / 100), 2)
         if not (price < tp1 < tp2 < tp3) or (tp2 - tp1) / price < 0.005 or (tp3 - tp2) / price < 0.005:
             print(f"[AUTO-TRADE] {sym} TP siralama bozuk "
-                  f"(tp1={tp1:.2f}, tp2={tp2:.2f}, tp3={tp3:.2f}) → default formul")
+                  f"(tp1={tp1:.2f}, tp2={tp2:.2f}, tp3={tp3:.2f}) -> default formul")
             tp1, tp2, tp3 = _tp_default_1, _tp_default_2, _tp_default_3
 
         # R/R guard — TP1/SL ratio < 1 ise pozisyon acmiyoruz.
@@ -533,10 +585,29 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         sl_distance = price - stop_loss
         if sl_distance <= 0:
             continue
-        quantity = int(risk_amount / sl_distance)
+        risk_qty = int(risk_amount / sl_distance)
+        # POZİSYON-BAŞINA notional tavanı → sepet çeşitlendirme. İKİ MOD:
+        #   ALLOC_QUALITY_ENABLED=0 (DEFAULT — PARK): düz eşit tavan (AUTO_MAX_POSITION_PCT,
+        #     ~%20). Güven/skora göre BÜYÜTME YOK. Sebep: ölçüm ml_confidence'ın ANTI-predictive
+        #     olduğunu gösterdi (bkz memory: auto_buy_negative_edge_finding) → güveni ödüllendiren
+        #     kalite-pay zararı büyütür. Strateji doğrulanana dek kapalı.
+        #   ALLOC_QUALITY_ENABLED=1: kalite-bazlı standalone pay (conviction lider, R/R tiebreaker).
+        # risk_qty ile min() → per-trade ZARAR yine riskPerTrade ile sınırlı (ayrı emniyet).
+        _rr_now = ((tp1 - price) / sl_distance) if (sl_distance > 0 and tp1 > price) else 0.0
+        if _int_env('ALLOC_QUALITY_ENABLED', 0) == 1:
+            _pos_pct, _q = _quality_position_pct(_rr_now, cand['score'], cand['confidence'])
+            _size_mode = f"kalite-pay q={_q:.2f}"
+        else:
+            _pos_pct, _q = _float_env('AUTO_MAX_POSITION_PCT', 20.0), 0.0
+            _size_mode = "düz-tavan (kalite PARK)"
+        _cap_qty = int((cfg['capital'] * _pos_pct / 100.0) / price) if price > 0 else 0
+        quantity = min(risk_qty, max(1, _cap_qty))
         if quantity < 1:
             continue
         position_cost = quantity * price
+        print(f"[AUTO-TRADE] {sym} {_size_mode}: %{_pos_pct:.1f} (R/R={_rr_now:.2f}, "
+              f"skor={cand['score']:.1f}, guven=%{cand['confidence']:.0f}) "
+              f"-> {quantity} lot / {position_cost:.0f} TL")
 
         # Serbest sermayeye gore quantity'i kirp — "100 TL kaldi, 2000 TL'lik al" demesin
         used_capital = sum(p['entryPrice'] * p['quantity'] for p in open_positions)
@@ -637,6 +708,24 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                 # Limit nedeniyle atlandıysa kullanıcıya not düş (manuel akışa devam ediyoruz)
                 if _is_fallback:
                     print(f"[AUTO-TRADE] {sym} AI atlandi ({ai_verdict.get('_reason')}) — manuel incelemeye gonderiliyor")
+
+        # FAZ 2 (YER A) — AI conviction tilt: taban tavanını AI'nın güvenine göre
+        # DAR bir bantta KÜÇÜLT (asla büyütme). Sadece APPROVE + gerçek (non-fallback)
+        # verdict'te uygulanır; AI kapalı/başarısız → tam tavan korunur. AI emir açmaz,
+        # sadece öneri boyutunu ayarlar; nihai onay yine kullanıcıda kalır.
+        if (ai_verdict is not None and not ai_verdict.get('_fallback')
+                and _int_env('AUTO_AI_SIZE_TILT', 1) == 1):
+            _conf = float(ai_verdict.get('confidence', 0) or 0)
+            _factor = max(0.6, min(1.0, _conf / 100.0)) if _conf else 0.85
+            _tilted = int(quantity * _factor)
+            if 1 <= _tilted < quantity:
+                print(f"[AUTO-TRADE] {sym} AI tilt: adet {quantity} -> {_tilted} "
+                      f"(guven %{_conf:.0f}, faktor {_factor:.2f})")
+                _log_decision(uid, sym, 'INFO', 'ai_size_tilt',
+                              detail=f"adet {quantity}->{_tilted}, AI guven %{_conf:.0f}, faktor {_factor:.2f}",
+                              tf=_tf_now, price=price, score=cand['score'], confidence=cand['confidence'])
+                quantity = _tilted
+                position_cost = quantity * price
 
         _tg_sent = False
         _already_pending = False

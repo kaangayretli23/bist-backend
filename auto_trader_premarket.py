@@ -66,7 +66,8 @@ def _build_watchlist(cfg: dict, top_n: int = 10) -> list:
         except Exception:
             continue
 
-    candidates.sort(key=lambda x: x['score'], reverse=True)
+    # Güven (confidence) öncelikli sırala; eşitlikte skor ayırıcı — en güvenli önce.
+    candidates.sort(key=lambda x: (x['confidence'], x['score']), reverse=True)
     return candidates[:top_n]
 
 
@@ -151,7 +152,7 @@ def _premarket_loop() -> None:
                 else:
                     do_run = False
             if do_run:
-                print(f"[PRE-MARKET] {today} {now.strftime('%H:%M')} → tarama basliyor")
+                print(f"[PRE-MARKET] {today} {now.strftime('%H:%M')} -> tarama basliyor")
                 _run_once_for_all_users()
         except Exception as e:
             print(f"[PRE-MARKET] Loop hatasi: {e}")
