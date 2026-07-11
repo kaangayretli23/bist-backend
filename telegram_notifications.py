@@ -241,10 +241,21 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
             f"<i>Nihai karar sana ait — AI sadece yorum.</i>\n"
         )
 
+    # ADIM 3 — kartta YANILTICI model-güveni yerine KALİBRE gerçek isabet birincil.
+    try:
+        from signal_calibration import reality_line, calibrated_confidence
+        _reality = reality_line(score) + "\n"
+        _cal_conf = calibrated_confidence(score)
+        _conf_disp = f"Gerçek isabet: <b>%{_cal_conf:.0f}</b>  <i>(model: %{confidence:.0f})</i>"
+    except Exception:
+        _reality = ""
+        _conf_disp = f"Güven: <b>%{confidence:.0f}</b>"
+
     msg = (
         f"🟢 <b>AL SİNYALİ — {symbol}</b>  <i>({sig_time_str})</i>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Skor: <b>{score:.1f}</b>  |  Güven: <b>%{confidence:.0f}</b>  |  R/R: <b>1:{rr}</b>\n"
+        f"📊 Skor: <b>{score:.1f}</b>  |  {_conf_disp}  |  R/R: <b>1:{rr}</b>\n"
+        f"{_reality}"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📱 <b>MİDAS'A GİR:</b>\n"
         f"  1️⃣ Hisse: <b>{symbol}</b>\n"

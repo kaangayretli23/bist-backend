@@ -273,9 +273,33 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         # Bu bir çifte-sayım DEĞİL ama iki ayrı bağımsız eşik gibi de DEĞİL — aynı büyüklüğün
         # iki görünümü. Gerçek ayrıştırma (gate'i bağımsız ml_confidence'a taşımak) Kemal raund 6
         # işidir; şimdilik davranış korunuyor, sadece niyet belgeleniyor.
-        if signal not in ('AL', 'GÜÇLÜ AL') or score < _min_score_eff or confidence < cfg['minConfidence']:
-            _log_decision(uid, sym, 'SKIP', 'score',
-                          detail=f"sig={signal}, sc={score:.1f}/{_min_score_eff:.1f}, conf={confidence:.0f}/{cfg['minConfidence']}",
+        # ADIM 2 — aşırı-alım/rejim cezası: mean-reverting rejimde overbought isimlerin
+        # ETKİN skorunu düşür (tepeleri "al" diye bağırma). Gate bu eff_score'a göre.
+        eff_score = score
+        _ob_pen = 0.0
+        if _int_env('AUTO_OVERBOUGHT_PENALTY', 1) == 1:
+            try:
+                from indicators_basic import calc_rsi_single
+                _rsi_now = calc_rsi_single(hist_live['Close'])
+            except Exception:
+                _rsi_now = 50.0
+            try:
+                from signals import calc_market_regime as _cmr_pen
+                _regime_now = (_cmr_pen() or {}).get('regime', 'sideways')
+            except Exception:
+                _regime_now = 'sideways'
+            try:
+                from signal_calibration import overbought_penalty
+                _ob_pen = overbought_penalty(_rsi_now, _regime_now)
+            except Exception:
+                _ob_pen = 0.0
+            eff_score = score - _ob_pen
+
+        if signal not in ('AL', 'GÜÇLÜ AL') or eff_score < _min_score_eff or confidence < cfg['minConfidence']:
+            _detail = f"sig={signal}, sc={score:.1f}/{_min_score_eff:.1f}, conf={confidence:.0f}/{cfg['minConfidence']}"
+            if _ob_pen > 0:
+                _detail += f" [aşırı-alım cezası −{_ob_pen:.1f} → eff={eff_score:.1f}]"
+            _log_decision(uid, sym, 'SKIP', 'score', detail=_detail,
                           tf=_tf_now, price=live_price, score=score, confidence=confidence)
             continue
 
