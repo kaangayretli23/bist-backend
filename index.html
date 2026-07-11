@@ -8531,12 +8531,16 @@ async function loadDailySummary() {
 
     // Reject cooldown chips
     if (js.cooldownActive && js.cooldownActive.length) {
+      const softN = js.cooldownActive.filter(c => c.reason !== 'hard').length;
       html += '<div style="margin-top:10px;font-size:11px;color:var(--text-dim);">⏸ Reject cooldown: ';
       html += js.cooldownActive.slice(0, 8).map(c => {
         const rcol = c.reason === 'hard' ? 'var(--red)' : '#f1c40f';
         return `<span style="background:var(--bg);color:${rcol};padding:2px 6px;border-radius:3px;margin-right:4px;">${c.symbol} ${c.remainingMin}dk</span>`;
       }).join('');
       if (js.cooldownActive.length > 8) html += `<span>+${js.cooldownActive.length - 8} daha</span>`;
+      // Sifirla butonlari — sadece bellek-ici oneri blokunu kaldirir (pozisyona dokunmaz)
+      html += `<button onclick="clearRejectCooldown('soft')" title="Sadece soft (yanit gelmeyen) cooldown'lari kaldir — hisseler tekrar onerilebilir" style="margin-left:6px;background:transparent;color:#f1c40f;border:1px solid #f1c40f;border-radius:3px;padding:1px 7px;cursor:pointer;font-size:10px;">🔄 Soft sıfırla${softN?` (${softN})`:''}</button>`;
+      html += `<button onclick="clearRejectCooldown('')" title="TÜM reject cooldown'lari kaldir (soft + hard)" style="margin-left:4px;background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:1px 7px;cursor:pointer;font-size:10px;">Tümü</button>`;
       html += '</div>';
     }
 
@@ -8935,6 +8939,33 @@ async function confirmCloseAllPositions() {
     }
   } catch (e) {
     console.error('close-all hatasi:', e);
+    alert('Bağlantı hatası');
+  }
+}
+
+// ─── Reject cooldown sıfırla — bellek-içi öneri blokunu kaldırır (pozisyona dokunmaz) ───
+async function clearRejectCooldown(reason) {
+  const uid = _getUid();
+  if (!uid) { alert('Giris yapmaniz gerekiyor'); return; }
+  try {
+    const body = { userId: uid };
+    if (reason) body.reason = reason;   // '' => hepsi (soft+hard)
+    const res = await fetch(`${API_BASE}/auto-trade/reject-cooldown/clear`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.success) {
+      const n = data.count || 0;
+      const list = (data.cleared || []).join(', ');
+      alert(n ? `${n} hisse cooldown'dan çıkarıldı: ${list}\nTarama artık bunları tekrar önerebilir.`
+              : 'Temizlenecek cooldown bulunamadı.');
+      try { loadDailySummary(); } catch {}
+    } else {
+      alert('Hata: ' + (data.error || 'bilinmeyen'));
+    }
+  } catch (e) {
+    console.error('reject-cooldown clear hatasi:', e);
     alert('Bağlantı hatası');
   }
 }

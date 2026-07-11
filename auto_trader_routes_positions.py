@@ -597,3 +597,34 @@ def auto_trade_edit_position():
                         }})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/auto-trade/reject-cooldown/clear', methods=['POST'])
+@require_user
+def auto_trade_clear_reject_cooldown():
+    """Reject cooldown'lari (ram-resident oneri bloku) elle temizler.
+    Pozisyona/emre DOKUNMAZ — sadece scanner'in bu hisseleri tekrar
+    onerebilmesi icin gecici bloku kaldirir.
+    Body: { userId, symbol? (tek hisse; yoksa hepsi), reason? ('soft'/'hard'; yoksa hepsi) }
+    """
+    try:
+        data = request.json or {}
+        uid = data.get('userId', '')
+        if not uid:
+            return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+        sym = (data.get('symbol') or '').strip().upper() or None
+        reason = (data.get('reason') or '').strip().lower() or None
+        if reason and reason not in ('soft', 'hard'):
+            return jsonify({'success': False, 'error': "reason 'soft' veya 'hard' olmali"}), 400
+
+        from auto_trader_risk import _reject_cooldown_clear
+        cleared = _reject_cooldown_clear(uid, sym=sym, reason=reason)
+        return jsonify({
+            'success': True,
+            'cleared': cleared,
+            'count': len(cleared),
+            'message': (f"{len(cleared)} hisse cooldown'dan cikarildi" if cleared
+                        else 'Temizlenecek cooldown bulunamadi'),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500

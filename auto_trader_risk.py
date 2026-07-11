@@ -129,6 +129,32 @@ def _reject_cooldown_check(uid: str, sym: str) -> bool:
         return False
     return True
 
+
+def _reject_cooldown_clear(uid: str, sym: str = None, reason: str = None) -> list:
+    """Reject cooldown'lari elle temizle (ram-resident).
+    sym verilirse tek sembol; verilmezse uid'nin tumu.
+    reason verilirse sadece o tur ('soft'/'hard'); verilmezse hepsi.
+    Temizlenen sembollerin listesini doner.
+    """
+    if not uid:
+        return []
+    cleared = []
+    if sym:
+        keys = [f"{uid}_{sym}"]
+    else:
+        keys = [k for k in _reject_cooldown.keys() if k.startswith(uid + '_')]
+    for key in list(keys):
+        entry = _reject_cooldown.get(key)
+        if not entry:
+            continue
+        if reason is not None and entry[1] != reason:
+            continue
+        _reject_cooldown.pop(key, None)
+        cleared.append(key[len(uid) + 1:])
+    if cleared:
+        print(f"[REJECT-COOLDOWN] Elle temizlendi: {', '.join(cleared)} (reason={reason or 'hepsi'})")
+    return cleared
+
 # Panic-sell için pozisyon başına fiyat geçmişi (O(1) popleft deque)
 # {position_id: deque([(ts, price), ...])}
 _panic_price_history: dict = {}
