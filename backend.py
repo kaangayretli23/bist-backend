@@ -3,6 +3,15 @@ BIST Pro v7.1.0 - Main Entry Point
 Modular architecture: config, database, indicators, signals, data_fetcher,
 trade_plans, auto_trader, bes_system, routes_*
 """
+import sys as _sys
+# Konsol encoding emniyeti: Windows'ta stdout cp1254 gelir ve '→ ≤ •' emoji gibi
+# karakterler UnicodeEncodeError ile print'i (ve sarmasiz döngülerde tüm işi) çökertir.
+# utf-8'e çevir; console/dosya farketmez, bir daha bu sinif hata olmasin.
+for _stream in (_sys.stdout, _sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='backslashreplace')
+    except Exception:
+        pass
 import gzip, io, json, traceback, threading, time, logging
 
 # Socket.IO / engineio v2 heartbeat paketleri (~h~N) harmless ama log gürültüsü yaratır
