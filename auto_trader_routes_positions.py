@@ -564,6 +564,22 @@ def auto_trade_edit_position():
             # highest_price: yeni giriş fiyatına sıfırla (gelecek trailing güncellemelerine referans)
             new_high = new_entry
 
+        # DOĞRUDAN SET — body'de stopLoss/takeProfit verilirse orantısal ayarı OVERRIDE eder.
+        # SL'i elle çekmek için (örn. bozuk/dar SL'i düzeltmek). entryPrice göndermeden de çalışır.
+        def _direct(_key, _cur):
+            _v = data.get(_key)
+            if _v in (None, ''):
+                return _cur
+            try:
+                _fv = float(_v)
+                return round(_fv, 2) if _fv > 0 else _cur
+            except (TypeError, ValueError):
+                return _cur
+        new_sl  = _direct('stopLoss', new_sl)
+        new_tp1 = _direct('takeProfit1', new_tp1)
+        new_tp2 = _direct('takeProfit2', new_tp2)
+        new_tp3 = _direct('takeProfit3', new_tp3)
+
         db.execute(
             """UPDATE auto_positions SET
                entry_price=?, quantity=?, stop_loss=?,

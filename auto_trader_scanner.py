@@ -528,6 +528,7 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         # Formul: SL = price - 1.5 × ATR. Cap: cfg.stopLossPct*1.5 (asiri genis olmasin),
         #         floor: cfg.stopLossPct*0.5 (cok dar olmasin).
         stop_loss = round(price * (1 - cfg['stopLossPct'] / 100), 2)  # default fallback
+        _atr_v = 0.0
         try:
             from indicators_basic import calc_atr as _calc_atr_sl
             _atr_data = _calc_atr_sl(
@@ -578,6 +579,19 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                         tp3 = _tp_val(targets[2], tp3)
             except Exception:
                 pass
+
+        # SL EMNİYET FLOOR — SL asla gürültü-seviyesinde dar olmasın.
+        # Bug: plan-SL override'ı ATR floor'unu bypass edip destek seviyesini SL yapıyordu
+        # → CCOLA %0.23 SL (günlük aralık %3.57'de anında stop). Nihai kural: SL mesafesi
+        # >= max(config-floor %0.75, 1×ATR, %1). Volatil hissede otomatik daha geniş.
+        _hard_min_sl = max(price * (cfg['stopLossPct'] * 0.5 / 100),
+                           _atr_v if _atr_v > 0 else 0.0,
+                           price * 0.01)
+        if (price - stop_loss) < _hard_min_sl:
+            _old_sl = stop_loss
+            stop_loss = round(price - _hard_min_sl, 2)
+            print(f"[AUTO-TRADE] {sym} SL floor uygulandı: {_old_sl} → {stop_loss} "
+                  f"(mesafe >=%{_hard_min_sl/price*100:.2f}, gürültü-koruması)")
 
         # TP monotonik kontrol — kademeli kar alma icin tp1 < tp2 < tp3 sart.
         # Plan override'ında targets esit/geri sirali gelmis olabilir; en az %0.5

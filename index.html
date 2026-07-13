@@ -8409,7 +8409,7 @@ async function loadAutoTrade() {
             <div style="font-family:var(--font-mono);font-size:10.5px;color:${isUp ? 'var(--green)' : 'var(--red)'};text-align:right;letter-spacing:0.06em;">${pnlSign}${Math.abs(p.pnlPct).toFixed(1)}% · ${p.quantity} lot</div>
           </div>
           <div style="display:flex;gap:4px;">
-            <button onclick="openEditPositionModal(${p.id}, ${p.entryPrice}, ${p.quantity})" class="tool-btn" title="Giriş fiyatı/adet düzelt" style="padding:6px 8px;font-size:10px;">✏</button>
+            <button onclick="openEditPositionModal(${p.id}, ${p.entryPrice}, ${p.quantity}, ${p.stopLoss || 0}, ${p.takeProfit1 || 0})" class="tool-btn" title="Giriş/adet/SL/TP düzelt" style="padding:6px 8px;font-size:10px;">✏</button>
             <button onclick="closePosition(${p.id})" class="tool-btn warn" title="Piyasa fiyatından tam kapat" style="padding:6px 10px;font-size:10px;">Kapat</button>
             <button onclick="openCustomCloseModal(${p.id}, '${p.symbol}', ${p.quantity}, ${p.currentPrice > 0 ? p.currentPrice : p.entryPrice})" class="tool-btn" title="Adet ve fiyat belirterek kapat" style="padding:6px 10px;font-size:10px;">✍ Düzenle</button>
           </div>
@@ -8971,7 +8971,7 @@ async function clearRejectCooldown(reason) {
 }
 
 // Edit Position Modal — Midas'ta gerçekleşen doluma göre giriş fiyatı/adet düzelt
-function openEditPositionModal(posId, curEntry, curQty) {
+function openEditPositionModal(posId, curEntry, curQty, curSl, curTp1) {
   let modal = document.getElementById('editPositionModal');
   if (!modal) {
     modal = document.createElement('div');
@@ -8981,7 +8981,7 @@ function openEditPositionModal(posId, curEntry, curQty) {
       <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:420px;width:90%;">
         <div style="font-weight:700;font-size:16px;margin-bottom:16px;">✏️ Pozisyonu Düzelt</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
-          Midas'ta gerçekleşen dolum farklıysa burada güncelle. SL/TP/trailing fiyata orantılı kaydırılacak.
+          Midas'ta gerçekleşen dolum farklıysa giriş/adet güncelle. <b>SL/TP'yi doğrudan da ayarlayabilirsin.</b>
         </div>
         <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:8px;">
           Gerçek Giriş Fiyatı (TL)
@@ -8991,9 +8991,19 @@ function openEditPositionModal(posId, curEntry, curQty) {
           Gerçek Adet
           <input id="epQty" type="number" step="1" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
         </label>
+        <div style="display:flex;gap:8px;">
+          <label style="flex:1;display:block;font-size:12px;color:var(--text-dim);margin-bottom:8px;">
+            🛑 Stop-Loss (TL)
+            <input id="epSl" type="number" step="0.01" style="width:100%;background:var(--bg);border:1px solid var(--red);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+          </label>
+          <label style="flex:1;display:block;font-size:12px;color:var(--text-dim);margin-bottom:8px;">
+            🎯 Take-Profit 1 (TL)
+            <input id="epTp1" type="number" step="0.01" style="width:100%;background:var(--bg);border:1px solid var(--green);border-radius:6px;padding:7px;color:var(--text);margin-top:4px;">
+          </label>
+        </div>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);margin:12px 0;">
           <input id="epAdjust" type="checkbox" checked>
-          SL/TP/trailing'i orantılı kaydır (önerilir)
+          Giriş değişirse SL/TP/trailing'i orantılı kaydır (SL/TP'yi elle yazarsan o öncelikli)
         </label>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
           <button onclick="document.getElementById('editPositionModal').style.display='none';" style="background:var(--border);color:var(--text);border:none;border-radius:6px;padding:8px 16px;cursor:pointer;">İptal</button>
@@ -9004,6 +9014,8 @@ function openEditPositionModal(posId, curEntry, curQty) {
   }
   document.getElementById('epEntry').value = curEntry.toFixed(2);
   document.getElementById('epQty').value = curQty;
+  document.getElementById('epSl').value  = (curSl  && curSl  > 0) ? curSl.toFixed(2)  : '';
+  document.getElementById('epTp1').value = (curTp1 && curTp1 > 0) ? curTp1.toFixed(2) : '';
   document.getElementById('epAdjust').checked = true;
   modal.dataset.posId = posId;
   modal.style.display = 'flex';
@@ -9020,6 +9032,10 @@ async function submitEditPosition() {
     quantity: parseFloat(document.getElementById('epQty').value),
     adjustSlTp: document.getElementById('epAdjust').checked,
   };
+  const _sl  = parseFloat(document.getElementById('epSl').value);
+  const _tp1 = parseFloat(document.getElementById('epTp1').value);
+  if (_sl  > 0) body.stopLoss     = _sl;    // doğrudan SL set (boşsa değişmez)
+  if (_tp1 > 0) body.takeProfit1  = _tp1;
   if (!body.entryPrice || body.entryPrice <= 0 || !body.quantity || body.quantity <= 0) {
     alert('Geçerli fiyat ve adet girin'); return;
   }
