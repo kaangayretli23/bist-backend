@@ -74,6 +74,58 @@ def overbought_penalty(rsi, regime):
     return 0.0
 
 
+def setup_features(df):
+    """OHLC DataFrame (Close/High/Low, kronolojik; son satır = değerlendirme anı) ->
+    kurulum özellikleri. En az 20 bar gerekir, yoksa None."""
+    import numpy as np
+    if df is None or len(df) < 20:
+        return None
+    c = df['Close'].values.astype(float)
+    h = df['High'].values.astype(float)
+    l = df['Low'].values.astype(float)
+    vol14 = float(np.mean((h[-14:] - l[-14:]) / c[-14:]) * 100)
+    ret5 = float((c[-1] / c[-6] - 1) * 100) if len(c) > 6 else 0.0
+    diff = np.diff(c[-15:])
+    up = float(np.clip(diff, 0, None).mean())
+    dn = float(-np.clip(diff, None, 0).mean())
+    rsi = 100 - 100 / (1 + up / dn) if dn > 0 else 100.0
+    return {'vol14': vol14, 'ret5': ret5, 'rsi': rsi}
+
+
+def setup_quality(vol14, ret5, rsi):
+    """HIZLI-TRADE KURULUM KALİTESİ (0-100).
+
+    Kullanıcının GERÇEK kazanan işlemleriyle korele faktörlerden türetildi (Midas 3 ay, 39 işlem):
+    volatilite (hareket alanı) + kısa momentum (RSI, önceki 5g getiri). Yüksek = hızlı momentum
+    trade'i için iyi ADAY.
+
+    ⚠️ ÖNEMLİ: Bu bir YÖN-ÖNGÖRÜSÜ DEĞİL. Yalnızca HIZLI çıkışla çalışır — multi-day tutulursa
+    momentum reverse eder (kanıtlı). 39-işlem/2-outlier küçük örnekleminden → DENEYSEL, 1 ayda
+    yeni veriyle doğrulanacak (takvim hatırlatması). Ağırlıklar ENV ile ayarlanabilir.
+    """
+    def c01(x):
+        return 0.0 if x < 0 else (1.0 if x > 1.0 else x)
+    vol_n = c01((float(vol14) - 1.5) / (8.0 - 1.5))    # %1.5..8 aralık -> 0..1
+    ret_n = c01((float(ret5) + 5.0) / 15.0)            # -5..+10 -> 0..1
+    rsi_n = c01((float(rsi) - 40.0) / 40.0)            # 40..80 -> 0..1
+    import os
+    def w(k, d):
+        try: return float(os.environ.get(k, d))
+        except (TypeError, ValueError): return float(d)
+    wv, wr, ws = w('SETUP_W_VOL', 0.40), w('SETUP_W_RET', 0.35), w('SETUP_W_RSI', 0.25)
+    tot = wv + wr + ws
+    q = (wv * vol_n + wr * ret_n + ws * rsi_n) / tot if tot else 0.0
+    return round(q * 100)
+
+
+def setup_quality_from_df(df):
+    """OHLC df -> (setup_quality 0-100, features) tek çağrı. Kısa yol."""
+    f = setup_features(df)
+    if not f:
+        return None, None
+    return setup_quality(f['vol14'], f['ret5'], f['rsi']), f
+
+
 def recalibrate(db_path=None, horizon_days=5, min_n=30):
     """Kalibrasyonu DB'den YENİDEN fit et (yeni veri geldikçe çağır).
     _SCORE_CALIB'i güncellemek için çıktıyı elle koda yapıştır ya da ileride

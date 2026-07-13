@@ -157,7 +157,7 @@ def edit_telegram_message(message_id, new_text):
 # =====================================================================
 
 def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, tp2, tp3, trailing_sl,
-                      ai_verdict=None):
+                      ai_verdict=None, setup_q=None):
     """Al sinyali bildirimi — Midas uyumlu format, onay/red butonlu.
 
     ai_verdict (opsiyonel): ai_reviewer.review_trade_candidate() çıktısı. Verilirse
@@ -251,11 +251,17 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
         _reality = ""
         _conf_disp = f"Güven: <b>%{confidence:.0f}</b>"
 
+    # Hızlı-trade kurulum kalitesi (deneysel) — kullanıcının gerçek edge'inden (vol+momentum)
+    _setup_disp = ""
+    if setup_q is not None:
+        _setup_disp = (f"⚡ <i>Hızlı-trade kurulumu: <b>{setup_q}/100</b> "
+                       f"(deneysel — hızlı çık, bekletme)</i>\n")
+
     msg = (
         f"🟢 <b>AL SİNYALİ — {symbol}</b>  <i>({sig_time_str})</i>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📊 Skor: <b>{score:.1f}</b>  |  {_conf_disp}  |  R/R: <b>1:{rr}</b>\n"
-        f"{_reality}"
+        f"{_reality}{_setup_disp}"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📱 <b>MİDAS'A GİR:</b>\n"
         f"  1️⃣ Hisse: <b>{symbol}</b>\n"

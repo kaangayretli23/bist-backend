@@ -765,11 +765,18 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                 # yerine encapsulated; pending state telegram_state'te tutuluyor)
                 _already_pending = has_pending_signal(uid, sym)
                 if not _already_pending:
+                    # Hızlı-trade kurulum kalitesi (deneysel) — kullanıcının gerçek edge'i
+                    try:
+                        from signal_calibration import setup_quality_from_df
+                        _sq, _ = setup_quality_from_df(cand.get('hist'))
+                    except Exception:
+                        _sq = None
                     _tg_sent = send_trade_signal(
                         uid, sym, price, quantity,
                         cand['score'], cand['confidence'],
                         stop_loss, tp1, tp2, tp3, trailing_sl,
                         ai_verdict=ai_verdict,  # APPROVE ise AI özeti karta eklenir (None ise eski kart)
+                        setup_q=_sq,
                     )
         except Exception as _tg_err:
             print(f"[AUTO-TRADE] Telegram sinyal hatası: {_tg_err}")
