@@ -359,8 +359,6 @@ def docs():
         '/api/market/regime', '/api/alerts/signals',
         '/api/auth/register', '/api/auth/login', '/api/auth/profile',
         '/api/portfolio', '/api/watchlist', '/api/alerts', '/api/alerts/check',
-        '/api/bes/funds', '/api/bes/fund/<code>', '/api/bes/analyze',
-        '/api/bes/simulate', '/api/bes/top',
         '/api/auto-trade/config', '/api/auto-trade/toggle',
         '/api/auto-trade/status', '/api/auto-trade/trades', '/api/auto-trade/close',
     ]})

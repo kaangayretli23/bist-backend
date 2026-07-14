@@ -1,7 +1,7 @@
 """
 BIST Pro v7.1.0 - Main Entry Point
 Modular architecture: config, database, indicators, signals, data_fetcher,
-trade_plans, auto_trader, bes_system, routes_*
+trade_plans, auto_trader, routes_*
 """
 import sys as _sys
 # Konsol encoding emniyeti: Windows'ta stdout cp1254 gelir ve '→ ≤ •' emoji gibi
@@ -67,12 +67,6 @@ try:
     import routes_tax_report  # noqa: F401 — yillik islem ozeti PDF
 except ImportError as e:
     print(f"[HATA] auto_trader.py import hatasi: {e}")
-
-# BES fund system
-try:
-    import bes_system
-except ImportError as e:
-    print(f"[HATA] bes_system.py import hatasi: {e}")
 
 # Route blueprints
 from routes_system    import system_bp
