@@ -400,23 +400,12 @@ def calc_recommendation(hist, indicators, symbol=None):
                 if float(fib_res_dist) < 3:
                     strategy_parts.append(f"Fibonacci {fib_res['level']} direnci ({fib_res['price']} TL) yakininda")
 
-            # Haber sentiment modifier (opsiyonel): -0.5..+0.5 → ±1.5 puan
+            # FAZ 1 cerrahi trim: haber-sentiment SKOR katkısı KALDIRILDI.
+            # Sebep: temel/haber sinyalin öngörü gücünü artırmıyor (edge yok) → skora eklemek
+            # sadece gürültü. news_sentiment yalnızca AI 2. göz bağlamı ve ekranda kaldı.
             sentiment_bonus = 0.0
-            if symbol:
-                try:
-                    from news_sentiment import get_sentiment_score_for_signal
-                    raw_sent = get_sentiment_score_for_signal(symbol)
-                    if raw_sent is not None:
-                        sentiment_bonus = max(-1.5, min(1.5, float(raw_sent) * 3.0))
-                        if sentiment_bonus > 0.3:
-                            reasons.append(f'Pozitif haber sentiment (+{sf(sentiment_bonus)})')
-                        elif sentiment_bonus < -0.3:
-                            reasons.append(f'Negatif haber sentiment ({sf(sentiment_bonus)})')
-                        score += sentiment_bonus
-                except Exception:
-                    pass
 
-            contrib['sentiment'] = round(score - _cs, 3); _cs = score   # haber sentiment (eski seviye_sentiment'ten ayrildi)
+            contrib['sentiment'] = round(score - _cs, 3); _cs = score   # trim sonrası ~0
             # Sonuc
             max_score = 14.0
             score = max(-14.0, min(14.0, score))  # skor siniri

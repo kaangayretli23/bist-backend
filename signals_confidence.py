@@ -208,22 +208,10 @@ def calc_ml_confidence(hist, indicators, recommendation_score, signal_type='buy'
         score += bt_score; max_score += 10
         factors.append({'name': 'MTF Uyumu', 'value': mtf_label, 'score': sf(bt_score), 'max': 10})
 
-        # 8. Haber Sentiment modifier — confidence'a ±5 etki (calc_recommendation ile uyumlu)
+        # 8. FAZ 1 cerrahi trim: haber-sentiment GÜVEN katkısı KALDIRILDI (edge yok → gürültü).
+        # news_sentiment yalnızca AI/ekranda kaldı; skoru/güveni artık etkilemiyor.
         sent_mod = 0.0
-        sent_label = 'Yok'
-        if symbol:
-            try:
-                from news_sentiment import get_sentiment_score_for_signal
-                raw_sent = get_sentiment_score_for_signal(symbol)
-                if raw_sent is not None:
-                    _rs = float(raw_sent)
-                    if signal_type == 'sell':
-                        _rs = -_rs
-                    sent_mod = max(-5.0, min(5.0, _rs * 10.0))
-                    sent_label = f'{_rs:+.2f}'
-            except Exception:
-                pass
-        factors.append({'name': 'Haber Sentiment', 'value': sent_label, 'score': sf(sent_mod), 'max': 5})
+        factors.append({'name': 'Haber Sentiment', 'value': 'Yok (trim)', 'score': 0.0, 'max': 5})
 
         _conf_raw = (score / max_score * 100) if max_score > 0 else 50
         conf_val = max(0.0, min(100.0, _conf_raw + sent_mod))
