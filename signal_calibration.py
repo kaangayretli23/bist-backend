@@ -126,6 +126,29 @@ def setup_quality_from_df(df):
     return setup_quality(f['vol14'], f['ret5'], f['rsi']), f
 
 
+def log_setup_quality(uid, symbol, price, setup_q, features, score=None, confidence=None):
+    """setup_quality'yi KALICI kaydet — 1-ay sonra OOS doğrulaması için (kartta gösterip
+    unutmayalım). Forward getiri sonra OHLC'den hesaplanır; burada giriş-anı snapshot'ı tutulur.
+    Lazy-create; sinyal seyrek olduğu için kendi bağlantısını açar."""
+    try:
+        from config import get_db
+        db = get_db()
+        db.execute("""CREATE TABLE IF NOT EXISTS setup_quality_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, symbol TEXT, price REAL,
+            setup_q REAL, score REAL, confidence REAL, vol14 REAL, ret5 REAL, rsi REAL,
+            logged_at REAL DEFAULT (strftime('%s','now')))""")
+        f = features or {}
+        db.execute(
+            """INSERT INTO setup_quality_log
+               (user_id, symbol, price, setup_q, score, confidence, vol14, ret5, rsi)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (uid, symbol, price, setup_q, score, confidence,
+             f.get('vol14'), f.get('ret5'), f.get('rsi')))
+        db.commit(); db.close()
+    except Exception as _e:
+        print(f"[SETUP-LOG] kayit hatasi: {_e}")
+
+
 def recalibrate(db_path=None, horizon_days=5, min_n=30):
     """Kalibrasyonu DB'den YENİDEN fit et (yeni veri geldikçe çağır).
     _SCORE_CALIB'i güncellemek için çıktıyı elle koda yapıştır ya da ileride

@@ -781,8 +781,12 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                 if not _already_pending:
                     # Hızlı-trade kurulum kalitesi (deneysel) — kullanıcının gerçek edge'i
                     try:
-                        from signal_calibration import setup_quality_from_df
-                        _sq, _ = setup_quality_from_df(cand.get('hist'))
+                        from signal_calibration import setup_quality_from_df, log_setup_quality
+                        _sq, _sqf = setup_quality_from_df(cand.get('hist'))
+                        # 1-ay OOS doğrulaması için KALICI logla (kartta gösterip unutma)
+                        if _sq is not None:
+                            log_setup_quality(uid, sym, price, _sq, _sqf,
+                                              cand['score'], cand['confidence'])
                     except Exception:
                         _sq = None
                     _tg_sent = send_trade_signal(
