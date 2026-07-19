@@ -52,14 +52,28 @@ def _build_eod_summary(uid: str) -> str:
     trade_counts = {r['action']: int(r['c']) for r in trades_today}
     dec_counts = {r['decision']: int(r['c']) for r in dec_summary}
 
-    # Acik pozisyon unrealized
+    # Acik pozisyon unrealized + CIKIS ONERISI
+    # (FAZ 3) Ayri mesaj YOK — bildirim sayisini artirmadan mevcut raporu zenginlestirir.
+    # Fiyati zaten burada cekiyoruz, ek maliyet yok.
     open_positions = _auto_get_open_positions(uid) or []
     unrealized = 0.0
+    exit_notes = []
     for p in open_positions:
         stock = _cget(_stock_cache, p['symbol'])
         cur = float(stock.get('price', 0)) if stock else 0
         if cur > 0:
             unrealized += (cur - float(p['entryPrice'])) * float(p['quantity'])
+            try:
+                from exit_advisor import advice_for_position
+                adv = advice_for_position(p, cur)
+                pct = (cur - float(p['entryPrice'])) / float(p['entryPrice']) * 100
+                exit_notes.append((p['symbol'], pct, adv))
+            except Exception as _e:
+                print(f"[EOD] cikis onerisi hatasi ({p['symbol']}): {_e}")
+                exit_notes.append((p['symbol'], None, None))
+        else:
+            # Fiyat yoksa pozisyonu SESSIZCE DUSURME — "hepsi iyi" izlenimi yaratir.
+            exit_notes.append((p['symbol'], None, None))
 
     total = realized + unrealized
 
@@ -115,6 +129,34 @@ def _build_eod_summary(uid: str) -> str:
                 p = float(r['pnl'] or 0); pp = float(r['pnl_pct'] or 0)
                 lines.append(f"  {r['symbol']} {sgn(p)} TL ({sgn(pp)}%)")
             lines.append("")
+
+    # ── AÇIK POZİSYON DURUMU + ÇIKIŞ ÖNERİSİ (FAZ 3) ──
+    # Eşikler ölçümden: 4.728 sinyalin 1/3/5/10/20g yolu; kaybeden kuralı rejim testini geçti.
+    # Öneri EMİR DEĞİL — kullanıcı karar verir.
+    if exit_notes:
+        lines.append("🎯 <b>Açık pozisyonlar:</b>")
+        _icon = {'high': '🔴', 'medium': '🟠', 'low': '🟡'}
+        _flagged = 0
+        # Fiyati olmayanlar (pct=None) en sona; digerleri en kotuden iyiye.
+        for sym, pct, adv in sorted(exit_notes,
+                                    key=lambda x: (x[1] is None, x[1] if x[1] is not None else 0)):
+            if pct is None:
+                lines.append(f"  ❔ {sym} — <i>güncel fiyat alınamadı, değerlendirilemedi</i>")
+                continue
+            # Yuzdeyi 1 ondalikla yaz — sgn() tam sayiya yuvarliyor ve baslik/detay
+            # celisir gorunuyordu (baslik -4%, detay -3.5%).
+            _p = f"{pct:+.1f}"
+            if adv:
+                _flagged += 1
+                lines.append(f"  {_icon.get(adv['severity'], '⚪')} <b>{sym}</b> {_p}% — "
+                             f"{adv['title']}")
+                lines.append(f"      <i>{adv['detail']}</i>")
+            else:
+                lines.append(f"  ⚪ {sym} {_p}% — izlemede")
+        if _flagged:
+            lines.append(f"  <i>↳ {_flagged} pozisyon dikkat istiyor. "
+                         f"Öneri geçmiş veriye dayanır, emir değildir.</i>")
+        lines.append("")
 
     # Yarın için hatırlatma
     try:
