@@ -2376,6 +2376,15 @@ h1,h2{ letter-spacing:.3px; }
     <div id="atPnLSummary" style="font-size:13px;color:var(--text-dim);">Yükleniyor…</div>
   </div>
 
+  <!-- FAZ 3: Dürüst Ayna — gerçek geçmiş (Midas) + sistem, güven aralığıyla -->
+  <div class="card mb-16">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div class="section-title" style="margin:0;"><span class="icon">🪞</span> Dürüst Ayna</div>
+      <button onclick="loadMirror()" style="background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px;">↻ Yenile</button>
+    </div>
+    <div id="atMirror" style="font-size:13px;color:var(--text-dim);">Yükleniyor…</div>
+  </div>
+
   <!-- C3: Performans Dashboard (winRate / profitFactor / Sharpe / reason dağılımı) -->
   <div class="card mb-16">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
@@ -7673,6 +7682,7 @@ async function loadAutoTrade() {
   loadDailySummary().catch(() => {});
   // Performans dashboard + diagnostic + PnL ozet (paralel, cevap bekleme)
   try { loadPnLSummary(); } catch {}
+  try { loadMirror(); } catch {}
   try { loadPerformanceDashboard(); } catch {}
   try { loadSystemDiagnostic(); } catch {}
 }
@@ -8004,6 +8014,102 @@ async function loadPnLSummary() {
   }
 }
 
+// ─── FAZ 3: Dürüst Ayna ────────────────────────────────────────────────
+// Tasarım kuralı: ÖNCE örneklem, SONRA sayı. PF asla tek başına gösterilmez —
+// yanında güven aralığı ve "kanıtlandı mı" hükmü olur. Küçük örneklemde
+// backend zaten sayı döndürmez; burada da uydurmayız.
+async function loadMirror() {
+  const uid = _getUid();
+  const el = document.getElementById('atMirror');
+  if (!uid || !el) return;
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>Hesaplanıyor…</div>';
+  try {
+    const res = await fetch(`${API_BASE}/auto-trade/mirror?userId=${uid}`);
+    const data = await res.json();
+    if (!data.success) {
+      el.innerHTML = `<div style="color:var(--red);">Hata: ${escHtml(data.error || 'bilinmeyen')}</div>`;
+      return;
+    }
+    const s = data.stats;
+    const fmt = (v) => (Math.round(v * 100) / 100).toLocaleString('tr-TR');
+    const srcTxt = Object.entries(s.sources || {})
+      .map(([k, v]) => `${k === 'midas' ? 'Midas geçmişi' : 'sistem'}: ${v}`).join(' + ') || 'yok';
+
+    // Örneklem şeridi — her zaman en üstte, sayılardan ÖNCE
+    const okColor = s.sufficient ? 'var(--green)' : 'var(--yellow)';
+    let html = `<div style="background:var(--bg);border-left:3px solid ${okColor};border-radius:4px;padding:8px;margin-bottom:10px;">
+        <div style="font-size:11px;color:var(--text-muted);">ÖRNEKLEM</div>
+        <div style="font-size:15px;font-weight:700;">${s.n} kapanmış işlem
+          <span style="font-size:11px;font-weight:400;color:var(--text-dim);">(${escHtml(srcTxt)})</span></div>
+        <div style="font-size:11px;color:${okColor};margin-top:2px;">
+          ${s.sufficient ? `✓ ${s.min_n}+ işlem — istatistik anlamlı sayılır`
+                         : `⚠ ${s.min_n} işlemin altında — sayılar oynak, temkinli oku`}</div>
+      </div>`;
+
+    if (!('pf' in s)) {   // backend bilerek sayı vermedi
+      html += `<div style="color:var(--yellow);font-size:12px;">${escHtml(s.verdict)}</div>`;
+      el.innerHTML = html;
+      return;
+    }
+
+    const card = (label, val, color, sub) =>
+      `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">${label}</div>
+        <div style="font-size:18px;font-weight:700;color:${color || 'var(--text)'};margin-top:2px;">${val}</div>
+        ${sub ? `<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${sub}</div>` : ''}
+      </div>`;
+
+    // PF — nokta tahmin ASLA yalnız değil; aralık hep yanında
+    const ciTxt = (s.pf_lo != null) ? `%90 aralık ${fmt(s.pf_lo)}–${fmt(s.pf_hi)}` : 'aralık hesaplanamadı';
+    const pfColor = s.pf_proven ? 'var(--green)' : 'var(--yellow)';
+    html += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;">
+        ${card('Profit Factor', fmt(s.pf), pfColor, ciTxt)}
+        ${card('Win Rate', `%${fmt(s.win_rate)}`, null, `${s.wins}K / ${s.losses}Z`)}
+        ${card('Beklenti', `${fmt(s.expectancy)} TL`, s.expectancy >= 0 ? 'var(--green)' : 'var(--red)', 'işlem başı')}
+        ${card('Net', `${fmt(s.net)} TL`, s.net >= 0 ? 'var(--green)' : 'var(--red)')}
+      </div>`;
+
+    // Hüküm — panelin ana mesajı
+    const vColor = s.pf_proven ? 'var(--green)' : 'var(--yellow)';
+    html += `<div style="margin-top:10px;background:var(--bg);border-left:3px solid ${vColor};border-radius:4px;padding:8px;">
+        <div style="font-size:10px;color:var(--text-muted);">HÜKÜM</div>
+        <div style="font-size:12px;color:${vColor};margin-top:2px;">${escHtml(s.verdict)}</div>
+      </div>`;
+
+    // Kırılganlık — "kârın ne kadarı birkaç işlemden"
+    if (s.fragile) {
+      html += `<div style="margin-top:8px;background:var(--bg);border-left:3px solid var(--red);border-radius:4px;padding:8px;">
+          <div style="font-size:10px;color:var(--text-muted);">⚠ KIRILGANLIK</div>
+          <div style="font-size:12px;margin-top:2px;">
+            En iyi <b>2</b> işlem <b style="color:var(--green);">${fmt(s.top2_sum)} TL</b>
+            (brüt kazancın %${fmt(s.top2_share)}'i).
+            Onlar olmadan net <b style="color:var(--red);">${fmt(s.net_without_top2)} TL</b>${
+              s.pf_without_top2 != null ? `, PF <b>${fmt(s.pf_without_top2)}</b>` : ''}.
+          </div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">
+            Kârın birkaç vuruşa dayanıyor — tekrarlanabilirliği belirsiz.</div>
+        </div>`;
+    }
+
+    // Churn — sadece gerçekten sürüklüyorsa uyar
+    if (s.churn_drag) {
+      html += `<div style="margin-top:8px;background:var(--bg);border-left:3px solid var(--yellow);border-radius:4px;padding:8px;">
+          <div style="font-size:10px;color:var(--text-muted);">⚠ İŞLEM SIKLIĞI</div>
+          <div style="font-size:12px;margin-top:2px;">${s.small_n} küçük işlem net
+            <b style="color:var(--red);">${fmt(s.small_net)} TL</b> — sıklık edge'i sulandırıyor.</div>
+        </div>`;
+    } else if (s.small_n) {
+      html += `<div style="margin-top:8px;font-size:11px;color:var(--text-dim);">
+          ${s.small_n} küçük işlem net ${fmt(s.small_net)} TL — sıklık şu an sürüklemiyor.</div>`;
+    }
+
+    el.innerHTML = html;
+  } catch (e) {
+    console.warn('Mirror hatasi:', e);
+    el.innerHTML = `<div style="color:var(--red);font-size:12px;">Bağlantı hatası</div>`;
+  }
+}
+
 // ─── C3 Performans Dashboard ───────────────────────────────────────────
 async function loadPerformanceDashboard() {
   const uid = _getUid();
@@ -8138,6 +8244,7 @@ async function confirmCloseAllPositions() {
       alert(`${data.closed || 0} pozisyon kapatıldı.${data.failed ? ' (' + data.failed + ' başarısız)' : ''}`);
       try { loadAutoTradeStatus(); } catch {}
       try { loadPerformanceDashboard(); } catch {}
+      try { loadMirror(); } catch {}
     } else {
       alert('Hata: ' + (data.error || 'bilinmeyen'));
     }

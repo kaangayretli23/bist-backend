@@ -11,6 +11,31 @@ from config import app, get_db, safe_dict, _stock_cache, _cget
 from auth_middleware import require_user
 
 
+@app.route('/api/auto-trade/mirror', methods=['GET'])
+@require_user
+def auto_trade_mirror():
+    """FAZ 3 — DURUST PERFORMANS AYNASI.
+
+    /performance'tan farki (ikisi bilerek ayri duruyor):
+      - Kaynak: Midas'tan alinan gercek gecmis (trade_history) + sistemin kapattiklari.
+        /performance yalnizca auto_positions'a bakar; bugun orada 5 islem var ve
+        PF 1.71 gosterir — tek EREGL kazanci tasidigi icin YANILTICI.
+      - PF icin bootstrap GUVEN ARALIGI verir; aralik 1.0'i iceriyorsa
+        'edge kanitlanamadi' der. Nokta tahmin tek basina sunulmaz.
+      - KIRILGANLIK: en iyi 2 islem cikarilinca ne kaldigini gosterir.
+      - Orneklem yetersizse sayilari BILEREK dondurmez.
+    """
+    try:
+        uid = request.args.get('userId', '')
+        if not uid:
+            return jsonify({'success': False, 'error': 'userId gerekli'}), 400
+        from trade_history import compute_stats
+        return jsonify({'success': True, 'stats': compute_stats(uid)})
+    except Exception as e:
+        print(f"[MIRROR] hata: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/auto-trade/performance', methods=['GET'])
 @require_user
 def auto_trade_performance():
