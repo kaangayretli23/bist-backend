@@ -303,21 +303,22 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                           tf=_tf_now, price=live_price, score=score, confidence=confidence)
             continue
 
-        # B3+B4: KAP haber/duyuru filtresi — son haberlerde negatif sentiment varsa
-        # veya yuksek skorlu 'important' duyuru (temettu/sermaye/SPK) varsa pozisyon acma.
-        # Bilgilendirme/temettu aciklama gunu volatilite zıplamasını önler.
+        # B4: KAP aciklama-gunu filtresi — 2+ 'important' duyuru (temettu/sermaye/SPK) varsa
+        # pozisyon acma. Aciklama gunu volatilite zıplamasını önler (YÖN tahmini DEĞİL, mekanik).
+        #
+        # FAZ 2 NOTU — 'kap_negative' dali KALDIRILDI. Iki gerekce:
+        #  1) ULASILAMAZDI: get_stock_sentiment total_score'u TUM makaleler uzerinden TOPLUYOR ve
+        #     _score_article basligta 'kap' gecince +1 veriyor; sorgulardan biri zaten "... KAP ..."
+        #     iceriyor. 20-40 makalelik batch'te toplam yapisal olarak pozitife kayiyor →
+        #     'negatif' esigi (<=-2) pratikte imkansiz. 253k kararda 0 tetik = kanit.
+        #  2) TAMIR ETMEDIK: dal haber-sentiment YONUNE dayaniyordu; FAZ 1'de bunun edge'i
+        #     olmadigini olcup skor/guven yolundan cikardik. Bozuk bir yon-kapisini aktiflestirmek
+        #     dogrulanmamis bir engelleyici eklemek olurdu.
         try:
             from kap_scraper import get_stock_sentiment
             _sent = get_stock_sentiment(sym)
             _sent_label = _sent.get('label', 'nötr')
-            _sent_score = int(_sent.get('score', 0) or 0)
             _imp_cnt = int(_sent.get('important_count', 0) or 0)
-            if _sent_label == 'negatif':
-                _log_decision(uid, sym, 'SKIP', 'kap_negative',
-                              detail=f"sentiment={_sent_label}, sc={_sent_score}, imp={_imp_cnt}",
-                              tf=_tf_now, price=live_price, score=score, confidence=confidence)
-                continue
-            # Aciklama gunu: 2+ onemli haber + nötr/negatif sentiment → riski azalt
             if _imp_cnt >= 2 and _sent_label != 'pozitif':
                 _log_decision(uid, sym, 'SKIP', 'kap_announcement',
                               detail=f"important={_imp_cnt}, sentiment={_sent_label}",

@@ -82,10 +82,8 @@ def _data_freshness(sym: str):
     return min(cands, key=lambda c: c[0])
 
 
-def _data_age_sec(sym: str):
-    """Geriye-uyum sarmalayıcısı: EN TAZE kaynağın ETKİN yaşı (sn) veya None."""
-    return _data_freshness(sym)[0]
-
+# NOT (FAZ 2): _data_age_sec() kaldırıldı — "geriye-uyum sarmalayıcısı" idi, çağıran kalmamıştı.
+# Doğrudan _data_freshness(sym) kullanılıyor (scanner veri-tazeliği kapısı).
 
 # SL sonrası yeniden giriş engeli: {uid_sym: (timestamp, trade_style)}
 _sl_cooldown: dict = {}

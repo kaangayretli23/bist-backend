@@ -317,25 +317,7 @@ def get_market_sentiment() -> dict:
     return result
 
 
-def get_sentiment_score_for_signal(symbol: str) -> float:
-    """
-    Sinyal motoruna eklenecek sentiment katkısı.
-    Returns -0.5 → +0.5 (teknik skora toplanır)
-    """
-    try:
-        sent = get_stock_news_sentiment(symbol)
-        return round(sent['score'] * 0.5, 3)
-    except Exception:
-        return 0.0
-
-
-# =====================================================================
-# CACHE YÖNETİMİ
-# =====================================================================
-
-def clear_sentiment_cache(symbol: str = None):
-    with _sentiment_lock:
-        if symbol:
-            _sentiment_cache.pop(symbol, None)
-        else:
-            _sentiment_cache.clear()
+# NOT (FAZ 2): get_sentiment_score_for_signal() KALDIRILDI. FAZ 1'de haber-sentiment
+# skor/güven yolundan çıkarıldı (edge yok → gürültü); fonksiyon yetim kalmıştı.
+# Sentiment artık yalnızca ekran + AI advisory'de: get_stock_news_sentiment / get_market_sentiment.
+# clear_sentiment_cache() da kaldırıldı — hiç çağrılmıyordu (cache TTL ile kendi kendine düşüyor).

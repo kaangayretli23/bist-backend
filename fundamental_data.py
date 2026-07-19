@@ -244,11 +244,9 @@ def _build_summary(data: dict) -> str:
 # KOLAY ERİŞİM FONKSİYONLARI
 # =====================================================================
 
-def get_fundamental_score(symbol: str) -> float:
-    """Sadece temel skoru döndür (0-3). Hızlı erişim için."""
-    data = fetch_fundamentals(symbol)
-    return data.get('temel_skor', 0.0) if data else 0.0
-
+# NOT (FAZ 2): get_fundamental_score() KALDIRILDI — temel analiz net edge vermediği için
+# skor yolundan çıkarılmıştı, fonksiyon yetim kaldı. Temel veri hâlâ ekran + AI'da kullanılıyor
+# (fetch_fundamentals / get_valuation_label / format_fundamentals_message).
 
 def get_valuation_label(symbol: str) -> str:
     """
@@ -313,14 +311,5 @@ def format_fundamentals_message(symbol: str) -> str:
     return '\n'.join(lines)
 
 
-# =====================================================================
-# CACHE TEMİZLEME
-# =====================================================================
-
-def clear_fundamental_cache(symbol: str = None):
-    """Cache'i temizle. symbol=None ise tümünü temizler."""
-    with _fund_lock:
-        if symbol:
-            _fund_cache.pop(symbol, None)
-        else:
-            _fund_cache.clear()
+# NOT (FAZ 2): clear_fundamental_cache() kaldırıldı — hiç çağrılmıyordu.
+# Cache TTL ile kendi kendine tazeleniyor (bkz. fetch_fundamentals).

@@ -346,9 +346,8 @@ def get_quote(symbol: str) -> dict | None:
         return dict(_rt_cache[symbol]) if symbol in _rt_cache else None
 
 
-def is_realtime() -> bool:
-    return _stream_ok and bool(TV_SESSION or TV_USERNAME)
-
+# NOT (FAZ 2): is_realtime() kaldırıldı — hiç çağrılmıyordu. Canlılık bilgisi
+# get_quote()'un döndürdüğü kayıttaki kaynak/zaman alanlarından okunuyor.
 
 # =====================================================================
 # POZİSYON MONİTÖRÜ
@@ -397,13 +396,9 @@ def _get_open_positions():
 from realtime_monitor import _check_positions_once
 
 
-def reset_position_alerts(symbol: str, user_id: str, position_id: int | None = None) -> None:
-    """Pozisyon kapanınca uyarı state'ini temizle (RAM+DB) ve aboneliği iptal et.
-    DIKKAT: Bu unsubscribe yapar — sembol baska kullanicinin acik pozisyonunda da varsa
-    onun da takibi durur. Sadece tum pozisyonlar kapaliysa cagir, yoksa clear_alert_state kullan."""
-    clear_alert_state(symbol, user_id, position_id)
-    unsubscribe(symbol)
-
+# NOT (FAZ 2): reset_position_alerts() kaldırıldı — hiç çağrılmıyordu ve kendi docstring'i
+# tehlikeli olduğunu söylüyordu (unsubscribe, başka kullanıcının açık pozisyonunun takibini de
+# durduruyordu). Kullanımdaki güvenli yol: clear_alert_state() (unsubscribe yapmaz).
 
 def clear_alert_state(symbol: str, user_id: str, position_id: int | None = None) -> None:
     """Sadece alert state cleanup (RAM+DB). Unsubscribe yapmaz.
