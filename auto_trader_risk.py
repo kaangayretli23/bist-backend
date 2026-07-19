@@ -1,6 +1,7 @@
 """
 BIST Pro - Auto Trading Risk Helpers
-SL cooldown (DB persisted) + panic-sell ring buffer (deque) + karar log helper.
+SL cooldown (DB persisted) + panic-sell ring buffer (deque) + karar log helper
++ SL/TP seviye hesabi (compute_sl_tp).
 auto_trader_engine.py'dan ayrıştırıldı (700 satır kuralı).
 """
 import os
@@ -16,6 +17,103 @@ _DELAYED_FEED_LAG_SEC = int(os.environ.get('AUTO_DELAYED_FEED_LAG_SEC', '900'))
 def _source_lag_sec(source) -> int:
     """Kaynak tipine gore ek piyasa gecikmesi. ws=canli→0, yf=gecikmeli→~900, bilinmiyor→0."""
     return _DELAYED_FEED_LAG_SEC if (source or '').lower() == 'yf' else 0
+
+
+def compute_sl_tp(price, cfg, hist, sym):
+    """Giris fiyati + config + OHLC -> (stop_loss, tp1, tp2, tp3, trailing_sl).
+
+    FAZ 2'de auto_trader_scanner._step2b_scan_signals icinden cikarildi (o fonksiyon
+    ~700 satirdi ve bu blok net giris/cikisi olan bagimsiz bir birimdi). Davranis AYNI.
+
+    Sira ONEMLI — her adim bir oncekini ezebilir:
+      1) Sabit %SL fallback (cfg.stopLossPct)
+      2) A1: ATR-bazli dinamik SL (1.5×ATR), cap=%SL*1.5 / floor=%SL*0.5
+      3) Trade plani override'i (daha iyi destek/direnc SL+TP varsa)
+      4) SL EMNIYET FLOOR — 3. adimin floor'u bypass etmesini engeller (KRITIK, bkz. asagi)
+      5) TP monotonikligi (tp1<tp2<tp3, min %0.5 spread) — bozuksa default formule don
+    """
+    stop_loss = round(price * (1 - cfg['stopLossPct'] / 100), 2)  # default fallback
+    _atr_v = 0.0
+    # A1: ATR-based dinamik SL — sabit %3 yerine volatiliteye gore.
+    # Volatil hisselerde geniş SL (eskiden anında tetikleniyordu),
+    # sakin hisselerde dar SL (eskiden gereksiz büyük zarar).
+    try:
+        from indicators_basic import calc_atr as _calc_atr_sl
+        _atr_data = _calc_atr_sl(
+            hist['High'].values.astype(float),
+            hist['Low'].values.astype(float),
+            hist['Close'].values.astype(float),
+        )
+        _atr_v = float(_atr_data.get('value', 0))
+        if _atr_v > 0:
+            _atr_sl_distance = _atr_v * 1.5
+            _max_distance = price * (cfg['stopLossPct'] * 1.5 / 100)  # cap
+            _min_distance = price * (cfg['stopLossPct'] * 0.5 / 100)  # floor
+            _atr_sl_distance = max(_min_distance, min(_max_distance, _atr_sl_distance))
+            stop_loss = round(price - _atr_sl_distance, 2)
+            print(f"[AUTO-TRADE] {sym} ATR-SL: ATR={_atr_v:.3f}, SL distance={_atr_sl_distance:.3f} ({_atr_sl_distance/price*100:.2f}%)")
+    except Exception as _atr_sl_err:
+        print(f"[AUTO-TRADE] {sym} ATR-SL hesap hatasi (sabit %SL kullanildi): {_atr_sl_err}")
+
+    tp1 = round(price * (1 + cfg['takeProfitPct'] / 100), 2)
+    tp2 = round(price * (1 + cfg['takeProfitPct'] * 1.5 / 100), 2)
+    tp3 = round(price * (1 + cfg['takeProfitPct'] * 2 / 100), 2)
+    trailing_sl = round(price * (1 - cfg['trailingPct'] / 100), 2) if cfg['trailingStop'] else 0
+
+    # Trade planini kontrol et (daha iyi SL/TP varsa kullan)
+    if hist is not None and len(hist) >= 20:
+        try:
+            from trade_plans import calc_trade_plan
+            plan = calc_trade_plan(hist, symbol=sym)
+            tf_key = {'daily': 'daily', 'swing': 'weekly', 'monthly': 'monthly'}.get(cfg['tradeStyle'], 'weekly')
+            tf_plan = plan.get(tf_key, {})
+            buy_plan = tf_plan.get('buy', {})
+            if buy_plan:
+                plan_sl = float(buy_plan.get('stopLoss', 0))
+                if 0 < plan_sl < price and plan_sl >= price * 0.85:
+                    stop_loss = plan_sl
+                targets = buy_plan.get('targets', [])
+
+                def _tp_val(t, default):
+                    try:
+                        return float(t.get('price', default)) if isinstance(t, dict) else float(t)
+                    except Exception:
+                        return default
+
+                if len(targets) >= 1 and _tp_val(targets[0], 0) > price:
+                    tp1 = _tp_val(targets[0], tp1)
+                if len(targets) >= 2 and _tp_val(targets[1], 0) > price:
+                    tp2 = _tp_val(targets[1], tp2)
+                if len(targets) >= 3 and _tp_val(targets[2], 0) > price:
+                    tp3 = _tp_val(targets[2], tp3)
+        except Exception:
+            pass
+
+    # SL EMNİYET FLOOR — SL asla gürültü-seviyesinde dar olmasın.
+    # Bug: plan-SL override'ı ATR floor'unu bypass edip destek seviyesini SL yapıyordu
+    # → CCOLA %0.23 SL (günlük aralık %3.57'de anında stop). Nihai kural: SL mesafesi
+    # >= max(config-floor %0.75, 1×ATR, %1). Volatil hissede otomatik daha geniş.
+    _hard_min_sl = max(price * (cfg['stopLossPct'] * 0.5 / 100),
+                       _atr_v if _atr_v > 0 else 0.0,
+                       price * 0.01)
+    if (price - stop_loss) < _hard_min_sl:
+        _old_sl = stop_loss
+        stop_loss = round(price - _hard_min_sl, 2)
+        print(f"[AUTO-TRADE] {sym} SL floor uygulandı: {_old_sl} → {stop_loss} "
+              f"(mesafe >=%{_hard_min_sl/price*100:.2f}, gürültü-koruması)")
+
+    # TP monotonik kontrol — kademeli kar alma icin tp1 < tp2 < tp3 sart.
+    # Plan override'ında targets esit/geri sirali gelmis olabilir; en az %0.5
+    # spread garanti etmek icin default formul fallback'i.
+    _tp_default_1 = round(price * (1 + cfg['takeProfitPct'] / 100), 2)
+    _tp_default_2 = round(price * (1 + cfg['takeProfitPct'] * 1.5 / 100), 2)
+    _tp_default_3 = round(price * (1 + cfg['takeProfitPct'] * 2 / 100), 2)
+    if not (price < tp1 < tp2 < tp3) or (tp2 - tp1) / price < 0.005 or (tp3 - tp2) / price < 0.005:
+        print(f"[AUTO-TRADE] {sym} TP siralama bozuk "
+              f"(tp1={tp1:.2f}, tp2={tp2:.2f}, tp3={tp3:.2f}) -> default formul")
+        tp1, tp2, tp3 = _tp_default_1, _tp_default_2, _tp_default_3
+
+    return stop_loss, tp1, tp2, tp3, trailing_sl
 
 
 def _log_decision(uid: str, sym: str, decision: str, reason: str = '',

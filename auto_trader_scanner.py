@@ -6,7 +6,8 @@ auto_trader_engine.py'dan ayrıştırıldı (600 satır kuralı).
 # Not: config, auto_trader, signals, indicators, signals_core, routes_telegram,
 # realtime_prices, data_fetcher, trade_plans fonksiyon içinde lazy import edilir.
 import os as _os_mod
-from auto_trader_risk import _sl_cooldown_check, _reject_cooldown_check, _log_decision, _data_freshness
+from auto_trader_risk import (_sl_cooldown_check, _reject_cooldown_check, _log_decision,
+                              _data_freshness, compute_sl_tp)
 from signals_market import REGIMES_BEARISH
 
 
@@ -24,60 +25,10 @@ def _float_env(key, default):
         return default
 
 
-def _quality_position_pct(rr, score, confidence):
-    """KALİTE-BAZLI standalone pozisyon yüzdesi (sermayenin %'si).
-
-    Kullanıcı tasarımı — ÖNCELİK HİYERARŞİSİ (R/R lider DEĞİL):
-      1) BİRİNCİL = conviction: güven/skor'dan hangisi güçlüyse o lider (mode='max').
-      2) İKİNCİL  = R/R sadece tiebreaker: benzer conviction'da yüksek R/R öne geçer
-                    (küçük ALLOC_RR_TILT katkısı → ana sırayı bozmaz, sadece ayırır).
-      3) CEZA     = çok düşük R/R (ALLOC_RR_FLOOR altı) geri plana atılır (×penalty).
-      4) AI 2. göz EN SON bakar (scanner'da tilt olarak, bu fonksiyonun dışında).
-
-    Paylar birbirine NORMALİZE EDİLMEZ → her hisse bağımsız % alır, cherry-pick korunur.
-    Sonuç [floor .. ceil] bandına eşlenir. Tüm parametreler ENV ile ayarlanabilir.
-    """
-    def _c01(x):
-        return 0.0 if x < 0 else (1.0 if x > 1.0 else x)
-    rr_min, rr_max = _float_env('ALLOC_RR_MIN', 1.0), _float_env('ALLOC_RR_MAX', 3.0)
-    sc_min, sc_max = _float_env('ALLOC_SCORE_MIN', 5.0), _float_env('ALLOC_SCORE_MAX', 10.0)
-    rr_n   = _c01((float(rr or 0) - rr_min) / (rr_max - rr_min)) if rr_max > rr_min else 0.0
-    sc_n   = _c01((float(score or 0) - sc_min) / (sc_max - sc_min)) if sc_max > sc_min else 0.0
-    conf_n = _c01(float(confidence or 0) / 100.0)
-
-    # 1) BİRİNCİL conviction — varsayılan 'confidence': skoru lider YAPMA (backtest:
-    # yüksek skor = en kötü forward bucket). 'max'/'score'/'blend' ile değiştirilebilir.
-    mode = _os_mod.environ.get('ALLOC_CONVICTION_MODE', 'confidence').lower()
-    if mode == 'confidence':
-        conviction = conf_n
-    elif mode == 'score':
-        conviction = sc_n
-    elif mode == 'blend':
-        conviction = 0.6 * conf_n + 0.4 * sc_n
-    else:  # 'max' — hangisi güçlüyse o başta
-        conviction = max(conf_n, sc_n)
-
-    # 2) R/R İKİNCİL tiebreaker (küçük katkı → benzer conviction'da ayırır)
-    rr_tilt = _float_env('ALLOC_RR_TILT', 0.15)
-    q = conviction * (1.0 - rr_tilt) + rr_n * rr_tilt
-
-    # 3) Çok düşük R/R → geri plana at
-    rr_floor   = _float_env('ALLOC_RR_FLOOR', 1.3)
-    rr_penalty = _float_env('ALLOC_RR_PENALTY', 0.6)
-    if float(rr or 0) < rr_floor:
-        q *= rr_penalty
-
-    q = _c01(q)
-    floor_pct = _float_env('ALLOC_FLOOR_PCT', 10.0)
-    ceil_pct  = _float_env('ALLOC_CEIL_PCT', 25.0)
-    return floor_pct + (ceil_pct - floor_pct) * q, q
-
-
 def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_symbols, allowed, blocked):
     """Sinyal skoru yüksek adayları tara ve kalan pozisyon slotlarını doldur."""
     from config import _cget_hist, _cset, _get_stocks, _hist_cache
     from auto_trader import _auto_open_position, _auto_log_trade, _auto_get_open_positions, _auto_get_daily_trade_count
-    from trade_plans import calc_trade_plan
 
     if slots <= 0 or daily_remaining <= 0:
         return
@@ -523,87 +474,9 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         if hist is None or len(hist) < 20:
             hist = _cget_hist(f"{sym}_1y")
 
-        # A1: ATR-based dinamik SL — sabit %3 yerine volatiliteye gore.
-        # Volatil hisselerde geniş SL (eskiden anında tetikleniyordu),
-        # sakin hisselerde dar SL (eskiden gereksiz büyük zarar).
-        # Formul: SL = price - 1.5 × ATR. Cap: cfg.stopLossPct*1.5 (asiri genis olmasin),
-        #         floor: cfg.stopLossPct*0.5 (cok dar olmasin).
-        stop_loss = round(price * (1 - cfg['stopLossPct'] / 100), 2)  # default fallback
-        _atr_v = 0.0
-        try:
-            from indicators_basic import calc_atr as _calc_atr_sl
-            _atr_data = _calc_atr_sl(
-                hist['High'].values.astype(float),
-                hist['Low'].values.astype(float),
-                hist['Close'].values.astype(float),
-            )
-            _atr_v = float(_atr_data.get('value', 0))
-            if _atr_v > 0:
-                _atr_sl_distance = _atr_v * 1.5
-                _max_distance = price * (cfg['stopLossPct'] * 1.5 / 100)  # cap
-                _min_distance = price * (cfg['stopLossPct'] * 0.5 / 100)  # floor
-                _atr_sl_distance = max(_min_distance, min(_max_distance, _atr_sl_distance))
-                stop_loss = round(price - _atr_sl_distance, 2)
-                print(f"[AUTO-TRADE] {sym} ATR-SL: ATR={_atr_v:.3f}, SL distance={_atr_sl_distance:.3f} ({_atr_sl_distance/price*100:.2f}%)")
-        except Exception as _atr_sl_err:
-            print(f"[AUTO-TRADE] {sym} ATR-SL hesap hatasi (sabit %SL kullanildi): {_atr_sl_err}")
-
-        tp1 = round(price * (1 + cfg['takeProfitPct'] / 100), 2)
-        tp2 = round(price * (1 + cfg['takeProfitPct'] * 1.5 / 100), 2)
-        tp3 = round(price * (1 + cfg['takeProfitPct'] * 2 / 100), 2)
-        trailing_sl = round(price * (1 - cfg['trailingPct'] / 100), 2) if cfg['trailingStop'] else 0
-
-        # Trade planini kontrol et (daha iyi SL/TP varsa kullan) — hist yukarida (döngü başı) yüklendi
-        if hist is not None and len(hist) >= 20:
-            try:
-                plan = calc_trade_plan(hist, symbol=sym)
-                tf_key = {'daily': 'daily', 'swing': 'weekly', 'monthly': 'monthly'}.get(cfg['tradeStyle'], 'weekly')
-                tf_plan = plan.get(tf_key, {})
-                buy_plan = tf_plan.get('buy', {})
-                if buy_plan:
-                    plan_sl = float(buy_plan.get('stopLoss', 0))
-                    if 0 < plan_sl < price and plan_sl >= price * 0.85:
-                        stop_loss = plan_sl
-                    targets = buy_plan.get('targets', [])
-
-                    def _tp_val(t, default):
-                        try:
-                            return float(t.get('price', default)) if isinstance(t, dict) else float(t)
-                        except Exception:
-                            return default
-
-                    if len(targets) >= 1 and _tp_val(targets[0], 0) > price:
-                        tp1 = _tp_val(targets[0], tp1)
-                    if len(targets) >= 2 and _tp_val(targets[1], 0) > price:
-                        tp2 = _tp_val(targets[1], tp2)
-                    if len(targets) >= 3 and _tp_val(targets[2], 0) > price:
-                        tp3 = _tp_val(targets[2], tp3)
-            except Exception:
-                pass
-
-        # SL EMNİYET FLOOR — SL asla gürültü-seviyesinde dar olmasın.
-        # Bug: plan-SL override'ı ATR floor'unu bypass edip destek seviyesini SL yapıyordu
-        # → CCOLA %0.23 SL (günlük aralık %3.57'de anında stop). Nihai kural: SL mesafesi
-        # >= max(config-floor %0.75, 1×ATR, %1). Volatil hissede otomatik daha geniş.
-        _hard_min_sl = max(price * (cfg['stopLossPct'] * 0.5 / 100),
-                           _atr_v if _atr_v > 0 else 0.0,
-                           price * 0.01)
-        if (price - stop_loss) < _hard_min_sl:
-            _old_sl = stop_loss
-            stop_loss = round(price - _hard_min_sl, 2)
-            print(f"[AUTO-TRADE] {sym} SL floor uygulandı: {_old_sl} → {stop_loss} "
-                  f"(mesafe >=%{_hard_min_sl/price*100:.2f}, gürültü-koruması)")
-
-        # TP monotonik kontrol — kademeli kar alma icin tp1 < tp2 < tp3 sart.
-        # Plan override'ında targets esit/geri sirali gelmis olabilir; en az %0.5
-        # spread garanti etmek icin default formul fallback'i.
-        _tp_default_1 = round(price * (1 + cfg['takeProfitPct'] / 100), 2)
-        _tp_default_2 = round(price * (1 + cfg['takeProfitPct'] * 1.5 / 100), 2)
-        _tp_default_3 = round(price * (1 + cfg['takeProfitPct'] * 2 / 100), 2)
-        if not (price < tp1 < tp2 < tp3) or (tp2 - tp1) / price < 0.005 or (tp3 - tp2) / price < 0.005:
-            print(f"[AUTO-TRADE] {sym} TP siralama bozuk "
-                  f"(tp1={tp1:.2f}, tp2={tp2:.2f}, tp3={tp3:.2f}) -> default formul")
-            tp1, tp2, tp3 = _tp_default_1, _tp_default_2, _tp_default_3
+        # SL/TP seviyeleri — ATR-SL + plan override + EMNIYET FLOOR + TP monotonikligi.
+        # Tum sira/gerekce auto_trader_risk.compute_sl_tp docstring'inde (FAZ 2'de oraya tasindi).
+        stop_loss, tp1, tp2, tp3, trailing_sl = compute_sl_tp(price, cfg, hist, sym)
 
         # R/R guard — TP1/SL ratio < 1 ise pozisyon acmiyoruz.
         # Mantik: kazansa bile az kazanir, kaybetse cok kaybeder; matematik tutmaz
@@ -625,20 +498,12 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
         if sl_distance <= 0:
             continue
         risk_qty = int(risk_amount / sl_distance)
-        # POZİSYON-BAŞINA notional tavanı → sepet çeşitlendirme. İKİ MOD:
-        #   ALLOC_QUALITY_ENABLED=0 (DEFAULT — PARK): düz eşit tavan (AUTO_MAX_POSITION_PCT,
-        #     ~%20). Güven/skora göre BÜYÜTME YOK. Sebep: ölçüm ml_confidence'ın ANTI-predictive
-        #     olduğunu gösterdi (bkz memory: auto_buy_negative_edge_finding) → güveni ödüllendiren
-        #     kalite-pay zararı büyütür. Strateji doğrulanana dek kapalı.
-        #   ALLOC_QUALITY_ENABLED=1: kalite-bazlı standalone pay (conviction lider, R/R tiebreaker).
-        # risk_qty ile min() → per-trade ZARAR yine riskPerTrade ile sınırlı (ayrı emniyet).
+        # POZİSYON-BAŞINA notional tavanı → sepet çeşitlendirme.
+        # Mod seçimi (düz-tavan PARK / kalite-pay) auto_trader_sizing.py'da — bkz. o dosyanın
+        # başlığı. risk_qty ile min() → per-trade ZARAR yine riskPerTrade ile sınırlı (ayrı emniyet).
+        from auto_trader_sizing import position_pct_for
         _rr_now = ((tp1 - price) / sl_distance) if (sl_distance > 0 and tp1 > price) else 0.0
-        if _int_env('ALLOC_QUALITY_ENABLED', 0) == 1:
-            _pos_pct, _q = _quality_position_pct(_rr_now, cand['score'], cand['confidence'])
-            _size_mode = f"kalite-pay q={_q:.2f}"
-        else:
-            _pos_pct, _q = _float_env('AUTO_MAX_POSITION_PCT', 20.0), 0.0
-            _size_mode = "düz-tavan (kalite PARK)"
+        _pos_pct, _q, _size_mode = position_pct_for(_rr_now, cand['score'], cand['confidence'])
         _cap_qty = int((cfg['capital'] * _pos_pct / 100.0) / price) if price > 0 else 0
         quantity = min(risk_qty, max(1, _cap_qty))
         if quantity < 1:
