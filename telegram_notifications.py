@@ -251,14 +251,15 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
         _reality = ""
         _conf_disp = f"Güven: <b>%{confidence:.0f}</b>"
 
-    # Hızlı-trade kurulum kalitesi (deneysel) — kullanıcının gerçek edge'inden (vol+momentum)
+    # setup_q parametresi KORUNDU (geriye-uyum) ama ARTIK GOSTERILMIYOR — OOS testi
+    # coktu: 5.770 sinyalde korelasyon ~0. Detay: signal_calibration.setup_quality docstring.
     _setup_disp = ""
-    if setup_q is not None:
-        _setup_disp = (f"⚡ <i>Hızlı-trade kurulumu: <b>{setup_q}/100</b> "
-                       f"(deneysel — hızlı çık, bekletme)</i>\n")
 
+    # "ADAY" dili: sistemin PF'i 1'in altinda olculdu; "oneri" demek olculmemis bir
+    # guven ima ediyordu. Karar kullanicida — sistem yalnizca filtreleri gecenleri listeler.
     msg = (
-        f"🟢 <b>AL SİNYALİ — {symbol}</b>  <i>({sig_time_str})</i>\n"
+        f"🔎 <b>ALIM ADAYI — {symbol}</b>  <i>({sig_time_str})</i>\n"
+        f"<i>Tarama filtrelerini geçti — karar senin.</i>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📊 Skor: <b>{score:.1f}</b>  |  {_conf_disp}  |  R/R: <b>1:{rr}</b>\n"
         f"{_reality}{_setup_disp}"

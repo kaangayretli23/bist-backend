@@ -93,7 +93,22 @@ def setup_features(df):
 
 
 def setup_quality(vol14, ret5, rsi):
-    """HIZLI-TRADE KURULUM KALİTESİ (0-100).
+    """⛔ OOS DOĞRULAMASI ÇÖKTÜ (2026-07-20) — KARTLARDA ARTIK GÖSTERİLMİYOR.
+
+    5.770 gerçek AL sinyalinde (129 sembol, 2026-04..07) geçmişe dönük test edildi:
+        canlı-eşdeğer korelasyon : r1 +0.010 | r5 -0.018 | r20 -0.012
+        gün-nötrleştirilmiş      : r1 -0.001 | r5 +0.002 | r20 +0.004
+    Bant tablosu monoton değil; en yüksek bant (65-80) EN KÖTÜ sonucu verdi.
+    Aşağıdaki in-sample +0.45 korelasyon DÖNGÜSELDİ (aynı 39 işlemden fit edildi).
+
+    ⚠️ İlk testte +0.25 korelasyon çıkmıştı — LOOK-AHEAD BUG'ı: sinyal gününün barı
+    dahildi, o barın kapanışı sinyalden SONRA oluşuyor. Doğru kurulum: önceki barlar
+    + signal_log.price_at_signal. Bu ders kayıtlı kalsın.
+
+    Fonksiyon referans için duruyor; hiçbir karar yolunda KULLANILMIYOR.
+
+    ── Orijinal açıklama (tarihsel) ──
+    HIZLI-TRADE KURULUM KALİTESİ (0-100).
 
     Kullanıcının GERÇEK kazanan işlemleriyle korele faktörlerden türetildi (Midas 3 ay, 39 işlem):
     volatilite (hareket alanı) + kısa momentum (RSI, önceki 5g getiri). Yüksek = hızlı momentum

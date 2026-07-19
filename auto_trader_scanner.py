@@ -645,22 +645,15 @@ def _step2b_scan_signals(uid, cfg, slots, daily_remaining, open_positions, open_
                 # yerine encapsulated; pending state telegram_state'te tutuluyor)
                 _already_pending = has_pending_signal(uid, sym)
                 if not _already_pending:
-                    # Hızlı-trade kurulum kalitesi (deneysel) — kullanıcının gerçek edge'i
-                    try:
-                        from signal_calibration import setup_quality_from_df, log_setup_quality
-                        _sq, _sqf = setup_quality_from_df(cand.get('hist'))
-                        # 1-ay OOS doğrulaması için KALICI logla (kartta gösterip unutma)
-                        if _sq is not None:
-                            log_setup_quality(uid, sym, price, _sq, _sqf,
-                                              cand['score'], cand['confidence'])
-                    except Exception:
-                        _sq = None
+                    # setup_quality KALDIRILDI (2026-07-20). OOS testi çöktü:
+                    # 5.770 sinyalde korelasyon ~0 (canlı-eşdeğer r5=-0.018,
+                    # gün-nötrleştirilmiş +0.002). In-sample +0.45 döngüsel fitting'di.
+                    # Loglama da durduruldu — ölü metrik için veri biriktirmenin anlamı yok.
                     _tg_sent = send_trade_signal(
                         uid, sym, price, quantity,
                         cand['score'], cand['confidence'],
                         stop_loss, tp1, tp2, tp3, trailing_sl,
                         ai_verdict=ai_verdict,  # APPROVE ise AI özeti karta eklenir (None ise eski kart)
-                        setup_q=_sq,
                     )
         except Exception as _tg_err:
             print(f"[AUTO-TRADE] Telegram sinyal hatası: {_tg_err}")
