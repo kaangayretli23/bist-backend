@@ -3,6 +3,7 @@ BIST Pro - Auto Trader: Plan Merkezi Yürütücüsü (ADIM 2a)
 Kilitli AL planlarını kontrol edip pozisyon açar.
 auto_trader_engine.py'dan ayrıştırıldı (600 satır kuralı).
 """
+import os
 import time
 # Not: config, auto_trader, signals, indicators, signals_core, routes_telegram
 # fonksiyon içinde lazy import edilir (circular/partial load önlemi).
@@ -200,6 +201,24 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
 
             trailing_sl = round(cur_price * (1 - cfg['trailingPct'] / 100), 2) if cfg['trailingStop'] else 0
 
+            # KORUMA 7: R/R kapisi — scanner'da VARDI (auto_trader_scanner.py ~488), plan
+            # yolunda YOKTU. 2026-07-20 olcumu: Telegram'a giden 204 plan sinyalinin
+            # %30.4'unde TP1, SL'den DAHA YAKINDI (R/R<1) — yani kazanilabilecekten fazlasi
+            # riske atiliyordu. Kar icin gereken win-rate %50'nin uzerine cikiyor.
+            # Bu bir tahmin iyilestirmesi DEGIL, iki yol arasindaki tutarsizligin giderilmesi.
+            _sl_dist_rr = cur_price - stop_loss
+            _tp1_dist_rr = tp1 - cur_price
+            if _sl_dist_rr > 0 and _tp1_dist_rr > 0:
+                _rr = _tp1_dist_rr / _sl_dist_rr
+                if _rr < 1.0:
+                    print(f"[AUTO-TRADE] [PLAN] {sym} atlandi — zayif R/R={_rr:.2f} "
+                          f"(SL {_sl_dist_rr:.2f} > TP1 {_tp1_dist_rr:.2f})")
+                    _log_decision(uid, sym, 'SKIP', 'poor_rr',
+                                  detail=f"[PLAN] R/R={_rr:.2f} < 1.0 "
+                                         f"(SL mesafe={_sl_dist_rr:.2f}, TP1 mesafe={_tp1_dist_rr:.2f})",
+                                  tf=tf, price=cur_price)
+                    continue
+
             # Pozisyon buyuklugu
             sl_distance = cur_price - stop_loss
             if sl_distance <= 0:
@@ -248,8 +267,21 @@ def _step2a_plan_positions(uid, cfg, slots, daily_remaining, open_positions, ope
 
             # Plan bayatlama filtresi: güncel composite zayıfsa planı atla
             # (plan eski bir AL sinyalinden kilitlendi ama piyasa artık onaylamıyor)
-            _plan_min_conf = cfg.get('minConfidence', 60) * 0.5  # sinyal taramasının yarısı
-            _plan_min_score = max(1.5, cfg.get('minScore', 3.0) * 0.5)
+            # ── EŞİK ÇARPANI (2026-07-20'de GİZLİ VARSAYIMDAN açık knob'a çevrildi) ──
+            # Buradaki 0.5 "bayatlama filtresi" niyetiyle yazılmıştı: varsayım, planın ZATEN
+            # gerçek bir kapıdan geçmiş olduğuydu. Ama plan kilitleri trade_plans.py:390'da
+            # her analiz edilen sembol için OTOMATİK oluşuyor — yani hiç kapıdan geçmiyorlar.
+            # Sonuç: 0.5 pratikte bir bayatlama filtresi değil, minScore'un YARISI olan bir
+            # SİNYAL EŞİĞİ. Ölçüldü: Telegram sinyallerinin %83'ü bu yoldan, ort. skor 5.02
+            # (kullanıcının ayarı 6.0). Hangi eşiğin daha iyi olduğu KANITLANAMADI (iki yolun
+            # da PF'i 1'in altında, aralıklar geniş) → varsayılan DEĞİŞTİRİLMEDİ, yalnızca
+            # görünür ve ayarlanabilir yapıldı. 1.0 = scanner ile aynı sıkılık.
+            try:
+                _plan_mult = float(os.environ.get('PLAN_THRESHOLD_MULT', 0.5))
+            except (TypeError, ValueError):
+                _plan_mult = 0.5
+            _plan_min_conf = cfg.get('minConfidence', 60) * _plan_mult
+            _plan_min_score = max(1.5, cfg.get('minScore', 3.0) * _plan_mult)
             if _score_ok and (plan_conf < _plan_min_conf or plan_score < _plan_min_score):
                 print(f"[AUTO-TRADE] {sym} plan bayatlamis — atlandi "
                       f"(skor={plan_score:.1f} < {_plan_min_score:.1f} veya "

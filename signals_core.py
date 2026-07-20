@@ -241,6 +241,21 @@ def calc_recommendation(hist, indicators, symbol=None):
 
             _d_bb = score - _cs; _cs = score   # bollinger delta'si formasyon kovasina eklenecek (kod sirasi degismedi)
             # 5. Hacim trendi — son kısa pencere vs daha önceki uzun pencere (overlap yok)
+            #
+            # ⚠️ YAPISAL OLARAK ÖLÜ (daily + weekly) — 2026-07-20'de tespit edildi.
+            # sv = v[-days:] olduğu için len(sv) == days. Aşağıdaki kapı:
+            #     len(sv) > min(5, len(sv)) + 5
+            #   daily  : 1 > 6   → ASLA
+            #   weekly : 5 > 10  → ASLA          ← scanner'ın kullandığı zaman dilimleri
+            #   monthly: 22 > 10 → çalışır
+            #   yearly : 252 > 10 → çalışır
+            # 18.304 gözlemde 0 ateşleme ölçüldü — kod okumasıyla birebir uyuşuyor.
+            #
+            # SİLİNMEDİ çünkü monthly/yearly'de GERÇEKTEN çalışıyor (arayüz tüm zaman
+            # dilimlerini hesaplıyor). Kapıyı "düzeltip" daily/weekly'de devreye almak ise
+            # skora ÖLÇÜLMEMİŞ yeni bir sinyal eklemek olur — hacim bloğunun edge'i hiç
+            # test edilemedi (hiç ateşlemediği için veri yok). Devreye alınacaksa ÖNCE
+            # edge testi yapılmalı, sonra kapı düzeltilmeli. Bu sırayla.
             _vol_recent_n = min(5, len(sv))
             _vol_base_n   = max(p['vol'], _vol_recent_n + 5)
             if len(sv) > _vol_recent_n + 5:
@@ -265,7 +280,19 @@ def calc_recommendation(hist, indicators, symbol=None):
 
             contrib['hacim'] = round(score - _cs, 3); _cs = score
             # 6. Momentum (periyoda gore)
-            if len(sc)>=days and sc[0] > 0:
+            # DIKKAT — 'daily'de (days=1) sc = c[-1:], yani sc[0] == c[-1] ve period_return
+            # HEP TAM 0'dir: hicbir dal atesLEYEMEZ. Eskiden total_indicators yine de artiyordu,
+            # yani OY VEREMEYEN bir blok consensus paydasini sisiriyor, %40 esigini yapay olarak
+            # zorlastiriyordu (olculdu: consensus ort %36.4 -> %40.8, +4.35 puan).
+            # Bu yuzden days<2 iken blok tamamen atlanir.
+            #
+            # NEDEN 'DUZELTIP CALISTIRMADIK': referansi c[-days-1] yapmak momentum'u daily'de
+            # atesler hale getirirdi. Ama momentum'un edge'i 18.304 gozlemde OLCULDU:
+            # 5g spread -0.13 (t=-0.25), 20g -0.01 (t=-0.01) -> EDGE YOK. Edge'i olmadigi
+            # kanitlanmis bir sinyali devreye almak yerine, yalnizca payda kirliligi giderildi.
+            # (12.160 barda test: bu degisiklik HICBIR sinyal kararini degistirmiyor — skor 6.0
+            #  esigini gecenlerde consensus zaten %40 uzerinde. Daha dusuk minScore'da etkili olur.)
+            if len(sc)>=days and sc[0] > 0 and days > 1:
                 period_return=sf(((c[-1]-sc[0])/sc[0])*100)
                 total_indicators += 1
                 if period_return>10: score+=1.5; buy_indicators+=1; reasons.append(f'{label} getiri: %{period_return} (guclu yukselis)')
