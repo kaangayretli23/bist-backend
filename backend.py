@@ -245,8 +245,7 @@ except Exception as e:
     print(f"[UYARI] Loader baslatilamadi: {e}")
 
 # TradingView WebSocket: BIST100 tum hisselere abone ol — loader'i beklemeden.
-# Bu sayede borsapy quick fetch'leri 429 alsa bile WebSocket tick'leri _stock_cache'i
-# canli tutar (realtime_prices._on_price_update bridge'i).
+# Bridge her zaman aktif; borsapy 429 alsa bile tick'ler _stock_cache'i canli tutar.
 def _bist100_tv_sync_startup():
     try:
         time.sleep(3)  # WebSocket baglantisi otursun

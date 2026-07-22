@@ -15,10 +15,6 @@ TV_SESSION_SIGN = os.environ.get('TV_SESSION_SIGN', '')
 TV_USERNAME     = os.environ.get('TV_USERNAME', '')
 TV_PASSWORD     = os.environ.get('TV_PASSWORD', '')
 
-# TradingView tick'lerini _stock_cache'e koprule (mevcut endpoint'ler taze veri gorur).
-# Sorun cikarsa USE_TV_LIVE=0 ile devre disi birakilir → eski Is Yatirim akisina doner.
-USE_TV_LIVE = os.environ.get('USE_TV_LIVE', '1') not in ('0', 'false', 'False', '')
-
 # D3: Operasyonel istatistik sayaclari — /api/system/diagnostic ile gosterilir.
 _stats = {
     'tick_count': 0,           # toplam tick alindi
@@ -105,9 +101,7 @@ def _on_price_update(symbol: str, quote: dict) -> None:
         _stats['tick_last_ts'] = _now_ts
         if _stats['tick_first_ts'] == 0.0:
             _stats['tick_first_ts'] = _now_ts
-    # ── Koprule: _stock_cache'i de live fiyatla guncelle (USE_TV_LIVE=1 ise) ──
-    if not USE_TV_LIVE:
-        return
+    # ── Koprule: _stock_cache'i de live fiyatla guncelle ──
     try:
         from config import _stock_cache, _cset, sf, si
         cur_item = _stock_cache.get(symbol)
