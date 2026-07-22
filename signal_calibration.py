@@ -51,6 +51,45 @@ def calibrated_confidence(score):
     return win
 
 
+# setup_quality bandı -> tarihsel 5g MUTLAK hareket (ölçüldü 2026-07-21, 40.064 gözlem).
+# Dilim tablosu (gün-nötrleştirilmiş, iki alt-dönemde de monoton, t=18.71):
+#   setup_q 16.8→%4.11 | 25.5→%4.41 | 33.3→%4.66 | 43.2→%4.94 | 62.6→%5.74
+# 3 banda sadeleştirildi. NOT: büyük kısmı volatilite kümelenmesi (bilinen, güvenilir olgu).
+_MOVE_BANDS = [
+    (45.0, 'YÜKSEK',  5.5),
+    (30.0, 'ORTA',    4.7),
+    (0.0,  'DÜŞÜK',   4.2),
+]
+
+
+def movement_expectation(setup_q):
+    """setup_quality (0-100) -> (etiket, tarihsel_5g_mutlak_hareket_%) veya None.
+
+    ⚠️ YÖN ÖNGÖRÜSÜ DEĞİL. Yalnızca 'bu hisse ne kadar HAREKET eder' (oynaklık).
+    setup_quality'nin yön testi çöktü (korelasyon ~0) ama HAREKET testi güçlü: 40.064
+    gözlemde setup_q dilimleri 5g mutlak hareketle monoton artıyor (t=18.71, iki dönemde).
+    Kartta kullanıcıya 'burada iş var mı' sinyali; çıkış kararı ve yön kullanıcıda.
+    """
+    try:
+        q = float(setup_q)
+    except (TypeError, ValueError):
+        return None
+    for thr, lab, hist in _MOVE_BANDS:
+        if q >= thr:
+            return (lab, hist)
+    return None
+
+
+def movement_line(setup_q):
+    """Telegram kartı için hareket-beklentisi satırı (HTML). setup_q yoksa boş döner."""
+    m = movement_expectation(setup_q)
+    if not m:
+        return ""
+    lab, hist = m
+    return (f"⚡ <i>Hareket beklentisi: <b>{lab}</b> — bu bantta 5g ort ±%{hist:.1f} "
+            f"salınım (n>8k). <b>Yön değil, oynaklık.</b></i>\n")
+
+
 def overbought_penalty(rsi, regime):
     """ADIM 2 — aşırı-alım + mean-reverting rejim CEZASI (skordan düşülecek puan).
 

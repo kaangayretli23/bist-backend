@@ -251,9 +251,15 @@ def send_trade_signal(uid, symbol, price, quantity, score, confidence, sl, tp1, 
         _reality = ""
         _conf_disp = f"Güven: <b>%{confidence:.0f}</b>"
 
-    # setup_q parametresi KORUNDU (geriye-uyum) ama ARTIK GOSTERILMIYOR — OOS testi
-    # coktu: 5.770 sinyalde korelasyon ~0. Detay: signal_calibration.setup_quality docstring.
-    _setup_disp = ""
+    # setup_q: YÖN öngörüsü olarak çöktü (korelasyon ~0) ama HAREKET öngörüsü olarak GEÇERLİ
+    # (2026-07-21, 40.064 gözlem, t=18.71). Kartta "hareket beklentisi" olarak gösterilir —
+    # "kurulum kalitesi" DEĞİL. Yön ima etmez; kullanıcının çıkış edge'i için ham malzeme.
+    # setup_q None ise (hesaplanamadıysa) satır boş kalır — sıralama bundan ETKİLENMEZ.
+    try:
+        from signal_calibration import movement_line
+        _setup_disp = movement_line(setup_q)
+    except Exception:
+        _setup_disp = ""
 
     # "ADAY" dili: sistemin PF'i 1'in altinda olculdu; "oneri" demek olculmemis bir
     # guven ima ediyordu. Karar kullanicida — sistem yalnizca filtreleri gecenleri listeler.
